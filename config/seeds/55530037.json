@@ -1,0 +1,52 @@
+[
+ {
+  "start": "0x000ABDD3",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 (RS3's 0x0009EFF3). Ported from Rainbow Six 3's seeds by matching its function's bytes in this XBE, with absolute and relative addresses as wildcards."
+ },
+ {
+  "start": "0x0043BEDB",
+  "observed": true,
+  "note": "XNet timer callback, an indirect-call target (RS3's 0x003AC22A). Ported from Rainbow Six 3's seeds by matching its function's bytes in this XBE, with absolute and relative addresses as wildcards."
+ },
+ {
+  "start": "0x004C45E8",
+  "observed": true,
+  "note": "Indirect-call target (RS3's 0x0042B848). Ported from Rainbow Six 3's seeds by matching its function's bytes in this XBE, with absolute and relative addresses as wildcards."
+ },
+ {
+  "start": "0x00036850",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 (RS3's 0x00077E60). Ported from Rainbow Six 3's seeds by matching its function's bytes in this XBE, with absolute and relative addresses as wildcards."
+ },
+ {
+  "start": "0x00373D00",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 (RS3's 0x002F6EA0). Ported from Rainbow Six 3's seeds by matching its function's bytes in this XBE, with absolute and relative addresses as wildcards."
+ },
+ {
+  "start": "0x00446F80",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 (RS3's 0x0040A420). Ported from Rainbow Six 3's seeds by matching its function's bytes in this XBE, with absolute and relative addresses as wildcards."
+ },
+ {
+  "start": "0x00340130",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0036F9D0",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00452020",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x004521E0",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ }
+]

@@ -10,7 +10,7 @@
  *     back to their own clocks. An invalid value also opens none.
  *   - RECOMP_MUTE=1: the device opens and plays at gain 0, so the play
  *     position is the device's own, exactly as an audible run's would be.
- *   - Each slot (0..255 buffers, 256..271 streams, 272 a movie) is its own
+ *   - Each slot (buffers, streams, then the movie: audio_output.h) is its own
  *     voice, here an SDL_AudioStream bound to one device; SDL mixes them.
  *   - At most kQueueSize submissions in flight per voice. A full queue
  *     refuses (returns 0) and the stream offers the chunk again, never steps
@@ -36,7 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VOICE_COUNT     (256u + 16u + 1u)
+#define VOICE_COUNT     RECOMP_AUDIO_VOICE_COUNT   /* buffers, streams, movie: audio_output.h */
 #define QUEUE_SIZE      64u          /* audio_output_xaudio2.cpp kQueueSize */
 #define MAX_BUFFER      160000u
 #define MIN_RATE        1000u
@@ -471,8 +471,8 @@ static void SDLCALL postmix(void *userdata, const SDL_AudioSpec *spec, float *bu
             g_meter_last = now;
             {
                 /* Per voice, from submit(): buffers are slots 0-255, streams
-                 * 256-271, the movie 272. Read without the lock: counters
-                 * for a report, not state. */
+                 * and the movie after them (audio_output.h). Read without the
+                 * lock: counters for a report, not state. */
                 uint32_t i, dry_b = 0, dry_s = 0, bad = 0, joins = 0, worst = 0, worst_slot = 0;
                 uint32_t steps = 0, big = 0, levels = 0;
                 for (i = 0; i < VOICE_COUNT; i++) {

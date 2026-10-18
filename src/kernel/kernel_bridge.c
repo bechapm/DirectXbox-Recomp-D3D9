@@ -4698,6 +4698,16 @@ static void bridge_NtReadFile(void)
                     length, got, (uint32_t)ios.Status, buffer_va,
                     got > 0 ? p[0] : 0, got > 1 ? p[1] : 0,
                     got > 2 ? p[2] : 0, got > 3 ? p[3] : 0);
+        /* RECOMP_READ_NAMES=1: which file each read was from. */
+        {
+            static int names = -1;
+            if (names < 0)
+                names = xbox_EnvSwitch("RECOMP_READ_NAMES", 0);
+            if (names) {
+                char where[MAX_PATH * 3];
+                fprintf(stderr, "  [READ]   from %s\n", bridge_handle_name(handle, where, sizeof where));
+            }
+        }
         /* A failed read says which file: an end-of-file is only wrong if the
          * file is longer than the offset, and nothing above says which. */
         if (ios.Status) {

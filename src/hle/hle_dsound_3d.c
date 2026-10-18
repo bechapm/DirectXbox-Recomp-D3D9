@@ -94,7 +94,7 @@ enum {
     BIN_COUNT = 32u,
     MAX_BINS = 8u,
 
-    VOICES = 640u,             /* 256 buffers and the streams, with room to spare */
+    VOICES = 1536u,            /* 256 buffers and 1024 streams (hle_dsound_stream.c), and spare */
     ATTEN_SILENT = 6398,       /* 0xFFF / 64 dB in hundredths: the hardware's floor */
 };
 
@@ -231,12 +231,12 @@ static void default_buffer(Ds3dBuffer *b)
 }
 
 /* Where each key was last found: the pump looks every voice up several
- * times every 5 ms, and the table is 640 long. A hint, checked before use. */
-static uint16_t g_hint[1024];
+ * times every 5 ms, and the table is 1536 long. A hint, checked before use. */
+static uint16_t g_hint[2048];
 
 static Voice *find(uint32_t key)
 {
-    uint32_t i, h = (key >> 2) & 1023u;
+    uint32_t i, h = (key >> 2) & 2047u;
     if (!key) return NULL;
     if (g_hint[h] < VOICES && g_voices[g_hint[h]].key == key)
         return &g_voices[g_hint[h]];
@@ -1402,6 +1402,18 @@ HLE_EXPORT(IDirectSound_CommitDeferredSettings)
  * distance, and the mix bins it starts with. */
 static void buffer_created(uint32_t desc, uint32_t out)
 {
+    if ((int32_t)g_eax < 0) {
+        /* The title's own creation refused it: whatever sound it was for is
+         * never played, and nothing else says so. */
+        static unsigned long refused;
+        unsigned long n = ++refused;
+        while (n >= 10 && n % 10 == 0) n /= 10;
+        if (n == 1)
+            fprintf(stderr, "[DSOUND] CreateSoundBuffer failed 0x%08X, flags 0x%08X, %u bytes "
+                    "(%lu so far)\n", g_eax,
+                    desc && guest_readable(desc, 0x0Cu) ? HLE_MEM32(desc + 4u) : 0u,
+                    desc && guest_readable(desc, 0x0Cu) ? HLE_MEM32(desc + 8u) : 0u, refused);
+    }
     if ((int32_t)g_eax < 0 || !out || !guest_readable(out, 4u) ||
         !desc || !guest_readable(desc, 0x14u))
         return;

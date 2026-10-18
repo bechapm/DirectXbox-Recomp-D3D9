@@ -148,8 +148,21 @@ voices mode 3, which is reverb-only, with a cutoff that read as DLS2 is the floo
 mix sums past full scale in fights, so the master has a limiter. `RECOMP_DS3D_TRACE=1` shows
 each voice's bins, levels, filter and envelope; `RECOMP_AUDIO_METER=1` the mix's peak. Not
 run: the DSP effects image beyond its reverb (32 of 37 titles in `games/` download one),
-mix-bin headroom (31), HRTF (24, panned instead), LFO (10), ParaEQ, and reverb on the SDL
-backend.
+mix-bin headroom (31), HRTF (24, panned instead), LFO (10) and ParaEQ. On the SDL backend
+the room is `src/hle/audio_reverb.c`, run over the voices' reverb sends on a second
+logical device (a bus) beside the main one (`audio_output_sdl.c`).
+
+**A stream holds a host voice only while it has sound (Oct 2026).** Rainbow Six 3 and
+Black Arrow create ~800 DirectSound streams, one per sound, and never release them; with a
+voice each and room for 16, their per-event sounds (weapon foley, the vision switch) were
+dropped silently. `hle_dsound_stream.c` keeps 1024 streams and lends them 256 voices
+(`[DSOUND] streams:` every five seconds), and replaces `CDirectSoundStream_Release`.
+An `HLE_ORIGINAL` is defined in each title's generated `recomp_hle.c`, so a title that
+predates one fails to link with `hle_original_<Name>` undefined: lift it again
+(`--from lift`). `RECOMP_DSOUND_STREAM_LOG=1` logs every stream and packet.
+Still open: Black Arrow never *requests* its guns' own reports, its reloads or its
+night-vision switch; everything below DirectSound is ruled out
+(`docs/technical/rs3ba-audio.md`).
 
 **Two audio paths (Oct 2026, `docs/technical/audio-architecture.md`).** `RECOMP_AUDIO=native`
 (the default) replaces DirectSound by name, as above. `RECOMP_AUDIO=apu` runs the title's own

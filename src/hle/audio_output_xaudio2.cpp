@@ -24,9 +24,8 @@
 
 namespace {
 
-/* 0..255 are DirectSound buffers (hle_dsound.c), 256..271 streams
- * (hle_dsound_stream.c), 272 a movie's sound (hle_xmv.c). */
-constexpr uint32_t kVoiceCount = 256 + 16 + 1;
+/* DirectSound buffers, streams and a movie's sound: audio_output.h. */
+constexpr uint32_t kVoiceCount = RECOMP_AUDIO_VOICE_COUNT;
 /* Submissions in flight per voice. A stream keeps LEAD_MS of sound ahead of
    its clock in CHUNK_MS pieces (hle_dsound_stream.c), so four was one short
    of what the music path asks for and every frame past the first dropped a

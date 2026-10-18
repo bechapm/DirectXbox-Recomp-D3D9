@@ -18,7 +18,15 @@ extern "C" {
 /* Initialization is attempted once per process; an unavailable device or
    shutdown leaves guest audio timing unchanged. RECOMP_AUDIO_GAIN is the host
    master gain (0..1); absent means 1, zero mutes without opening a device. */
-#define RECOMP_AUDIO_SLOT_MOVIE 272u
+/* The slot layout. Buffers 0..255 (hle_dsound.c), then the streams
+   (hle_dsound_stream.c), then the movie (hle_xmv_play.c). As many streams as
+   the MCPX has voices: Rainbow Six 3: Black Arrow keeps more than 64 open
+   for a whole session and never releases one, and 16, the old count, dropped
+   its guns and its vision modes. */
+#define RECOMP_AUDIO_SLOT_STREAM_BASE 256u
+#define RECOMP_AUDIO_STREAM_SLOTS     256u
+#define RECOMP_AUDIO_SLOT_MOVIE       (RECOMP_AUDIO_SLOT_STREAM_BASE + RECOMP_AUDIO_STREAM_SLOTS)
+#define RECOMP_AUDIO_VOICE_COUNT      (RECOMP_AUDIO_SLOT_MOVIE + 1u)
 
 void recomp_audio_output_initialize(void);
 void recomp_audio_output_shutdown(void);
@@ -31,8 +39,8 @@ void recomp_audio_output_reset_voice(uint32_t slot);
 void recomp_audio_output_release_voice(uint32_t slot);
 
 /* Copies PCM before returning; never retains a guest-memory pointer.
-   Slots: 0..255 for buffers, 256..271 for streams, 272
-   (RECOMP_AUDIO_SLOT_MOVIE) for a movie's sound. PCM: 1000..200000 Hz,
+   Slots: 0..255 for buffers, RECOMP_AUDIO_SLOT_STREAM_BASE on for streams,
+   RECOMP_AUDIO_SLOT_MOVIE for a movie's sound. PCM: 1000..200000 Hz,
    mono/stereo, unsigned 8 or signed 16 bit.
    Each submission is frame-aligned and at most 160000 bytes.
 

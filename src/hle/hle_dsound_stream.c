@@ -68,9 +68,17 @@ void *xbox_bridge_resolve_handle(uint32_t token);                          /* ke
 void hle_dsound_service_start(void);                                       /* hle_dsound.c */
 
 enum {
-    MAX_STREAMS = 16,
+    /* Streams the title has made, and host voices to play them on. A stream
+     * holds a voice only while it has sound to send, as on the console, where
+     * a stream is a software object and the MCPX voice is the scarce part:
+     * Rainbow Six 3: Black Arrow makes 400-odd streams at start-up, one per
+     * sound, and never releases one. With a voice each, 16 of them played
+     * and the rest -- its guns and vision modes among them -- were dropped. */
+    MAX_STREAMS = 1024,
+    VOICES      = (int)RECOMP_AUDIO_STREAM_SLOTS,
+    VOICE_IDLE_MS = 1000,            /* drained this long with nothing queued: give it back */
     MAX_PACKETS = 32,
-    SLOT_BASE   = 256,               /* audio_output.h: 256..271 are streams */
+    SLOT_BASE   = RECOMP_AUDIO_SLOT_STREAM_BASE,
 
     TAG_PCM   = 0x0001u,
     TAG_ADPCM = 0x0069u,
@@ -128,11 +136,15 @@ typedef struct Stream {
     const char *last_event;          /* flush, pause, resume, restart: for note_skip */
     uint64_t active_ms;              /* last packet or pause/resume from the title */
     int      mixed;                  /* the slot has a mix (hle_dsound_3d.c) */
+    uint64_t reported;               /* `queued` at the last five-second report */
+    int      voice;                  /* host voice + 1; 0 = none (acquire_voice) */
 } Stream;
 
 /* What the title asks of its streams, reported every five seconds while any
  * stream exists: a cutscene clocked off its music shows up here as a
  * GetStatus or Process count that stops moving. */
+/* The most streams recorded at once, for the five-second report. */
+static int g_streams_peak;
 static unsigned long g_calls_process, g_calls_status, g_calls_pause, g_calls_flush,
                      g_packets_done;
 /* How far the wall clock had run from the host's own play position, the last
@@ -155,6 +167,17 @@ static BOOL CALLBACK init_lock(PINIT_ONCE once, PVOID param, PVOID *ctx)
     InitializeCriticalSection(&g_lock);
     return TRUE;
 }
+/* RECOMP_DSOUND_STREAM_LOG=1: every stream made and every packet given to
+ * one, with the time, the host voice and the volume -- the streams' half of
+ * RECOMP_DSOUND_PLAY_LOG. */
+static int stream_log(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = xbox_EnvSwitch("RECOMP_DSOUND_STREAM_LOG", 0);
+    return on;
+}
+
 static void lock(void)
 {
     InitOnceExecuteOnce(&g_lock_once, init_lock, NULL, NULL);
@@ -247,7 +270,71 @@ static int32_t stream_volume(Stream *s)
     return v;
 }
 
-static uint32_t slot_of(const Stream *s) { return SLOT_BASE + (uint32_t)(s - g_streams); }
+
+/* Which stream holds each host voice (+1; 0 = free). */
+static uint16_t g_voice_owner[VOICES];
+static unsigned long g_voice_steals;
+
+/* The voice's audio_output slot. Only for a stream that has one. */
+static uint32_t slot_of(const Stream *s) { return SLOT_BASE + (uint32_t)(s->voice - 1); }
+
+/* Give the voice back: what it still holds is dropped, as at a reset. */
+static void release_voice(Stream *s)
+{
+    if (!s->voice)
+        return;
+    recomp_audio_output_reset_voice(slot_of(s));
+    recomp_audio_output_clear_mix(slot_of(s));
+    recomp_audio_output_route(slot_of(s), 0u);
+    g_voice_owner[s->voice - 1] = 0;
+    s->voice = 0;
+    s->mixed = 0;
+    s->play_anchored = 0;
+}
+
+/* The calls that drop a voice's queue, for a stream that may have none. */
+static void reset_voice(Stream *s)
+{
+    if (s->voice)
+        recomp_audio_output_reset_voice(slot_of(s));
+}
+
+/* A voice for a stream that is about to send sound: a free one, else the one
+ * held longest by a stream with nothing queued. 0 if every voice is busy. A
+ * voice starts empty, so the stream's played-sample count starts at what it
+ * sends next. */
+static int acquire_voice(Stream *s)
+{
+    int i, pick = -1;
+    Stream *victim = NULL;
+
+    if (s->voice)
+        return 1;
+    for (i = 0; i < VOICES; i++)
+        if (!g_voice_owner[i]) { pick = i; break; }
+    if (pick < 0) {
+        for (i = 0; i < VOICES; i++) {
+            Stream *o = &g_streams[g_voice_owner[i] - 1];
+            if (o->count == 0 && (!victim || o->active_ms < victim->active_ms))
+                victim = o;
+        }
+        if (!victim) {
+            static int said;
+            if (!said++)
+                fprintf(stderr, "[DSOUND] all %d stream voices are playing; a stream "
+                        "waits for one\n", VOICES);
+            return 0;
+        }
+        pick = victim->voice - 1;
+        release_voice(victim);
+        g_voice_steals++;
+    }
+    g_voice_owner[pick] = (uint16_t)(s - g_streams + 1);
+    s->voice = pick + 1;
+    s->play_origin = s->sent;
+    s->play_anchored = 0;
+    return 1;
+}
 
 /* Decoded bytes per second and per frame. Output is 16-bit for ADPCM. */
 static uint32_t out_bits(const Stream *s) { return s->tag == TAG_ADPCM ? 16u : s->bits; }
@@ -310,7 +397,7 @@ static void sync_to_host(Stream *s, uint64_t now)
     uint64_t played = 0, pos;
     uint32_t queued = 0;
 
-    if (!s->output || s->paused || !s->resumed_ms)
+    if (!s->output || s->paused || !s->resumed_ms || !s->voice)
         return;
     if (!recomp_audio_output_position(slot_of(s), &played, &queued) || queued == 0)
         return;
@@ -465,6 +552,8 @@ static void pump(Stream *s, uint64_t now)
 
     if (!s->output || s->paused || !s->resumed_ms)
         return;
+    if (s->sent >= s->queued || !acquire_voice(s))
+        return;
     /* Behind the clock: the host refused this stream's sound for longer than
      * the lead -- a device that was still opening (audio_output_sdl.c opens
      * it on a thread of its own) or none at all. Sending from here would play
@@ -573,7 +662,7 @@ static void pump(Stream *s, uint64_t now)
 /* Drop what the host has queued and start feeding again from the clock. */
 static void refeed(Stream *s, uint64_t now)
 {
-    recomp_audio_output_reset_voice(slot_of(s));
+    reset_voice(s);
     s->sent = consumed(s, now);
     s->play_origin = s->sent;
     s->play_anchored = 0;
@@ -585,6 +674,13 @@ static void tick(Stream *s, uint64_t now)
     sync_to_host(s, now);
     complete_passed(s, now);
     pump(s, now);
+    /* Played out and quiet for a while: the voice goes back to the pool. */
+    if (s->voice && s->count == 0 && now - s->active_ms >= VOICE_IDLE_MS) {
+        uint64_t played = 0;
+        uint32_t queued = 0;
+        if (!recomp_audio_output_position(slot_of(s), &played, &queued) || queued == 0)
+            release_voice(s);
+    }
 }
 
 /* From hle_dsound.c's service thread, which keeps the streams going while
@@ -625,10 +721,25 @@ void hle_dsound_stream_tick(uint64_t now)
             any = 1;
         }
     if (any && now - last_report >= 5000u) {
+        int open = 0;
         last_report = now;
+        for (i = 0; i < MAX_STREAMS; i++)
+            if (g_streams[i].iface) open++;
+        {
+            int held = 0;
+            for (i = 0; i < VOICES; i++)
+                if (g_voice_owner[i]) held++;
+            fprintf(stderr, "[DSOUND] streams: %d open (at most %d, room for %d), %d of %d "
+                    "voices held, %lu taken from an idle stream\n", open, g_streams_peak,
+                    MAX_STREAMS, held, VOICES, g_voice_steals);
+        }
+        /* The streams that were given sound since the last report, or still
+         * hold some: a title with dozens open (Black Arrow) would otherwise
+         * print every idle one every five seconds. */
         for (i = 0; i < MAX_STREAMS; i++) {
             Stream *s = &g_streams[i];
-            if (!s->iface) continue;
+            if (!s->iface || (s->count == 0 && s->queued == s->reported)) continue;
+            s->reported = s->queued;
             fprintf(stderr, "[DSOUND] stream %08X: %d queued, consumed %llu of %llu, "
                     "%llu skipped unsent, %s; "
                     "calls: process %lu status %lu pause %lu flush %lu, %lu packets done\n",
@@ -653,9 +764,7 @@ void hle_dsound_stream_tick(uint64_t now)
  * object that no longer exists. */
 static void forget_stream(Stream *s)
 {
-    recomp_audio_output_reset_voice(slot_of(s));
-    recomp_audio_output_clear_mix(slot_of(s));
-    recomp_audio_output_route(slot_of(s), 0u);
+    release_voice(s);
     memset(s, 0, sizeof *s);
 }
 
@@ -710,6 +819,11 @@ static void record_stream(uint32_t iface, uint32_t desc)
                 idle = c;
         }
         if (idle) {
+            static int evicted;
+            if (!evicted++)
+                fprintf(stderr, "[DSOUND] more than %d streams: forgetting the longest idle "
+                        "one (%08X) for a new one; its sound is lost if the title uses it "
+                        "again\n", MAX_STREAMS, idle->iface);
             forget_stream(idle);
             s = idle;
         }
@@ -723,6 +837,12 @@ static void record_stream(uint32_t iface, uint32_t desc)
     hle_dsound_service_start();
     stream_trace("Create", iface, max_packets, (uint32_t)again);
     memset(s, 0, sizeof *s);
+    {
+        int n = 1;
+        for (i = 0; i < MAX_STREAMS; i++)
+            if (g_streams[i].iface && &g_streams[i] != s) n++;
+        if (n > g_streams_peak) g_streams_peak = n;
+    }
     s->iface       = iface;
     s->active_ms   = now_ms();
     s->tag         = HLE_MEM32(wfx) & 0xFFFFu;
@@ -739,8 +859,10 @@ static void record_stream(uint32_t iface, uint32_t desc)
                 s->rate >= 1000u && s->rate <= 200000u &&
                 ((s->tag == TAG_PCM && (s->bits == 8u || s->bits == 16u)) ||
                  (s->tag == TAG_ADPCM && s->bits == 4u));
-    if (said < 24) {
+    if (said < 24 || stream_log()) {
         said++;
+        if (stream_log())
+            fprintf(stderr, "[DSOUND] %llu ms ", (unsigned long long)now_ms());
         fprintf(stderr, "[DSOUND] stream %08X%s: tag %04X %u ch %u Hz %u bit align %u, "
                 "%u packets, callback %08X %s\n", iface, again ? " (created again)" : "",
                 s->tag, s->channels, s->rate, s->bits, s->align, s->max_packets, callback,
@@ -752,6 +874,7 @@ static void record_stream(uint32_t iface, uint32_t desc)
 HLE_ORIGINAL(DirectSoundCreateStream);
 HLE_ORIGINAL(CDirectSound_CreateSoundStream);
 HLE_ORIGINAL(CDirectSoundStream_SetVolume);
+HLE_ORIGINAL(CDirectSoundStream_Release);
 
 /* Set by the inner CDirectSound_CreateSoundStream, so the outer
  * DirectSoundCreateStream around it does not record the same creation a
@@ -790,6 +913,16 @@ HLE_EXPORT(CDirectSound_CreateSoundStream)
     if (!hle_original_CDirectSound_CreateSoundStream)
         HLE_RETURN(HR_E_FAIL);
     HLE_CALL_ORIGINAL(CDirectSound_CreateSoundStream);
+    if ((int32_t)g_eax < 0) {
+        /* The title's own creation refused it: the sound it was for is lost. */
+        static unsigned long refused;
+        unsigned long n = ++refused;
+        while (n >= 10 && n % 10 == 0) n /= 10;
+        if (n == 1)
+            fprintf(stderr, "[DSOUND] CreateSoundStream failed 0x%08X, flags 0x%08X "
+                    "(%lu so far)\n", g_eax,
+                    desc && guest_readable(desc, 4u) ? HLE_MEM32(desc) : 0u, refused);
+    }
     if ((int32_t)g_eax >= 0 && out && guest_readable(out, 4u)) {
         lock();
         record_stream(HLE_MEM32(out), desc);
@@ -810,7 +943,7 @@ HLE_EXPORT(CDirectSoundStream_Process)
     uint64_t now = now_ms();
     Stream *s;
     Packet *p;
-    static int said;
+    static int said, said_unknown;
 
     stream_trace("Process", object,
                  packet && guest_readable(packet, 8u) ? HLE_MEM32(packet + 4u) : 0u, 0u);
@@ -821,8 +954,12 @@ HLE_EXPORT(CDirectSoundStream_Process)
     s = find_by_object(object);
     if (!s) {
         unlock();
-        if (said++ < 4)
-            fprintf(stderr, "[DSOUND] stream Process on unknown object %08X\n", object);
+        /* Its own count: sharing the packet log's, which is spent on the
+         * first four packets, this never printed, and Black Arrow's packets
+         * for streams the table had dropped vanished without a word. */
+        if (said_unknown++ < 4)
+            fprintf(stderr, "[DSOUND] stream Process on unknown object %08X: the packet "
+                    "is never played\n", object);
         HLE_RETURN(DS_OK);
     }
     complete_passed(s, now);
@@ -845,10 +982,14 @@ HLE_EXPORT(CDirectSoundStream_Process)
     s->count++;
     if (p->status_va && guest_readable(p->status_va, 4u))
         HLE_MEM32(p->status_va) = XMP_STATUS_PENDING;
-    if (said < 4) {
+    if (said < 4 || stream_log()) {
         said++;
-        fprintf(stderr, "[DSOUND] stream %08X: packet %u bytes at %08X (%d queued)\n",
-                s->iface, p->size, p->data, s->count);
+        if (stream_log())
+            fprintf(stderr, "[DSOUND] %llu ms ", (unsigned long long)now);
+        fprintf(stderr, "[DSOUND] stream %08X: packet %u bytes at %08X (%d queued), "
+                "%u ch %u Hz, volume %d, voice %d\n",
+                s->iface, p->size, p->data, s->count, s->channels, s->rate, s->volume,
+                s->voice - 1);
     }
     pump(s, now);
     unlock();
@@ -876,7 +1017,7 @@ static void flush_stream(uint32_t object)
         s->consumed_base = s->queued;
         s->resumed_ms = 0u;
         s->sent = s->queued;
-        recomp_audio_output_reset_voice(slot_of(s));
+        reset_voice(s);
         /* The next voice starts here. Left at its old value, the first play
          * position read after the next packet would put the clock back by
          * everything played before the flush, unless a resume (refeed)
@@ -987,7 +1128,7 @@ HLE_EXPORT(CDirectSoundStream_Pause)
                 s->consumed_base = consumed(s, now);
                 s->paused = 1;
                 s->resumed_ms = 0u;
-                recomp_audio_output_reset_voice(slot_of(s));
+                reset_voice(s);
                 s->sent = s->consumed_base;
             }
         }
@@ -1026,6 +1167,37 @@ HLE_EXPORT(CDirectSoundStream_GetStatus__r2)
     HLE_MEM32(out) = status;
     stream_trace("GetStatus", HLE_ARG(0), 0u, status);
     HLE_RETURN(DS_OK);
+}
+
+/* ULONG CDirectSoundStream::Release(this)
+ * The title's own Release runs; when it was the last reference the stream is
+ * gone, and so is its slot here, with its host voice. Without this a released
+ * stream held its slot until the table filled and the longest idle one was
+ * forgotten -- and the longest idle one is as likely to be a live stream
+ * waiting for its next sound: Black Arrow's guns. Pending packets are dropped
+ * uncompleted, as at a new creation in its place. */
+HLE_EXPORT(CDirectSoundStream_Release)
+{
+    static unsigned long released;
+    uint32_t object = HLE_ARG(0);
+
+    if (!hle_original_CDirectSoundStream_Release)
+        HLE_RETURN(0u);
+    HLE_CALL_ORIGINAL(CDirectSoundStream_Release);
+    if (g_eax == 0u && object) {
+        Stream *s;
+        lock();
+        s = find_by_object(object);
+        if (!s)
+            s = find_by_iface(object);
+        if (s) {
+            forget_stream(s);
+            if (!released++)
+                fprintf(stderr, "[DSOUND] CDirectSoundStream_Release: a released stream "
+                        "gives its slot back\n");
+        }
+        unlock();
+    }
 }
 
 /* HRESULT CDirectSoundStream::SetVolume(this, LONG lVolume), hundredths of a
