@@ -4682,6 +4682,36 @@ void xbox_FreeThreadStack(uint32_t stack_top)
         g_thread_stacks_used--;
 }
 
+/* One lock for both allocators below, the contiguous arena and the heap.
+ *
+ * The guest lock does not cover them: they are reached through kernel
+ * bridges, a kernel call can drop the guest lock, and host threads (the ones
+ * that run ISRs and DPCs, device models) call them as well. A bump pointer
+ * read by two threads at once hands both the same address. Max Payne's
+ * start-up did that on macOS: the main thread's 1 MB NtAllocateVirtualMemory
+ * reservation and two small blocks allocated while the vblank clock started
+ * (148 and 512 bytes, as heap #1 and #2) all came back at 0x00F80000, the
+ * zero-fill of the reservation wiped the small ones, and the title threw and
+ * faulted a few calls later on a path read back as "D:\\language.tx".
+ *
+ * A spin lock rather than a CRITICAL_SECTION: it needs no initialisation, so
+ * an allocation before xbox_MemoryLayoutInit is covered too, and every holder
+ * is short -- the longest is the zero-fill of the block it hands out. None of
+ * the functions it guards calls another, so it need not be recursive. */
+static volatile LONG g_alloc_lock;
+
+static void alloc_lock(void)
+{
+    unsigned spins = 0;
+    while (InterlockedCompareExchange(&g_alloc_lock, 1, 0) != 0)
+        Sleep(++spins < 64 ? 0 : 1);
+}
+
+static void alloc_unlock(void)
+{
+    InterlockedExchange(&g_alloc_lock, 0);
+}
+
 /* Bump allocator over the contiguous window mapped at XBOX_CONTIG_BASE.
  *
  * MmAllocateContiguousMemory hands back physical memory, and on Xbox physical
@@ -4759,7 +4789,7 @@ static void contig_remove(int i)
     g_contig_block_count--;
 }
 
-uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
+static uint32_t xbox_ContiguousAlloc_unlocked(uint32_t size, uint32_t alignment)
 {
     uint32_t result, span;
     int i;
@@ -4825,10 +4855,20 @@ uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
     return result;
 }
 
+uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment)
+{
+    uint32_t r;
+
+    alloc_lock();
+    r = xbox_ContiguousAlloc_unlocked(size, alignment);
+    alloc_unlock();
+    return r;
+}
+
 /* MmFreeContiguousMemory. Returns 0 when `xbox_va` is not the start of a live
  * block this arena handed out (a pinned MmAllocateContiguousMemoryEx address,
  * say), which the caller may then treat as not contiguous at all. */
-int xbox_ContiguousFree(uint32_t xbox_va)
+static int xbox_ContiguousFree_unlocked(uint32_t xbox_va)
 {
     int i;
 
@@ -4866,6 +4906,16 @@ int xbox_ContiguousFree(uint32_t xbox_va)
         contig_remove(i);
     }
     return 1;
+}
+
+int xbox_ContiguousFree(uint32_t xbox_va)
+{
+    int r;
+
+    alloc_lock();
+    r = xbox_ContiguousFree_unlocked(xbox_va);
+    alloc_unlock();
+    return r;
 }
 
 /* Pinned physical ranges.
@@ -4906,7 +4956,7 @@ static int contig_take_free(int i, uint32_t lo, uint32_t hi)
     return i + 1;
 }
 
-void xbox_ContiguousPin(uint32_t xbox_va, uint32_t size)
+static void xbox_ContiguousPin_unlocked(uint32_t xbox_va, uint32_t size)
 {
     uint32_t lo = xbox_va & ~(XBOX_CONTIG_PAGE - 1u);
     uint32_t hi = contig_round(xbox_va + (size ? size : 1u));
@@ -4954,6 +5004,13 @@ void xbox_ContiguousPin(uint32_t xbox_va, uint32_t size)
     fflush(stderr);
 }
 
+void xbox_ContiguousPin(uint32_t xbox_va, uint32_t size)
+{
+    alloc_lock();
+    xbox_ContiguousPin_unlocked(xbox_va, size);
+    alloc_unlock();
+}
+
 /* Walk the contiguous blocks this runtime handed out.
  *
  * Exposed because the DirectSound DSP doorbell lives inside one of them and
@@ -4965,7 +5022,7 @@ void xbox_ContiguousPin(uint32_t xbox_va, uint32_t size)
  * Returns 0 when `index` is past the end, so a caller can just count up. A
  * freed block reads as size 0.
  */
-int xbox_ContiguousBlock(int index, uint32_t *addr, uint32_t *size)
+static int xbox_ContiguousBlock_unlocked(int index, uint32_t *addr, uint32_t *size)
 {
     if (index < 0 || index >= g_contig_block_count)
         return 0;
@@ -4974,14 +5031,34 @@ int xbox_ContiguousBlock(int index, uint32_t *addr, uint32_t *size)
     return 1;
 }
 
+int xbox_ContiguousBlock(int index, uint32_t *addr, uint32_t *size)
+{
+    int r;
+
+    alloc_lock();
+    r = xbox_ContiguousBlock_unlocked(index, addr, size);
+    alloc_unlock();
+    return r;
+}
+
 /* How much of the window has been handed out.
  *
  * Lets a caller holding a physical address decide whether it names contiguous
  * memory this runtime allocated. The pushbuffer executor needs exactly that:
  * a surface offset is physical, and only the window makes it addressable. */
-uint32_t xbox_ContiguousAllocatedBytes(void)
+static uint32_t xbox_ContiguousAllocatedBytes_unlocked(void)
 {
     return g_contig_next - XBOX_CONTIG_BASE;
+}
+
+uint32_t xbox_ContiguousAllocatedBytes(void)
+{
+    uint32_t r;
+
+    alloc_lock();
+    r = xbox_ContiguousAllocatedBytes_unlocked();
+    alloc_unlock();
+    return r;
 }
 
 /* One bit per 4 KB physical page of the 64 MB window: set when the last
@@ -5020,7 +5097,7 @@ uint32_t xbox_PhysToGuest(uint32_t phys)
 }
 
 
-uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
+static uint32_t xbox_HeapAlloc_unlocked(uint32_t size, uint32_t alignment)
 {
     uint32_t result;
 
@@ -5204,6 +5281,16 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
     return result;
 }
 
+uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
+{
+    uint32_t r;
+
+    alloc_lock();
+    r = xbox_HeapAlloc_unlocked(size, alignment);
+    alloc_unlock();
+    return r;
+}
+
 /* How big is the block at this guest address?
  *
  * MmQueryAllocationSize and ExQueryPoolBlockSize both ask this, and both used
@@ -5217,7 +5304,7 @@ uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
  * forward is asking about the block that contains it. Returns 0 for an address
  * this heap never handed out, which is what "not one of mine" has to look like.
  */
-uint32_t xbox_HeapBlockSize(uint32_t xbox_va)
+static uint32_t xbox_HeapBlockSize_unlocked(uint32_t xbox_va)
 {
     int i;
 
@@ -5244,7 +5331,17 @@ uint32_t xbox_HeapBlockSize(uint32_t xbox_va)
     return 0;
 }
 
-void xbox_HeapFree(uint32_t xbox_va)
+uint32_t xbox_HeapBlockSize(uint32_t xbox_va)
+{
+    uint32_t r;
+
+    alloc_lock();
+    r = xbox_HeapBlockSize_unlocked(xbox_va);
+    alloc_unlock();
+    return r;
+}
+
+static void xbox_HeapFree_unlocked(uint32_t xbox_va)
 {
     static int frees = 0, matched = 0;
 
@@ -5286,6 +5383,13 @@ void xbox_HeapFree(uint32_t xbox_va)
         }
         return;
     }
+}
+
+void xbox_HeapFree(uint32_t xbox_va)
+{
+    alloc_lock();
+    xbox_HeapFree_unlocked(xbox_va);
+    alloc_unlock();
 }
 
 HANDLE xbox_GetMappingHandle(void)
