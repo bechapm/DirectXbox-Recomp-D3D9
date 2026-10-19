@@ -9337,16 +9337,17 @@ static void bridge_NtCreateIoCompletion(void)
 /* --- NtCreateTimer (ordinal 194, 3 args = 12 bytes)
  * NTSTATUS NtCreateTimer(PHANDLE TimerHandle, POBJECT_ATTRIBUTES
  *                        ObjectAttributes, TIMER_TYPE TimerType);
- * Creates a manual-reset waitable timer and hands its token out through the
- * handle table, matching the NtCreateEvent/NtCreateMutant pattern. */
+ * Creates a waitable timer and hands its token out through the handle table,
+ * matching the NtCreateEvent/NtCreateMutant pattern. TimerType 0 is a
+ * NotificationTimer (stays signalled, CreateWaitableTimer's bManualReset),
+ * 1 a SynchronizationTimer (releases one waiter). */
 static void bridge_NtCreateTimer(void)
 {
     HANDLE h;
 
     (void)STACK_ARG(1);
-    (void)STACK_ARG(2);
 
-    h = CreateWaitableTimerW(NULL, TRUE, NULL);
+    h = CreateWaitableTimerW(NULL, STACK_ARG(2) == 0 ? TRUE : FALSE, NULL);
     if (!h) {
         fprintf(stderr, "  [KERNEL] NtCreateTimer: CreateWaitableTimerW failed (error %u)\n",
                 GetLastError());
@@ -9509,18 +9510,56 @@ static void bridge_NtSetIoCompletion(void)
     g_eax = 0;
 }
 
-/* --- NtSetTimerEx (ordinal 229, 8 args = 32 bytes) --- */
+/* --- NtSetTimerEx (ordinal 229, 8 args = 32 bytes)
+ * NTSTATUS NtSetTimerEx(HANDLE TimerHandle, PLARGE_INTEGER DueTime,
+ *                       PTIMER_APC_ROUTINE TimerApcRoutine, KPROCESSOR_MODE
+ *                       ApcMode, PVOID TimerContext, BOOLEAN ResumeTimer,
+ *                       LONG Period, PBOOLEAN PreviousState);
+ * XAPI's SetWaitableTimer. Arms the host timer NtCreateTimer made: DueTime
+ * negative is relative in 100 ns units, positive an absolute system time;
+ * Period in milliseconds re-arms it.
+ *
+ * This returned success and armed nothing until Oct 2026, so a timer was
+ * never signalled. Battlefield 2: Modern Combat drives its own clock from a
+ * thread that waits on one, re-arming it each time: its EA logo movie,
+ * paced by that clock, stopped on its first frame and the game with it.
+ *
+ * A completion routine (TimerApcRoutine) would be a guest APC on the thread
+ * that set the timer; none is queued, and one is reported once. */
 static void bridge_NtSetTimerEx(void)
 {
-    (void)STACK_ARG(0);
-    (void)STACK_ARG(1);
-    (void)STACK_ARG(2);
+    HANDLE h = bridge_resolve_handle(STACK_ARG(0));
+    uint32_t due_ptr = STACK_ARG(1);
+    uint32_t apc = STACK_ARG(2);
+    LONG period = (LONG)STACK_ARG(6);
+    uint32_t prev_ptr = STACK_ARG(7);
+    LARGE_INTEGER due;
+
     (void)STACK_ARG(3);
     (void)STACK_ARG(4);
     (void)STACK_ARG(5);
-    (void)STACK_ARG(6);
-    (void)STACK_ARG(7);
-    g_eax = 0;
+
+    if (!h || !due_ptr) {
+        g_eax = 0xC0000008u;  /* STATUS_INVALID_HANDLE */
+        return;
+    }
+    if (apc) {
+        static int told;
+        if (!told++)
+            fprintf(stderr, "  [KERNEL] NtSetTimerEx: completion routine 0x%08X "
+                            "not run (timer APCs are not implemented)\n", apc);
+    }
+    due.LowPart  = BRIDGE_MEM32(due_ptr);
+    due.HighPart = (LONG)BRIDGE_MEM32(due_ptr + 4);
+    if (prev_ptr)
+        BRIDGE_MEM8(prev_ptr) = 0;   /* the state before is not tracked */
+    if (!SetWaitableTimer(h, &due, period > 0 ? period : 0, NULL, NULL, FALSE)) {
+        fprintf(stderr, "  [KERNEL] NtSetTimerEx: SetWaitableTimer failed (error %u)\n",
+                (unsigned)GetLastError());
+        g_eax = 0xC0000001u;  /* STATUS_UNSUCCESSFUL */
+        return;
+    }
+    g_eax = 0;  /* STATUS_SUCCESS */
 }
 
 /* --- NtSignalAndWaitForSingleObjectEx (ordinal 230, 5 args = 20 bytes) --- */

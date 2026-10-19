@@ -14,6 +14,7 @@
 #include "d3d8_display.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* ================================================================
  * Cached state objects
@@ -184,6 +185,29 @@ static void update_depth_stencil_state(const DWORD *rs)
         memcpy(&g_last_ds_desc, &dsd, sizeof(dsd));
 }
 
+/* Whether depth is clamped rather than clipped (RECOMP_D3D8_DEPTH_CLAMP,
+ * on unless 0).
+ *
+ * An Xbox vertex program writes screen-space depth, in the depth buffer's
+ * own units (0 to 0xFFFFFF for D24S8). The host divides by that scale and,
+ * clipping, discards anything outside 0..1. Battlefield 2: Modern Combat's
+ * multiplayer menus put every panel and every line of text at z = -0.1, a
+ * tenth of a depth unit in front of the near plane. The console shows them,
+ * so it does not discard depth that close to the range (the NV2A has a
+ * z-clamp mode; which one the XDK sets is not checked here). The host
+ * clipped every one and the menus were black. Clamping keeps them, at
+ * depth 0. */
+static int depth_clamp(void)
+{
+    static int on = -1;
+
+    if (on < 0) {
+        const char *e = getenv("RECOMP_D3D8_DEPTH_CLAMP");
+        on = !(e && e[0] == '0');
+    }
+    return on;
+}
+
 static void update_rasterizer_state(const DWORD *rs, BOOL scissor)
 {
     DWORD hash = hash_raster_states(rs, scissor);
@@ -215,7 +239,7 @@ static void update_rasterizer_state(const DWORD *rs, BOOL scissor)
     }
 
     rd.front_ccw = 0;
-    rd.depth_clip = 1;
+    rd.depth_clip = depth_clamp() ? 0 : 1;
     rd.scissor = scissor ? 1 : 0;
     rd.multisample = 0;
     rd.antialiased_lines = 0;

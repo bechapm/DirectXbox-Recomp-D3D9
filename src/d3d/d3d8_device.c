@@ -266,6 +266,12 @@ void d3d8_NoteDepthWrite(const DWORD *rs)
     if (!rs || rs[D3DRS_ZENABLE] != 2u /* D3DZB_USEW */ || !rs[D3DRS_ZWRITEENABLE] ||
         !g_cur_ds || g_cur_ds != g_auto_ds)
         return;
+    /* A program's W-buffered draw writes W itself (d3d8_vsh_wbuffer_on), so
+     * there is no Z to turn back into W: the copy takes the depth as it is. */
+    if (d3d8_shaders_draw_is_program() && d3d8_vsh_wbuffer_on()) {
+        g_wbuffer.valid = 0;
+        return;
+    }
     p = &g_device_state.transforms[D3DTS_PROJECTION];
     g_wbuffer.valid = 1;
     g_wbuffer.m33 = p->_33;

@@ -109,7 +109,8 @@ extern uint32_t g_xbox_code_hi;
 
 /*
  * Black Arrow is Rainbow Six 3's engine rebuilt on XDK 5849, and everything
- * in this file is carried over from titles/rs3 with the addresses moved.
+ * in this file is carried over from Rainbow Six 3 (now its own repository,
+ * Rainbow-six-three-recomp) with the addresses moved.
  *
  * The title's allocator is Unreal's pooled FMalloc: it takes 64 KB pools from
  * NtAllocateVirtualMemory and finds a block's pool from ptr >> 16, which is

@@ -81,7 +81,7 @@ DEFAULT_TITLES = ["timesplitters2", "futureperfect", "outrun2", "black",
 # toolchains are not part of a worktree checkout, so they are linked in from
 # this checkout.
 THIRD_PARTY = ["SDL", "volk", "Vulkan-Headers", "VulkanMemoryAllocator",
-               "XbSymbolDatabase", "dxc", "ffmpeg"]
+               "XbSymbolDatabase", "dxc", "ffmpeg", "libsamplerate", "miniupnp"]
 
 # Which paths force which pipeline stage. "parse" reruns everything.
 STAGE_PATHS = {

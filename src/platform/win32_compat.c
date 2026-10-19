@@ -262,6 +262,10 @@ typedef struct w32_object {
     /* event */
     int             signaled;
     int             manual_reset;
+    /* PulseEvent: a waiter that began before pulse_gen moved is released,
+     * pulse_left of them (all for a manual-reset event, one otherwise). */
+    unsigned        pulse_gen;
+    int             pulse_left;
 
     /* semaphore */
     long            sem_count;
@@ -487,11 +491,17 @@ static DWORD wait_single_until(w32_object *o, const struct timespec *deadline)
 
     pthread_mutex_lock(&o->lock);
     DWORD result = WAIT_OBJECT_0;
+    unsigned pulse_gen = o->pulse_gen;
+    int pulsed = 0;
 
     for (;;) {
         int ready = 0;
         switch (o->kind) {
-        case K_EVENT:  ready = o->signaled; break;
+        case K_EVENT:
+            ready = o->signaled;
+            if (!ready && o->pulse_gen != pulse_gen && o->pulse_left > 0)
+                ready = pulsed = 1;
+            break;
         case K_THREAD: ready = o->exited;   break;
         case K_SEM:    ready = (o->sem_count > 0); break;
         case K_MUTEX:
@@ -508,7 +518,12 @@ static DWORD wait_single_until(w32_object *o, const struct timespec *deadline)
 
     if (result == WAIT_OBJECT_0) {
         switch (o->kind) {
-        case K_EVENT: if (!o->manual_reset) o->signaled = 0; break;
+        case K_EVENT:
+            if (pulsed)
+                o->pulse_left--;
+            else if (!o->manual_reset)
+                o->signaled = 0;
+            break;
         case K_SEM:   o->sem_count--; break;
         case K_MUTEX: o->mtx_owner = GetCurrentThreadId(); o->mtx_recursion++; break;
         default: break;
@@ -549,6 +564,44 @@ DWORD WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable)
     return WaitForSingleObject(h, ms);
 }
 
+/* One poll of a multi-object wait: whether h can be taken now, or, for an
+ * event, whether it was pulsed since the wait began (gen, its pulse_gen
+ * then) -- a zero-timeout look never sees a pulse otherwise. */
+static int wait_poll(HANDLE h, unsigned gen)
+{
+    w32_object *o = (w32_object *)h;
+    int got = 0;
+
+    if (!h || h == PSEUDO_CURRENT_THREAD || h == PSEUDO_CURRENT_PROCESS ||
+        o->kind != K_EVENT)
+        return WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
+    pthread_mutex_lock(&o->lock);
+    if (o->signaled) {
+        if (!o->manual_reset)
+            o->signaled = 0;
+        got = 1;
+    } else if (o->pulse_gen != gen && o->pulse_left > 0) {
+        o->pulse_left--;
+        got = 1;
+    }
+    pthread_mutex_unlock(&o->lock);
+    return got;
+}
+
+static unsigned wait_pulse_gen(HANDLE h)
+{
+    w32_object *o = (w32_object *)h;
+    unsigned gen;
+
+    if (!h || h == PSEUDO_CURRENT_THREAD || h == PSEUDO_CURRENT_PROCESS ||
+        o->kind != K_EVENT)
+        return 0;
+    pthread_mutex_lock(&o->lock);
+    gen = o->pulse_gen;
+    pthread_mutex_unlock(&o->lock);
+    return gen;
+}
+
 /*
  * WaitForMultipleObjects: polling implementation. Adequate for the light
  * multi-object waits the Xbox kernel HLE issues; not a high-throughput path.
@@ -562,8 +615,13 @@ DWORD WaitForMultipleObjectsEx(DWORD count, const HANDLE *handles, BOOL waitAll,
                                DWORD ms, BOOL alertable)
 {
     struct timespec ts;
+    unsigned gen[64];
     int timed = (ms != INFINITE);
     if (timed) deadline_from_ms(ms, &ts);
+    if (count > 64)
+        count = 64;                              /* MAXIMUM_WAIT_OBJECTS */
+    for (DWORD i = 0; i < count; i++)
+        gen[i] = wait_pulse_gen(handles[i]);
 
     for (;;) {
         if (alertable && drain_apcs() > 0)
@@ -572,11 +630,11 @@ DWORD WaitForMultipleObjectsEx(DWORD count, const HANDLE *handles, BOOL waitAll,
         if (waitAll) {
             DWORD got = 0;
             for (DWORD i = 0; i < count; i++)
-                if (WaitForSingleObject(handles[i], 0) == WAIT_OBJECT_0) got++;
+                if (wait_poll(handles[i], gen[i])) got++;
             if (got == count) return WAIT_OBJECT_0;
         } else {
             for (DWORD i = 0; i < count; i++)
-                if (WaitForSingleObject(handles[i], 0) == WAIT_OBJECT_0)
+                if (wait_poll(handles[i], gen[i]))
                     return WAIT_OBJECT_0 + i;
         }
 
@@ -609,21 +667,173 @@ HANDLE CreateEventW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, BOOL initialStat
     return CreateEventA(sa, manualReset, initialState, NULL);
 }
 
-/* A waitable timer that is never armed is never signalled, which is exactly an
- * event nobody sets. That is the whole of what the kernel bridge needs: it
- * creates one for NtCreateTimer and cancels it for NtCancelTimer, and nothing
- * calls SetWaitableTimer. */
+/* Waitable timers.
+ *
+ * A timer is an event (manual reset for a notification timer, auto reset for
+ * a synchronization timer) that one service thread sets when its due time
+ * passes, so every wait function already works on it. Arming it resets it,
+ * as on Windows; a period re-arms it from the previous due time.
+ *
+ * An armed timer holds a reference on its object, so a handle closed while
+ * the timer is armed cannot be set after it is freed: the service drops the
+ * timer instead once it holds the last reference.
+ *
+ * No completion routine: a timer APC would have to run on the thread that set
+ * the timer, in an alertable wait, and nothing here asks for one. One passed
+ * is reported once and ignored. */
+#define W32_TIMERS_MAX 64
+
+typedef struct {
+    w32_object *o;
+    ULONGLONG   due_ns;      /* CLOCK_MONOTONIC */
+    LONG        period_ms;
+} w32_timer;
+
+static pthread_mutex_t g_timer_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_timer_cond = PTHREAD_COND_INITIALIZER;
+static w32_timer       g_timers[W32_TIMERS_MAX];
+static int             g_timer_count;
+static int             g_timer_thread_started;
+
+static ULONGLONG timer_now_ns(clockid_t clock)
+{
+    struct timespec ts;
+    clock_gettime(clock, &ts);
+    return (ULONGLONG)ts.tv_sec * 1000000000ULL + (ULONGLONG)ts.tv_nsec;
+}
+
+/* Drops slot i, under g_timer_lock; the caller releases the object after. */
+static w32_object *timer_remove(int i)
+{
+    w32_object *o = g_timers[i].o;
+    g_timers[i] = g_timers[--g_timer_count];
+    return o;
+}
+
+static void *timer_service(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&g_timer_lock);
+    for (;;) {
+        ULONGLONG now = timer_now_ns(CLOCK_MONOTONIC), next = 0;
+        int i = 0;
+
+        while (i < g_timer_count) {
+            w32_timer *t = &g_timers[i];
+
+            if (t->o->refcount <= 1) {           /* closed while armed */
+                w32_object *o = timer_remove(i);
+                obj_release(o);
+                continue;
+            }
+            if (t->due_ns <= now) {
+                SetEvent((HANDLE)t->o);
+                if (t->period_ms > 0) {
+                    t->due_ns += (ULONGLONG)t->period_ms * 1000000ULL;
+                    if (t->due_ns <= now)        /* far behind: no burst */
+                        t->due_ns = now + (ULONGLONG)t->period_ms * 1000000ULL;
+                } else {
+                    w32_object *o = timer_remove(i);
+                    obj_release(o);
+                    continue;
+                }
+            }
+            if (!next || t->due_ns < next)
+                next = t->due_ns;
+            i++;
+        }
+        if (!next) {
+            pthread_cond_wait(&g_timer_cond, &g_timer_lock);
+        } else {
+            /* macOS has no monotonic condition variables: wait the same
+             * length against the realtime clock. */
+            ULONGLONG wake = timer_now_ns(CLOCK_REALTIME) + (next - now);
+            struct timespec ts;
+            ts.tv_sec  = (time_t)(wake / 1000000000ULL);
+            ts.tv_nsec = (long)(wake % 1000000000ULL);
+            pthread_cond_timedwait(&g_timer_cond, &g_timer_lock, &ts);
+        }
+    }
+    return NULL;
+}
+
 HANDLE CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, LPCWSTR name)
 {
     (void)name;
     return CreateEventA(sa, manualReset, FALSE, NULL);
 }
 
+BOOL SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period,
+                      PTIMERAPCROUTINE completion, LPVOID arg, BOOL resume)
+{
+    w32_object *o = (w32_object *)h;
+    ULONGLONG now = timer_now_ns(CLOCK_MONOTONIC), due_ns;
+    int i;
+
+    (void)arg; (void)resume;
+    if (!o || o->kind != K_EVENT || !due)
+        return FALSE;
+    if (completion) {
+        static int told;
+        if (!told++)
+            fprintf(stderr, "[win32_compat] SetWaitableTimer: completion routine %p "
+                    "ignored (not implemented)\n", (void *)completion);
+    }
+    if (due->QuadPart < 0) {                     /* relative, 100 ns units */
+        due_ns = now + (ULONGLONG)(-due->QuadPart) * 100ULL;
+    } else {                                     /* absolute FILETIME, UTC */
+        ULONGLONG now_ft = 116444736000000000ULL     /* 1601 to 1970 */
+                         + timer_now_ns(CLOCK_REALTIME) / 100ULL;
+        ULONGLONG at = (ULONGLONG)due->QuadPart;
+        due_ns = now + (at > now_ft ? (at - now_ft) * 100ULL : 0);
+    }
+
+    ResetEvent(h);                               /* arming resets it */
+    pthread_mutex_lock(&g_timer_lock);
+    for (i = 0; i < g_timer_count && g_timers[i].o != o; i++)
+        ;
+    if (i == g_timer_count) {
+        if (g_timer_count == W32_TIMERS_MAX) {
+            pthread_mutex_unlock(&g_timer_lock);
+            fprintf(stderr, "[win32_compat] SetWaitableTimer: more than %d timers "
+                    "armed at once\n", W32_TIMERS_MAX);
+            return FALSE;
+        }
+        InterlockedIncrement(&o->refcount);
+        g_timers[g_timer_count++].o = o;
+    }
+    g_timers[i].due_ns    = due_ns;
+    g_timers[i].period_ms = period > 0 ? period : 0;
+    if (!g_timer_thread_started) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, timer_service, NULL) == 0) {
+            pthread_detach(t);
+            g_timer_thread_started = 1;
+        }
+    }
+    pthread_cond_signal(&g_timer_cond);
+    pthread_mutex_unlock(&g_timer_lock);
+    return TRUE;
+}
+
 /* On Windows, cancelling a timer leaves its signal state alone. */
 BOOL CancelWaitableTimer(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
-    return (o && o->kind == K_EVENT) ? TRUE : FALSE;
+    w32_object *o = (w32_object *)h, *drop = NULL;
+    int i;
+
+    if (!o || o->kind != K_EVENT)
+        return FALSE;
+    pthread_mutex_lock(&g_timer_lock);
+    for (i = 0; i < g_timer_count; i++)
+        if (g_timers[i].o == o) {
+            drop = timer_remove(i);
+            break;
+        }
+    pthread_mutex_unlock(&g_timer_lock);
+    if (drop)
+        obj_release(drop);
+    return TRUE;
 }
 
 BOOL SetEvent(HANDLE h)
@@ -647,14 +857,24 @@ BOOL ResetEvent(HANDLE h)
     return TRUE;
 }
 
+/* Releases the threads waiting at this moment (one, for an auto-reset
+ * event) and leaves the event clear.
+ *
+ * This set the event, broadcast and cleared it again before unlocking, so a
+ * woken waiter, which must take the lock to look, always found it clear and
+ * slept on: no pulse ever released anyone. Battlefield 2: Modern Combat
+ * pulses an event from its vblank callback to step a movie thread, and its
+ * front end waited forever on a fade that thread never stepped. A pulse now
+ * moves pulse_gen, and a waiter that began before it is released. */
 BOOL PulseEvent(HANDLE h)
 {
     w32_object *o = (w32_object *)h;
     if (!o || o->kind != K_EVENT) return FALSE;
     pthread_mutex_lock(&o->lock);
-    o->signaled = 1;
+    o->signaled   = 0;
+    o->pulse_gen++;
+    o->pulse_left = o->manual_reset ? 0x7FFFFFFF : 1;
     pthread_cond_broadcast(&o->cond);
-    o->signaled = 0;
     pthread_mutex_unlock(&o->lock);
     return TRUE;
 }

@@ -49,6 +49,7 @@ static int g_no_compiler;
 #endif
 DWORD                d3d8_GetCurrentFVF(void)   { return 0; }
 BOOL                 d3d8_target_is_screen(void) { return TRUE; }   /* camera zoom: d3d8_device.c */
+const DWORD         *d3d8_GetRenderStates(void) { return NULL; }   /* W-buffer: d3d8_device.c */
 
 static int g_checks;
 static int g_failures;

@@ -133,11 +133,12 @@ HANDLE CreateEventA(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, BOOL initialStat
 HANDLE CreateEventW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, BOOL initialState, LPCWSTR name);
 BOOL   SetEvent(HANDLE h);
 
-/* Waitable timers, as far as the kernel bridge uses them: created for
- * NtCreateTimer and cancelled for NtCancelTimer, never armed. There is
- * deliberately no SetWaitableTimer, so a future caller fails to build here
- * instead of getting a timer that silently never fires. */
+/* Waitable timers, for NtCreateTimer, NtSetTimerEx and NtCancelTimer: an
+ * event a service thread sets at the due time. No completion routine. */
+typedef VOID (WINAPI *PTIMERAPCROUTINE)(LPVOID arg, DWORD low, DWORD high);
 HANDLE CreateWaitableTimerW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, LPCWSTR name);
+BOOL   SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period,
+                        PTIMERAPCROUTINE completion, LPVOID arg, BOOL resume);
 BOOL   CancelWaitableTimer(HANDLE h);
 BOOL   ResetEvent(HANDLE h);
 BOOL   PulseEvent(HANDLE h);

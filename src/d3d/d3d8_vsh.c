@@ -957,11 +957,20 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
      * render-target pixels with Z scaled by the depth buffer. Undo it to clip
      * space (Cxbx-Reloaded, CxbxVertexShaderTemplate.hlsl), when the caller
      * has said what the screen is. */
+    /* A W-buffered draw (enable.y, D3DZB_USEW) keeps W, not Z: the NV2A
+     * stores the clip w in the depth buffer's own units, so the depth is w
+     * over the depth scale -- eye distance, linear, where Z is hyperbolic.
+     * Exact at the vertices; across a triangle the host interpolates it
+     * linearly in screen space, where w itself is not. See
+     * d3d8_vsh_wbuffer_on. */
     sb_append(&sb,
         "    /* Undo the Xbox screen-space transform */\n"
         "    if (xboxScreenspaceEnable.x != 0) {\n"
+        "        float xboxW = oPos.w;\n"
         "        oPos -= xboxScreenspaceOffset;\n"
         "        oPos /= xboxScreenspaceScale;\n"
+        "        if (xboxScreenspaceEnable.y != 0 && xboxScreenspaceScale.z != 0)\n"
+        "            oPos.z = xboxW / xboxScreenspaceScale.z;\n"
         "        if (oPos.w == 0) oPos.w = 1;\n"
         "        oPos.xyz *= oPos.w;\n"
         "    }\n\n");
@@ -1776,6 +1785,28 @@ void d3d8_vsh_set_screenspace(const float scale[4], const float offset[4])
     g_vsh_screen_dirty = TRUE;
 }
 
+/* Whether a program's W-buffered draw writes W (RECOMP_D3D8_WBUFFER, on
+ * unless 0).
+ *
+ * D3DZB_USEW makes the NV2A keep W in the depth buffer -- the clip w in the
+ * depth buffer's units, linear in eye distance -- where the host keeps Z,
+ * which crowds everything past a few metres against the far plane. Draws that
+ * only compare against each other sort the same either way; a draw placed at
+ * an explicit depth does not. Battlefield 2: Modern Combat fogs its levels
+ * with three full-screen quads at fixed W depths, each redrawing a copy of the
+ * screen darker where the scene lies beyond it: compared with Z the darkest
+ * passed everywhere and the level was black behind its HUD. */
+int d3d8_vsh_wbuffer_on(void)
+{
+    static int on = -1;
+
+    if (on < 0) {
+        const char *e = getenv("RECOMP_D3D8_WBUFFER");
+        on = !(e && e[0] == '0');
+    }
+    return on;
+}
+
 void d3d8_vsh_get_screenspace(float scale[4], float offset[4], int *enabled)
 {
     if (scale)
@@ -1873,6 +1904,16 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
     vsh = &g_vsh_slots[slot];
     if (!vsh->in_use)
         return FALSE;
+
+    {
+        const DWORD *rs = d3d8_GetRenderStates();
+        float w = (rs && rs[D3DRS_ZENABLE] == 2u /* D3DZB_USEW */ &&
+                   d3d8_vsh_wbuffer_on()) ? 1.0f : 0.0f;
+        if (g_vsh_screen.enable[1] != w) {
+            g_vsh_screen.enable[1] = w;
+            g_vsh_screen_dirty = TRUE;
+        }
+    }
 
     /* The microcode's hash, taken when the program was loaded */
     hash = vsh->hash;
