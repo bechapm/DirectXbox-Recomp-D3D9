@@ -72,17 +72,27 @@ static BOOL g_vsh_constants_dirty = TRUE;
 /* Constant buffer for VS constants */
 static RhiBuffer *g_vsh_cb = NULL;
 
+/* Input layouts kept per compiled program, for each of the FVF masks and
+ * the declarations it is drawn with. One program's microcode is commonly
+ * shared by many handles, each with a declaration of its own: Turok:
+ * Evolution draws one 121-instruction program under dozens of them. A full
+ * cache replaces an entry; it must never answer with another declaration's
+ * layout, which reads the vertex at the wrong offsets. */
+#define VSH_LAYOUTS 64
+
 /* Shader cache: maps microcode hash to compiled shader + input layout */
 typedef struct {
     uint32_t            hash;
     int                 in_use;
     RhiShader          *vs;           /* keeps what input layouts need */
-    RhiVertexLayout    *layouts[16];  /* Cached layouts per input mask subset */
-    uint32_t            layout_masks[16];  /* inputs_read | (texcoord-field<<16) */
+    RhiVertexLayout    *layouts[VSH_LAYOUTS];  /* Cached layouts per input mask subset */
+    uint32_t            layout_masks[VSH_LAYOUTS];  /* inputs_read | (texcoord-field<<16) */
     int                 layout_count;
-    RhiVertexLayout    *decl_layouts[16];  /* Cached layouts per declaration */
-    uint32_t            decl_keys[16];     /* NV2AVshSlot.decl_hash */
+    int                 layout_next;  /* the slot a full cache replaces next */
+    RhiVertexLayout    *decl_layouts[VSH_LAYOUTS];  /* Cached layouts per declaration */
+    uint32_t            decl_keys[VSH_LAYOUTS];     /* NV2AVshSlot.decl_hash */
     int                 decl_layout_count;
+    int                 decl_layout_next;
     uint16_t            inputs_read;  /* Which v registers are read */
     int                 uses_proj;    /* reads the projection's first column */
     int                 pos_input;    /* v# oPos is copied from, or -1 */
@@ -1333,16 +1343,17 @@ static RhiVertexLayout *get_cached_layout(VshCacheEntry *entry, DWORD fvf)
             return entry->layouts[i];
     }
 
-    /* Create new layout */
-    if (entry->layout_count >= 16)
-        return entry->layouts[0]; /* Fallback to first */
-
-    RhiVertexLayout *layout = create_vsh_input_layout(mask, fvf, entry->vs);
-    entry->layouts[entry->layout_count]      = layout;
-    entry->layout_masks[entry->layout_count] = key;
-    entry->layout_count++;
-
-    return layout;
+    /* Create new layout, in a free slot or in place of the oldest. */
+    if (entry->layout_count < VSH_LAYOUTS) {
+        i = entry->layout_count++;
+    } else {
+        i = entry->layout_next;
+        entry->layout_next = (entry->layout_next + 1) % VSH_LAYOUTS;
+        rhi_vertex_layout_destroy(entry->layouts[i]);
+    }
+    entry->layouts[i]      = create_vsh_input_layout(mask, fvf, entry->vs);
+    entry->layout_masks[i] = key;
+    return entry->layouts[i];
 }
 
 /* The same per declaration. Kept apart from the mask-keyed layouts so a
@@ -1355,13 +1366,16 @@ static RhiVertexLayout *get_cached_layout_decl(VshCacheEntry *entry, const NV2AV
         if (entry->decl_keys[i] == vsh->decl_hash)
             return entry->decl_layouts[i];
     }
-    if (entry->decl_layout_count >= 16)
-        return entry->decl_layouts[0];
-
-    entry->decl_layouts[entry->decl_layout_count] =
-        create_vsh_input_layout_decl(entry->inputs_read, vsh, entry->vs);
-    entry->decl_keys[entry->decl_layout_count] = vsh->decl_hash;
-    return entry->decl_layouts[entry->decl_layout_count++];
+    if (entry->decl_layout_count < VSH_LAYOUTS) {
+        i = entry->decl_layout_count++;
+    } else {
+        i = entry->decl_layout_next;
+        entry->decl_layout_next = (entry->decl_layout_next + 1) % VSH_LAYOUTS;
+        rhi_vertex_layout_destroy(entry->decl_layouts[i]);
+    }
+    entry->decl_layouts[i] = create_vsh_input_layout_decl(entry->inputs_read, vsh, entry->vs);
+    entry->decl_keys[i] = vsh->decl_hash;
+    return entry->decl_layouts[i];
 }
 
 /* ================================================================
@@ -1607,6 +1621,53 @@ static float hor_plus_factor(void)
     return g_hor_plus;
 }
 
+/* Where Hor+ applies: draws to the screen only, as the camera zoom below.
+ * The same register projects whatever a title renders into a texture first
+ * -- Turok: Evolution's shadow map, drawn from the light in its cutscenes and
+ * then projected back with a texture matrix of its own -- and widened there
+ * it no longer lines up with that matrix. RECOMP_HOR_PLUS_TARGETS=all scales
+ * the register for every draw, as before, at upload. */
+static int hor_plus_all_targets(void)
+{
+    static int all = -1;
+
+    if (all < 0) {
+        const char *v = getenv("RECOMP_HOR_PLUS_TARGETS");
+        all = v && strcmp(v, "all") == 0;
+    }
+    return all;
+}
+
+/* The Hor+ factor a draw's projection register gets as the constants reach
+ * the host: 1 off the screen, once a title has claimed the factor, and when
+ * RECOMP_HOR_PLUS_TARGETS=all has already applied it at upload. */
+static float hor_plus_for_draw(BOOL to_screen)
+{
+    if (!to_screen || hor_plus_all_targets() || g_hor_plus_claimed)
+        return 1.0f;
+    return hor_plus_factor();
+}
+
+/* Widen the projection register of a constant file about to reach the host. */
+static void hor_plus_widen(NV2AVSConstants *k, float factor)
+{
+    int reg = d3d8_vsh_hor_plus_reg(), i;
+
+    if (factor == 1.0f || reg < 0 || reg >= NV2A_VS_MAX_CONSTANTS)
+        return;
+    for (i = 0; i < 4; i++)
+        k->c[reg][i] *= factor;
+}
+
+const float *d3d8_vsh_constants_for_draw(int to_screen)
+{
+    static NV2AVSConstants copy;
+
+    memcpy(&copy, &g_vsh_constants, sizeof copy);
+    hor_plus_widen(&copy, hor_plus_for_draw(to_screen != 0));
+    return &copy.c[0][0];
+}
+
 float xbox_D3D8ClaimHorPlus(void)
 {
     float factor;
@@ -1737,6 +1798,12 @@ void d3d8_vsh_set_constant(int start_reg, const float *data, int count)
         g_vsh_constants.c[i][3] = data[src_offset + 3];
     }
 
+    /* Hor+ (hor_plus_factor) is applied as the constants reach the host
+     * (d3d8_vsh_prepare_draw), so it can depend on where the draw goes. */
+    if (!hor_plus_all_targets()) {
+        g_vsh_constants_dirty = TRUE;
+        return;
+    }
     hp = hor_plus_factor();
     if (hp != 1.0f && !g_hor_plus_claimed) {
         int reg = d3d8_vsh_hor_plus_reg();
@@ -1968,16 +2035,20 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
     /* Update constant buffer if dirty, or if the camera zoom starts or stops
      * applying (camera_zoom: screen draws only). */
     {
-        static BOOL zoomed;
+        static BOOL zoomed, widened;
         float zoom = camera_zoom();
-        BOOL want = zoom != 1.0f && d3d8_target_is_screen();
+        BOOL screen = d3d8_target_is_screen();
+        BOOL want = zoom != 1.0f && screen;
+        float hp = hor_plus_for_draw(screen);
+        BOOL widen = hp != 1.0f;
 
-        if (want != zoomed)
+        if (want != zoomed || widen != widened)
             g_vsh_constants_dirty = TRUE;
         if (g_vsh_constants_dirty) {
             mapped = rhi_buffer_map(g_vsh_cb, RHI_MAP_WRITE_DISCARD);
             if (mapped) {
                 memcpy(mapped, &g_vsh_constants, sizeof(g_vsh_constants));
+                hor_plus_widen((NV2AVSConstants *)mapped, hp);
                 if (want) {
                     int reg = d3d8_vsh_hor_plus_reg(), k;
                     float (*c)[4] = ((NV2AVSConstants *)mapped)->c;
@@ -1992,6 +2063,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
             }
             g_vsh_constants_dirty = FALSE;
             zoomed = want;
+            widened = widen;
         }
     }
 

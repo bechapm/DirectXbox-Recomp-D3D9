@@ -17,6 +17,14 @@ int host_exe_path(char *buf, size_t bytes)
     return n != 0 && n < (DWORD)bytes;
 }
 
+/* There are no application bundles here; the launcher asks on every host. */
+int host_app_bundle_dir(char *buf, size_t bytes)
+{
+    (void)buf;
+    (void)bytes;
+    return 0;
+}
+
 void host_path_dirname(char *path)
 {
     char *a = strrchr(path, '\\'), *b = strrchr(path, '/');

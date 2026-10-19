@@ -286,6 +286,28 @@ static int draw_gate(const char *kind, uint32_t prim, uint32_t count, uint32_t s
                 (unsigned long)rs[D3DRS_CULLMODE],
                 (g_max_draws >= 0 && n >= g_max_draws) ? "  (not drawn: --draws)" : "",
                 draw_skipped(n) ? "  (not drawn: --skip-draw)" : "");
+        /* The program's microcode hash: the key the vertex program cache and
+         * RECOMP_D3D8_VS_DUMP name its HLSL by, which a handle does not. */
+        {
+            int s;
+            DWORD h;
+            const DWORD *mc;
+            int len, dc;
+            const D3D8VshInput *decl;
+
+            for (s = 0; s < NV2A_VS_MAX_SLOTS; s++)
+                if (d3d8_vsh_get_slot(s, &h, &mc, &len, &decl, &dc) && h == g_cur_vs) {
+                    uint32_t fnv = 0x811c9dc5u;
+                    const uint8_t *p = (const uint8_t *)mc;
+                    size_t i;
+
+                    for (i = 0; i < (size_t)len * 4u * sizeof(DWORD); i++)
+                        fnv = (fnv ^ p[i]) * 0x01000193u;
+                    fprintf(stderr, "[draw %4ld] program hash 0x%08X, %d instructions\n",
+                            n, fnv, len);
+                    break;
+                }
+        }
         /* The states that discard fragments without leaving a mark. */
         fprintf(stderr, "[draw %4ld] zfunc %lu afunc %lu colorwrite 0x%lX stencil %lu "
                 "fill %lu shade %lu\n", n,
@@ -301,12 +323,15 @@ static int draw_gate(const char *kind, uint32_t prim, uint32_t count, uint32_t s
             if (!t || (st > 0 && t[D3DTSS_COLOROP] <= 1))
                 break;
             fprintf(stderr, "[draw %4ld] stage%lu color op %lu (%lu, %lu) alpha op %lu "
-                        "(%lu, %lu) texcoord %lu address %lu/%lu\n", n, (unsigned long)st,
+                        "(%lu, %lu) texcoord %lu address %lu/%lu filter %lu/%lu/%lu\n",
+                        n, (unsigned long)st,
                         (unsigned long)t[D3DTSS_COLOROP], (unsigned long)t[D3DTSS_COLORARG1],
                         (unsigned long)t[D3DTSS_COLORARG2], (unsigned long)t[D3DTSS_ALPHAOP],
                         (unsigned long)t[D3DTSS_ALPHAARG1], (unsigned long)t[D3DTSS_ALPHAARG2],
                         (unsigned long)t[D3DTSS_TEXCOORDINDEX],
-                        (unsigned long)t[D3DTSS_ADDRESSU], (unsigned long)t[D3DTSS_ADDRESSV]);
+                        (unsigned long)t[D3DTSS_ADDRESSU], (unsigned long)t[D3DTSS_ADDRESSV],
+                        (unsigned long)t[D3DTSS_MAGFILTER], (unsigned long)t[D3DTSS_MINFILTER],
+                        (unsigned long)t[D3DTSS_MIPFILTER]);
         }
         /* Fog, when on: a fog factor of 0 paints a draw in the fog colour,
          * which with black fog is a black screen that looks like nothing
@@ -691,11 +716,34 @@ static void do_texture(Replay *r, const D3D8CapChunk *c)
         r->malformed++;
         return;
     }
-    if (g_list_draws && t->width * t->height <= 4u && total >= 4u) {
+    if (g_list_draws && t->width * t->height <= 16u && total >= 4u) {
         /* A tiny texture is usually a constant in disguise -- a fade colour,
-         * a tint -- so its bytes are the value that matters. */
-        fprintf(stderr, "[texture %u] %ux%u format 0x%02X: %02X %02X %02X %02X\n",
-                t->id, t->width, t->height, t->format, bytes[0], bytes[1], bytes[2], bytes[3]);
+         * a tint, a 4x4 "no shadow" placeholder -- so its bytes are the value
+         * that matters: the first texel, and the last of level 0. */
+        uint32_t last = levels[0].bytes >= 4u ? levels[0].bytes - 4u : 0u;
+        fprintf(stderr, "[texture %u] %ux%u format 0x%02X, %u level(s): %02X %02X %02X %02X"
+                " ... %02X %02X %02X %02X\n", t->id, t->width, t->height, t->format, t->levels,
+                bytes[0], bytes[1], bytes[2], bytes[3],
+                bytes[last], bytes[last + 1], bytes[last + 2], bytes[last + 3]);
+    }
+
+    /* RECOMP_REPLAY_TEX_DUMP=<id>: that texture's bytes as captured, every
+     * level, to replay_tex_<id>_<n>.bin -- the n-th time it was written --
+     * for comparing with what guest memory held. */
+    {
+        const char *e = getenv("RECOMP_REPLAY_TEX_DUMP");
+        static unsigned dumped;
+        if (e && *e && (uint32_t)atol(e) == t->id) {
+            char path[64];
+            FILE *f;
+            snprintf(path, sizeof path, "replay_tex_%u_%u.bin", t->id, dumped++);
+            if ((f = fopen(path, "wb")) != NULL) {
+                fwrite(bytes, 1, total, f);
+                fclose(f);
+                fprintf(stderr, "[texture %u] %ux%u format 0x%02X, %u level(s), %zu bytes -> %s\n",
+                        t->id, t->width, t->height, t->format, t->levels, total, path);
+            }
+        }
     }
 
     /* An id seen again is the same texture written again (a later loop, or a
@@ -1239,6 +1287,22 @@ static void do_draw_indexed_up(Replay *r, const D3D8CapChunk *c)
                 d->num_vertices, d->min_index, d->vertex_bytes,
                 ix[0], ix[1], ix[2], ix[3],
                 ix[0], f[0], f[1], f[2], f[3], ix[1], g[0], g[1], g[2], g[3]);
+        {
+            /* An index past the vertices given reads whatever lies beyond
+             * them: geometry that differs from one replay to the next. */
+            uint32_t k, n = d3d8_up_indices_read((D3DPRIMITIVETYPE)d->prim_type, d->prim_count);
+            uint32_t lo = 0xFFFFFFFFu, hi = 0, past = 0;
+            for (k = 0; k < n; k++) {
+                uint32_t v = d->index_format == D3DFMT_INDEX32 ? ((const uint32_t *)idx)[k]
+                                                               : ix[k];
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+                if (v >= d->min_index + d->num_vertices) past++;
+            }
+            if (past)
+                fprintf(stderr, "[draw %4ld] %u of %u indices past the %u vertices given "
+                        "(indices %u..%u)\n", g_draw_index - 1, past, n, d->num_vertices, lo, hi);
+        }
         {
             /* RECOMP_REPLAY_VERTEX_DUMP=<draw>: every vertex of that draw as
              * raw words, for a vertex that lands somewhere it should not --

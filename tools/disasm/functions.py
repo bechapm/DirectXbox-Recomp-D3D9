@@ -803,6 +803,18 @@ class FunctionDetector:
             if first.mnemonic.lower() in ("int3", "nop"):
                 continue
 
+            # Code that runs straight into the target: the target is the
+            # middle of a function this pass cannot see yet, not an entry.
+            # Turok: Evolution's D3D writes the push-buffer method word
+            # 0x001809E0 (`mov dword ptr [esi], 1809E0h`), which lands on
+            # `add ebx, 10h` inside a vtable-only constructor's loop, after
+            # `inc edi`. The constructor was still a gap when this pass ran,
+            # so the gap test let it through; the start cut the loop off its
+            # own head, its back edge became a call to a stub, and the object
+            # was left with a null member the game later called through.
+            if self._reached_by_fall_through(target):
+                continue
+
             self._add_candidate(target, config.CONFIDENCE_IMM_REF,
                                 "imm_ref_target")
             found += 1
@@ -1218,6 +1230,63 @@ class FunctionDetector:
         if found:
             print(f"  {found} function address(es) found in data tables")
         return found > 0
+
+    def _is_filler(self, insn) -> bool:
+        """A padding instruction: nop, or one that moves a register onto
+        itself. Code runs through these too -- a loop head aligned inside a
+        function is reached across them."""
+        m = insn.mnemonic.lower()
+        if insn.is_nop or m == "nop":
+            return True
+        op = insn.op_str.lower().replace(" ", "")
+        if m == "lea":
+            # lea ecx, [ecx] / lea esi, [esi + 0]: a multi-byte nop.
+            reg, _, mem = op.partition(",")
+            return mem in ("[%s]" % reg, "[%s+0]" % reg, "[%s+0x0]" % reg)
+        if m in ("mov", "xchg"):
+            a, _, b = op.partition(",")
+            return a == b
+        return False
+
+    def _reached_by_fall_through(self, addr: int) -> bool:
+        """Does the instruction the sweep decoded just before `addr` run into
+        it, across any padding-like filler, without a ret or jmp between?
+
+        A function entry follows a terminator, padding after one, or nothing;
+        it is never the next instruction of code that keeps going. Only a
+        known instruction counts: with none decoded right before `addr` the
+        answer is no, so a target after data or a gap is left to the other
+        tests. A call does not count as running into it -- the call may never
+        return (a throw helper, an exit) and the compiler puts the next
+        function straight after it.
+
+        Nor does anything in front of nop or int3 padding when `addr` is laid
+        out as a function start (_is_padded_entry): what the sweep decoded
+        there may be data. BLiNX's 0x0011F7E0 follows a switch's byte index
+        table (0x91..0xA5, which decode as xchg, popfd, sahf, movsd) and four
+        nops; refused, the function was never lifted and the first call to it
+        crashed the title.
+        """
+        a = addr
+        padded = False
+        for _ in range(32):
+            prev = None
+            for back in range(1, 16):
+                insn = self.engine.instructions.get(a - back)
+                if insn is not None and insn.end_address == a:
+                    prev = insn
+                    break
+            if prev is None:
+                return False
+            m = prev.mnemonic.lower()
+            if prev.is_terminator or m in ("int3", "hlt", "ud2") or prev.is_call:
+                return False
+            if self._is_filler(prev):
+                a = prev.address
+                padded = True
+                continue
+            return not (padded and self._is_padded_entry(addr))
+        return False
 
     def _is_padded_entry(self, addr: int) -> bool:
         """Is `addr` laid out exactly like a function start: 16-byte aligned,

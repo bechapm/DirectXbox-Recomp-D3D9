@@ -280,13 +280,31 @@ int main(int argc, char **argv)
             case SDL_EVENT_TEXT_INPUT:
                 on_text(e.text.text);
                 break;
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                if (e.button.button == SDL_BUTTON_LEFT)
+            case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+                int b = e.button.button == SDL_BUTTON_LEFT   ? LMOUSE_LEFT
+                      : e.button.button == SDL_BUTTON_RIGHT  ? LMOUSE_RIGHT
+                      : e.button.button == SDL_BUTTON_MIDDLE ? LMOUSE_MIDDLE
+                      : e.button.button == SDL_BUTTON_X1     ? LMOUSE_X1
+                      : e.button.button == SDL_BUTTON_X2     ? LMOUSE_X2 : 0;
+
+                if (b && !launcher_mouse_button(b) && b == LMOUSE_LEFT)
                     launcher_click((int)e.button.x, (int)e.button.y);
                 break;
+            }
             case SDL_EVENT_MOUSE_MOTION:
                 launcher_hover((int)e.motion.x, (int)e.motion.y);
                 break;
+            case SDL_EVENT_MOUSE_WHEEL: {
+                /* Whole notches, positive up; a flipped ("natural") wheel
+                 * reports the other way round. */
+                int rows = e.wheel.integer_y;
+
+                if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+                    rows = -rows;
+                if (rows)
+                    launcher_wheel(-rows, (int)e.wheel.mouse_x, (int)e.wheel.mouse_y);
+                break;
+            }
             case SDL_EVENT_WINDOW_RESIZED:
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:

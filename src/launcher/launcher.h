@@ -27,6 +27,9 @@ enum {
     LKEY_LSHIFT, LKEY_RSHIFT, LKEY_LCTRL, LKEY_RCTRL
 };
 
+/* Mouse buttons, as the front end reports them to launcher_mouse_button. */
+enum { LMOUSE_LEFT = 1, LMOUSE_RIGHT, LMOUSE_MIDDLE, LMOUSE_X1, LMOUSE_X2 };
+
 /* ---- launcher.c, for the front end ---- */
 
 /* Before the window: finds the game, reads the settings and bindings. */
@@ -39,7 +42,14 @@ void launcher_key(int key, int shift);  /* a key pressed (repeats too) */
  * what Windows' WM_CHAR gives for Ctrl+C and Ctrl+V. */
 void launcher_char(unsigned ch);
 void launcher_click(int x, int y);      /* the left button, in window units */
+/* Any mouse button pressed (LMOUSE_*), the left one included, before its
+ * launcher_click. Returns 1 when the press was the answer to a binding
+ * being captured: it means nothing else, and the click is not sent. */
+int  launcher_mouse_button(int button);
 void launcher_hover(int x, int y);
+/* The wheel turned: rows > 0 scrolls the list down, by whole rows, with the
+ * pointer at (x, y) in window units. */
+void launcher_wheel(int rows, int x, int y);
 void launcher_tick(void);               /* sixty times a second: pad, glow */
 void launcher_resize(int w, int h);     /* the client area, in window units */
 void launcher_draw(void);               /* into the theme's back buffer */

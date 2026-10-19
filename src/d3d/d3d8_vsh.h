@@ -171,6 +171,14 @@ void d3d8_vsh_interp_registers(int *projection, int *affine_first, int *affine_c
 const float *d3d8_vsh_constants(void);
 
 /**
+ * The constants as a draw uploads them: d3d8_vsh_constants with Hor+ applied
+ * to the projection register, which only a draw to the screen gets
+ * (to_screen != 0) -- a title's shadow map or other render-to-texture pass is
+ * projected unwidened. A copy, valid until the next call.
+ */
+const float *d3d8_vsh_constants_for_draw(int to_screen);
+
+/**
  * Check if a shader handle refers to a programmable vertex shader
  * (as opposed to an FVF code).
  *

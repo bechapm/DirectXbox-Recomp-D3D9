@@ -101,7 +101,9 @@ class Scroller(tk.Canvas):
 class CaptureDialog(tk.Toplevel):
     """"Press a key or button now" -- the only way a binding is set.
 
-    Keys arrive as events; a pad has to be polled, so the dialog polls the
+    Keys and mouse buttons arrive as events (a click on the box binds that
+    button, a click on its own buttons does what they say); a pad has to be
+    polled, so the dialog polls the
     controller's own pad every 40 ms and compares against the state it had
     when the dialog opened. Nothing is captured until something changes,
     which is what stops a stick resting off centre from binding itself.
@@ -121,7 +123,7 @@ class CaptureDialog(tk.Toplevel):
         _label(frame, title.upper(), fg=TEXT_DIM, font=FONT_SMALL).pack(anchor="w")
         _label(frame, "Press a key or a button", fg=GLOW,
                font=("Segoe UI Light", 16)).pack(anchor="w", pady=(6, 2))
-        hint = "Esc cancels."
+        hint = "A click on this box binds that mouse button.  Esc cancels."
         if pad_index is None:
             hint += "  This controller is on the keyboard, so pads are ignored."
         else:
@@ -140,6 +142,7 @@ class CaptureDialog(tk.Toplevel):
         self.grab_set()
         self.focus_force()
         self.bind("<KeyPress>", self.on_key)
+        self.bind("<ButtonPress>", self.on_mouse)
         self.poll()
 
     def on_key(self, event):
@@ -149,6 +152,17 @@ class CaptureDialog(tk.Toplevel):
                             "Alt_L", "Alt_R") and event.keycode == 0:
             return None
         return self.finish(devices.key_source_from_event(event))
+
+    def on_mouse(self, event):
+        if isinstance(event.widget, tk.Button):
+            return None                     # Clear or Cancel, not a binding
+        # Tk numbers the right button 2 on macOS and 3 elsewhere; 4 and 5
+        # are the wheel on X11, which is not a source.
+        right, middle = (2, 3) if self.tk.call("tk", "windowingsystem") == "aqua" else (3, 2)
+        name = {1: "left", right: "right", middle: "middle"}.get(event.num)
+        if not name:
+            return None
+        return self.finish("mouse:" + name)
 
     def poll(self):
         if self.done or self.pad_index is None:

@@ -49,6 +49,10 @@ class Vocabulary(unittest.TestCase):
         names = re.findall(r'"([a-z_0-9]+)"', table(self.text, "PAD_BUTTONS"))
         self.assertEqual(names, bindings.PAD_BUTTONS)
 
+    def test_the_mouse_button_names_are_the_same(self):
+        names = re.findall(r'"([a-z_0-9]+)"', table(self.text, "MOUSE_BUTTONS"))
+        self.assertEqual(names, bindings.MOUSE_BUTTONS)
+
     def test_the_defaults_are_the_same(self):
         rows = re.findall(r'\{\s*"([a-z_0-9]+)"\s*,\s*"([^"]+)"\s*,\s*'
                           r'(?:"([^"]+)"|NULL)\s*\}',

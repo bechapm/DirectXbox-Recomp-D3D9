@@ -65,6 +65,12 @@ extern ptrdiff_t g_xbox_mem_offset;
  * replacement reads with HLE_ARG; the context is cleared while it runs so a
  * plain replacement reached from inside it does not take it for its own.
  * Afterwards the synthetic frame is back, and g_eax holds the body's result. */
+/* How deep this thread is inside a replaced function's own body: what that
+ * body writes to the push buffer belongs to the replacement, so a sync point
+ * reached from inside it (hle_d3d8_vertex.c, the GPU wait points) leaves the
+ * walk alone. */
+extern RECOMP_TLS int g_hle_original_depth;
+
 #define HLE_CALL_ORIGINAL(name)                                                \
     do {                                                                       \
         uint32_t hle_esp_ = g_esp;                                             \
@@ -76,7 +82,9 @@ extern ptrdiff_t g_xbox_mem_offset;
             g_esi = g_hle_ltcg_regs[4]; g_edi = g_hle_ltcg_regs[5];            \
             g_hle_ltcg_nargs = 0;                                              \
         }                                                                      \
+        g_hle_original_depth++;                                                \
         hle_original_##name();                                                 \
+        g_hle_original_depth--;                                                \
         g_hle_ltcg_nargs = hle_n_;                                             \
         g_esp = hle_esp_;                                                      \
     } while (0)

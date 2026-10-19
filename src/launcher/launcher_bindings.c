@@ -217,11 +217,18 @@ static void set_device(BindPort *bp, const char *name)
     }
 }
 
+/* A key or a mouse button: the launcher's second column, "keyboard and
+ * mouse", where the first is the pad. */
+static int is_kbm_source(const char *s)
+{
+    return strncmp(s, "key:", 4) == 0 || strncmp(s, "mouse:", 6) == 0;
+}
+
 /* The sources for one control. The first pad source and the first key
- * source are the two the launcher shows; any beyond those are the
- * Python tool's business and are left alone by not being read -- a save
- * from here writes the two it models, which is the shape the defaults
- * have. */
+ * or mouse source are the two the launcher shows; any beyond those are
+ * the Python tool's business and are left alone by not being read -- a
+ * save from here writes the two it models, which is the shape the
+ * defaults have. */
 static const char *parse_sources(const char *p, BindPort *bp, int k)
 {
     char value[BIND_SOURCE_LEN];
@@ -242,7 +249,7 @@ static const char *parse_sources(const char *p, BindPort *bp, int k)
                 if (strncmp(value, "pad:", 4) == 0 && !got_pad) {
                     snprintf(bp->pad_src[k], BIND_SOURCE_LEN, "%s", value);
                     got_pad = 1;
-                } else if (strncmp(value, "key:", 4) == 0 && !got_key) {
+                } else if (is_kbm_source(value) && !got_key) {
                     snprintf(bp->key_src[k], BIND_SOURCE_LEN, "%s", value);
                     got_key = 1;
                 }
@@ -260,7 +267,7 @@ static const char *parse_sources(const char *p, BindPort *bp, int k)
     if (!p)
         return NULL;
     if (k >= 0) {
-        if (strncmp(value, "key:", 4) == 0)
+        if (is_kbm_source(value))
             snprintf(bp->key_src[k], BIND_SOURCE_LEN, "%s", value);
         else
             snprintf(bp->pad_src[k], BIND_SOURCE_LEN, "%s", value);
@@ -494,6 +501,9 @@ static const struct { const char *src, *label; } k_labels[] = {
     { "key:LSHIFT", "Left shift" }, { "key:RSHIFT", "Right shift" },
     { "key:LCTRL", "Left ctrl" }, { "key:RCTRL", "Right ctrl" },
     { "key:TAB", "Tab" },
+    { "mouse:left", "Left mouse button" }, { "mouse:right", "Right mouse button" },
+    { "mouse:middle", "Middle mouse button" },
+    { "mouse:x1", "Mouse back button" }, { "mouse:x2", "Mouse forward button" },
     { NULL, NULL }
 };
 

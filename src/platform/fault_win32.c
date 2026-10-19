@@ -23,6 +23,8 @@
 #include <windows.h>
 #include <dbghelp.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define MS_VC_THREAD_NAME_EXCEPTION 0x406D1388u
 
@@ -81,6 +83,18 @@ void recomp_fault_install(recomp_fault_route_fn route, recomp_crash_fn crash)
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
+
+    /* RECOMP_WINDOW_BACKGROUND=1 is a run nobody is watching. A fault passed
+     * on would end in Windows Error Reporting's "has stopped working" box,
+     * which takes the focus from whoever is at the desk and holds the process
+     * open until it is answered. The report above has already been printed. */
+    {
+        const char *bg = getenv("RECOMP_WINDOW_BACKGROUND");
+
+        if (bg && *bg && strcmp(bg, "0") != 0)
+            SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS |
+                         SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    }
 }
 
 void recomp_fault_thread_init(void)

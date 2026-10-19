@@ -817,6 +817,23 @@ static int can_be_screen(const texture_layout *t)
     return t->linear && !d3d8_format_is_compressed((D3DFORMAT)t->fmt);
 }
 
+/* RECOMP_TEX_TRACE_DATA=<physical>: how each lookup of a texture over that
+ * memory is answered, once a swap. */
+static int tex_trace_data(uint32_t data, unsigned long now)
+{
+    static long want = -2;
+    static unsigned long last = (unsigned long)-1;
+
+    if (want == -2) {
+        const char *e = getenv("RECOMP_TEX_TRACE_DATA");
+        want = e ? (long)strtoul(e, NULL, 0) : -1;
+    }
+    if (want < 0 || (data & 0x0FFFFFFFu) != (uint32_t)want || now == last)
+        return 0;
+    last = now;
+    return 1;
+}
+
 static IDirect3DTexture8 *host_texture(IDirect3DDevice8 *dev, uint32_t va)
 {
     unsigned long now = hle_d3d8_shadow_swaps();
@@ -842,8 +859,12 @@ static IDirect3DTexture8 *host_texture(IDirect3DDevice8 *dev, uint32_t va)
     if (!(hle_d3d8_is_framebuffer(data & 0x0FFFFFFFu) &&
           !rendered_surface_recent(data, format, size, now))) {
         IDirect3DTexture8 *rs = rendered_surface_for(data, format, size, now);
-        if (rs)
+        if (rs) {
+            if (tex_trace_data(data, now))
+                fprintf(stderr, "[TEX-TRACE] swap %lu va 0x%08X data 0x%08X: a rendered "
+                        "surface over this memory answers\n", now, va, data);
             return rs;
+        }
     }
     /* A colour texture over the device's depth buffer: the title reading
      * its depth's bytes as colour. Rainbow Six 3's post-process weights its
@@ -914,6 +935,12 @@ static IDirect3DTexture8 *host_texture(IDirect3DDevice8 *dev, uint32_t va)
                         e ? " (cached)" : " (new)", e && e->rendered ? " rendered" : "");
         }
     }
+    if (tex_trace_data(data, now))
+        fprintf(stderr, "[TEX-TRACE] swap %lu va 0x%08X data 0x%08X format 0x%08X size 0x%08X: "
+                "%s%s%s quick 0x%08X/0x%08X\n", now, va, data, format, size,
+                e ? "cached" : "new", e && e->rendered ? ", rendered" : "",
+                e && e->framebuffer ? ", frame buffer" : "",
+                e ? e->quick : 0u, read_layout(va, &t) ? texel_sample(&t) : 0u);
     if (e) {
         e->used_swap = now;
         /* RECOMP_HLE_D3D8_TEX_EVERY_BIND=1: check the texels at every bind,
@@ -1781,6 +1808,108 @@ static void op_set_texture(const void *arg)
 }
 
 /* HRESULT D3DDevice_SetTexture(DWORD Stage, IDirect3DBaseTexture8 *pTexture) */
+static uint32_t g_pending_texture[MAX_STAGES];
+static uint32_t g_pending_mask;
+
+static int lazy_textures_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = xbox_EnvSwitch("RECOMP_HLE_D3D8_LAZY_TEXTURES", 1);
+    return on;
+}
+
+/* Binds the XDK flushed into the push buffer (CDevice_SetStateVB), held with
+ * the span it wrote until the walk reaches it.
+ *
+ * Made when SetStateVB was called, they overtook what the buffer held before
+ * that span and the walk had not drawn yet: a draw the title pushed itself,
+ * reached by a later walk, ran with the next object's textures. The XDK only
+ * writes a stage it thinks has changed, so the walk cannot always put the
+ * bind right from the methods alone. Turok: Evolution's terrain swapped two
+ * meshes' textures for one frame in forty or so -- a patch of bare ground or
+ * a missing water surface flickering in. */
+#define TEX_QUEUE 32u
+static struct { uint32_t lo, hi, mask, tex[MAX_STAGES]; } g_tex_q[TEX_QUEUE];
+static uint32_t g_tex_n;
+static unsigned long g_tex_by_walk;
+
+static void tex_queue_apply(uint32_t i)
+{
+    uint32_t stage;
+
+    for (stage = 0; stage < MAX_STAGES; stage++)
+        if (g_tex_q[i].mask & (1u << stage))
+            shadow_set_texture(stage, g_tex_q[i].tex[stage]);
+}
+
+/* Everything still held: the walk ended, or an API call is about to draw. */
+void hle_d3d8_texture_queue_flush(void)
+{
+    uint32_t i;
+
+    for (i = 0; i < g_tex_n; i++)
+        tex_queue_apply(i);
+    g_tex_n = 0;
+}
+
+/* The walk has reached addr: the binds held for a span holding it are made
+ * now, with every one held before them. A range that wrapped round the
+ * buffer has hi below lo. */
+void hle_d3d8_texture_queue_reach(uint32_t addr)
+{
+    uint32_t i, k;
+
+    for (i = 0; i < g_tex_n; i++) {
+        uint32_t lo = g_tex_q[i].lo, hi = g_tex_q[i].hi;
+        if (lo <= hi ? (addr >= lo && addr < hi) : (addr >= lo || addr < hi))
+            break;
+    }
+    if (i == g_tex_n)
+        return;
+    for (k = 0; k <= i; k++)
+        tex_queue_apply(k);
+    g_tex_n -= i + 1u;
+    memmove(&g_tex_q[0], &g_tex_q[i + 1u], g_tex_n * sizeof g_tex_q[0]);
+}
+
+/* SetStateVB wrote [lo, hi): the binds SetTexture recorded go with that span,
+ * for the walk. 0 when they cannot be held, and are to be made at once. */
+int hle_d3d8_texture_queue_span(uint32_t lo, uint32_t hi)
+{
+    uint32_t stage;
+
+    if (!g_pending_mask)
+        return 1;
+    if (g_tex_n >= TEX_QUEUE)
+        return 0;
+    g_tex_q[g_tex_n].lo = lo;
+    g_tex_q[g_tex_n].hi = hi;
+    g_tex_q[g_tex_n].mask = g_pending_mask;
+    for (stage = 0; stage < MAX_STAGES; stage++)
+        g_tex_q[g_tex_n].tex[stage] = g_pending_texture[stage];
+    g_tex_n++;
+    g_tex_by_walk++;
+    g_pending_mask = 0;
+    return 1;
+}
+
+/* The binds SetTexture recorded, made now: an API call is about to draw, or
+ * the XDK has flushed its state. Any held for the walk go first: they were
+ * recorded before these. */
+void hle_d3d8_apply_pending_textures(void)
+{
+    uint32_t stage;
+
+    hle_d3d8_texture_queue_flush();
+    if (!g_pending_mask)
+        return;
+    for (stage = 0; stage < MAX_STAGES; stage++)
+        if (g_pending_mask & (1u << stage))
+            shadow_set_texture(stage, g_pending_texture[stage]);
+    g_pending_mask = 0;
+}
+
 HLE_EXPORT(D3DDevice_SetTexture)
 {
     static int seen;
@@ -1796,6 +1925,23 @@ HLE_EXPORT(D3DDevice_SetTexture)
         HLE_RETURN(0x80004005u);
     }
     HLE_CALL_ORIGINAL(D3DDevice_SetTexture);
+    /* Lazy, as the XDK's own is: SetTexture only records the texture, and the
+     * XDK writes it into the push buffer when it next draws. Until then the
+     * title's own pushed draws still run with what the stage had -- Turok:
+     * Evolution sets a soldier's skin through the API while the last of a
+     * row of grass clumps it pushed itself is still queued, and bound at
+     * once the skin went onto the grass. So the bind waits for the next draw
+     * an API call makes, or for CDevice_SetStateVB, where the XDK flushes
+     * its state; the XDK's flush, written into the push buffer, also binds
+     * it when the walk reaches it. RECOMP_HLE_D3D8_LAZY_TEXTURES=0 binds at
+     * once, as before. */
+    if (!hle_d3d8_defer_recording() && stage < MAX_STAGES && lazy_textures_on()) {
+        if (texture && obj_field(texture, 16))
+            g_stage_size[stage] = obj_field(texture, 16);
+        g_pending_texture[stage] = texture;
+        g_pending_mask |= 1u << stage;
+        return;
+    }
     /* Deferred (RECOMP_HLE_D3D8_DEFER), the host side runs when the frame is
      * executed, so the texels are read then -- as the NV2A reads them when it
      * reaches the draw, not when the title issued it. */

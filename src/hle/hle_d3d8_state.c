@@ -1083,11 +1083,20 @@ int hle_d3d8_state_store_simple(uint32_t method, uint32_t value)
     return 0;
 }
 
+uint32_t hle_d3d8_push_position(void);          /* hle_d3d8_vertex.c */
+int      hle_d3d8_queue_simple_state(uint32_t lo, uint32_t hi, uint32_t method, uint32_t value);
+
 HLE_EXPORT(D3DDevice_SetRenderState_Simple)
 {
     uint32_t method = g_ecx & 0x1FFCu, value = g_edx;
+    uint32_t before = hle_d3d8_push_position(), after;
 
     if (hle_original_D3DDevice_SetRenderState_Simple)
         HLE_CALL_ORIGINAL(D3DDevice_SetRenderState_Simple);
+    /* Written into the push buffer: the walk stores it when it gets there,
+     * after whatever the buffer holds before it (hle_d3d8_vertex.c). */
+    after = hle_d3d8_push_position();
+    if (before && after != before && hle_d3d8_queue_simple_state(before, after, method, value))
+        return;
     (void)hle_d3d8_state_store_simple(method, value);
 }

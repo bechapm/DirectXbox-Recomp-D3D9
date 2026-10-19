@@ -15,7 +15,10 @@
  *
  * Pads are read through recomp_pad.h: SDL3 by default, XInput on Windows
  * when the file's "pad_api" or RECOMP_PAD_API says so. The keyboard is
- * read with GetAsyncKeyState on Windows and not yet anywhere else.
+ * read with GetAsyncKeyState on Windows and SDL's keyboard state elsewhere.
+ * The mouse is whatever the game window was told (recomp_mouse_*): its
+ * buttons are sources like any other, and its motion is mouse look, added
+ * to controller 1's right stick after the bindings have had their say.
  */
 #include "input_bindings.h"
 #include "recomp_pad.h"
@@ -122,7 +125,7 @@ static const struct { const char *control, *pad, *key; } DEFAULTS[] = {
 
 /* ---- the sources a control can be bound to ----------------------------- */
 
-enum { SRC_NONE, SRC_KEY, SRC_PAD_BUTTON, SRC_PAD_TRIGGER, SRC_PAD_AXIS };
+enum { SRC_NONE, SRC_KEY, SRC_PAD_BUTTON, SRC_PAD_TRIGGER, SRC_PAD_AXIS, SRC_MOUSE };
 
 /* Pad buttons, in the order PAD_BUTTONS names them. */
 enum {
@@ -136,9 +139,16 @@ static const char *const PAD_BUTTONS[PB_COUNT] = {
     "lthumb", "rthumb", "dpad_up", "dpad_down", "dpad_left", "dpad_right"
 };
 
+/* "mouse:" sources, in RECOMP_MOUSE_* order. x1 and x2 are the side buttons
+ * (back and forward). */
+static const char *const MOUSE_BUTTONS[RECOMP_MOUSE_BUTTONS] = {
+    "left", "right", "middle", "x1", "x2"
+};
+
 typedef struct {
     unsigned char kind;
-    short arg;              /* key: virtual-key code; pad: button/axis index */
+    short arg;              /* key: virtual-key code; pad: button/axis index;
+                             * mouse: RECOMP_MOUSE_* */
     signed char sign;       /* axis only */
 } Source;
 
@@ -153,7 +163,8 @@ typedef struct {
     int device;
     int pad;                /* recomp_pad slot when device == DEV_PAD */
     int deadzone;
-    int has_key;            /* any key: source, so the port works with no pad */
+    int has_key;            /* any key: or mouse: source, so the port works
+                             * with no pad */
     Binding bind[CONTROL_COUNT];
     char label[40];
 } Controller;
@@ -233,6 +244,16 @@ static int parse_source(const char *text, Source *out)
         out->kind = SRC_KEY;
         out->arg = (short)vk;
         return 1;
+    }
+    if (strncmp(text, "mouse:", 6) == 0) {
+        int i;
+        for (i = 0; i < RECOMP_MOUSE_BUTTONS; i++)
+            if (strcmp(MOUSE_BUTTONS[i], text + 6) == 0) {
+                out->kind = SRC_MOUSE;
+                out->arg = (short)i;
+                return 1;
+            }
+        return 0;
     }
     if (strncmp(text, "pad:", 4) == 0) {
         const char *name = text + 4;
@@ -510,7 +531,8 @@ static const char *parse_controller(const char *p, int index, int *bad)
     for (i = 0; i < CONTROL_COUNT; i++) {
         int s;
         for (s = 0; s < tmp.bind[i].count; s++)
-            if (tmp.bind[i].src[s].kind == SRC_KEY)
+            if (tmp.bind[i].src[s].kind == SRC_KEY ||
+                tmp.bind[i].src[s].kind == SRC_MOUSE)
                 tmp.has_key = 1;
     }
     g_ctl[port] = tmp;
@@ -650,6 +672,33 @@ static void describe(Controller *c, char *out, size_t n)
         snprintf(out, n, "nothing");
 }
 
+/* Mouse look's settings: the title's, not the bindings file's (recomp_config.h,
+ * "mouse_look"), since a camera on the mouse suits one game and not the
+ * next. Read once; two threads reading at once read the same values. */
+static struct {
+    int ready;
+    int on;
+    int sensitivity;        /* RECOMP_MOUSE_SENSITIVITY_MIN..MAX */
+    int deadzone;           /* percent of a full push any movement starts at */
+} g_look;
+
+static void look_settings(void)
+{
+    int v;
+
+    if (g_look.ready)
+        return;
+    g_look.on = recomp_config_bool("RECOMP_MOUSE_LOOK", "mouse_look", 0);
+    v = recomp_config_int("RECOMP_MOUSE_SENSITIVITY", "mouse_sensitivity",
+                          RECOMP_MOUSE_SENSITIVITY_DEFAULT);
+    g_look.sensitivity = v < RECOMP_MOUSE_SENSITIVITY_MIN ? RECOMP_MOUSE_SENSITIVITY_MIN
+                       : v > RECOMP_MOUSE_SENSITIVITY_MAX ? RECOMP_MOUSE_SENSITIVITY_MAX : v;
+    v = recomp_config_int("RECOMP_MOUSE_DEADZONE", "mouse_deadzone",
+                          RECOMP_MOUSE_DEADZONE_DEFAULT);
+    g_look.deadzone = v < 0 ? 0 : (v > RECOMP_MOUSE_DEADZONE_MAX ? RECOMP_MOUSE_DEADZONE_MAX : v);
+    g_look.ready = 1;
+}
+
 void recomp_bindings_init(void)
 {
     char *text;
@@ -677,6 +726,11 @@ void recomp_bindings_init(void)
             g_have_path ? g_path : "the built-in defaults (no config file)");
     for (i = 0; i < PORTS; i++)
         fprintf(stderr, "[INPUT]   controller %d: %s\n", i + 1, g_ctl[i].label);
+    look_settings();
+    if (g_look.on)
+        fprintf(stderr, "[INPUT] mouse look: controller 1's right stick, sensitivity %d, "
+                        "every movement from %d%%%s\n", g_look.sensitivity, g_look.deadzone,
+                g_ctl[0].device == DEV_NONE ? " -- but controller 1 reads nothing" : "");
     fflush(stderr);
 }
 
@@ -831,6 +885,149 @@ static void key_cache_tick(void)
     }
 }
 
+/* ---- the mouse --------------------------------------------------------- */
+
+/* The window's thread writes these and guest threads read them. */
+#if defined(_WIN32)
+#  define MOUSE_ADD(p, v)  InterlockedExchangeAdd((volatile LONG *)(p), (LONG)(v))
+#  define MOUSE_TAKE(p)    InterlockedExchange((volatile LONG *)(p), 0)
+#  define MOUSE_OR(p, v)   InterlockedOr((volatile LONG *)(p), (LONG)(v))
+#  define MOUSE_AND(p, v)  InterlockedAnd((volatile LONG *)(p), (LONG)(v))
+#else
+#  define MOUSE_ADD(p, v)  __atomic_fetch_add((p), (v), __ATOMIC_SEQ_CST)
+#  define MOUSE_TAKE(p)    __atomic_exchange_n((p), 0, __ATOMIC_SEQ_CST)
+#  define MOUSE_OR(p, v)   __atomic_fetch_or((p), (v), __ATOMIC_SEQ_CST)
+#  define MOUSE_AND(p, v)  __atomic_fetch_and((p), (v), __ATOMIC_SEQ_CST)
+#endif
+
+/* Motion is kept in sixteenths of a count: SDL reports fractions. */
+#define LOOK_FIXED 16
+
+static volatile long g_mouse_dx, g_mouse_dy;   /* not yet read */
+static volatile long g_mouse_held;             /* bit per RECOMP_MOUSE_* */
+
+int recomp_mouse_look(void)
+{
+    recomp_bindings_init();
+    look_settings();
+    return g_look.on && g_ctl[0].device != DEV_NONE;
+}
+
+void recomp_mouse_move(float dx, float dy)
+{
+    look_settings();
+    if (!g_look.on)
+        return;
+    MOUSE_ADD(&g_mouse_dx, (long)(dx * LOOK_FIXED));
+    MOUSE_ADD(&g_mouse_dy, (long)(dy * LOOK_FIXED));
+}
+
+void recomp_mouse_button(int button, int down)
+{
+    if (button < 0 || button >= RECOMP_MOUSE_BUTTONS)
+        return;
+    if (down)
+        MOUSE_OR(&g_mouse_held, 1L << button);
+    else
+        MOUSE_AND(&g_mouse_held, ~(1L << button));
+}
+
+void recomp_mouse_release(void)
+{
+    MOUSE_AND(&g_mouse_held, 0);
+    MOUSE_TAKE(&g_mouse_dx);
+    MOUSE_TAKE(&g_mouse_dy);
+}
+
+static unsigned long long now_us(void)
+{
+#if defined(_WIN32)
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER t;
+
+    if (!freq.QuadPart)
+        QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t);
+    return (unsigned long long)(t.QuadPart / freq.QuadPart) * 1000000ull +
+           (unsigned long long)(t.QuadPart % freq.QuadPart) * 1000000ull /
+               (unsigned long long)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000000ull + (unsigned long long)ts.tv_nsec / 1000ull;
+#endif
+}
+
+/* A stick says how fast to turn and a mouse says how far it moved, so the
+ * stick is pushed in proportion to the mouse's speed: the counts that
+ * arrived since the last look, over the time since. Worked out again at
+ * most every LOOK_PERIOD_US, whatever the title's polling rate -- a title
+ * that reads its pad a thousand times a frame would otherwise see a few
+ * counts, or none, at each read -- and averaged with the period before,
+ * because a 125 Hz mouse lands one report in some periods and two in the
+ * next. Several guest threads may read the pad at once; the worst a race
+ * here does is take one period's counts twice or not at all. */
+#define LOOK_PERIOD_US 12000ull
+/* Counts a second for a full push at sensitivity 1, so a full push at
+ * sensitivity s is this over s (recomp_config.h has the default). */
+#define LOOK_FULL_SCALE 100000.0f
+
+static unsigned long long g_look_at;
+static float g_look_speed[2];               /* the period before, counts a second */
+static float g_look_out[2];                 /* -1..1, x right and y up */
+
+/* Counts a second to -1..1. Any movement starts at the deadzone setting,
+ * so a slow one is not lost inside the title's own dead zone. */
+static float look_shape(float speed)
+{
+    float push = speed * (float)g_look.sensitivity / LOOK_FULL_SCALE;
+    float mag = push < 0.0f ? -push : push;
+    float start = (float)g_look.deadzone / 100.0f;
+
+    if (mag < 0.0005f)
+        return 0.0f;
+    if (mag > 1.0f)
+        mag = 1.0f;
+    mag = start + (1.0f - start) * mag;
+    return push < 0.0f ? -mag : mag;
+}
+
+static void look_axes(float out[2])
+{
+    unsigned long long now = now_us(), elapsed = now - g_look_at;
+
+    if (elapsed >= LOOK_PERIOD_US) {
+        float moved[2], speed;
+        int i;
+
+        /* The first look, or the first after the title stopped reading:
+         * spread what came in over a quarter of a second rather than over
+         * however long it was. */
+        if (elapsed > 250000ull)
+            elapsed = 250000ull;
+        moved[0] = (float)MOUSE_TAKE(&g_mouse_dx) / LOOK_FIXED;
+        moved[1] = -(float)MOUSE_TAKE(&g_mouse_dy) / LOOK_FIXED;     /* screen y grows down */
+        for (i = 0; i < 2; i++) {
+            speed = moved[i] * 1000000.0f / (float)elapsed;
+            g_look_out[i] = look_shape((speed + g_look_speed[i]) * 0.5f);
+            g_look_speed[i] = speed;
+        }
+        g_look_at = now;
+    }
+    out[0] = g_look_out[0];
+    out[1] = g_look_out[1];
+}
+
+/* A stick axis plus mouse look, kept on the stick. */
+static SHORT add_look(SHORT v, float look)
+{
+    long sum = (long)v + (long)(look * 32767.0f);
+
+    if (sum > 32767)  sum = 32767;
+    if (sum < -32767) sum = -32767;
+    return (SHORT)sum;
+}
+
 static int axis_value(const RecompPadState *g, int axis)
 {
     switch (axis) {
@@ -849,6 +1046,8 @@ static int source_magnitude(const Source *s, KeyCache *kc,
     switch (s->kind) {
     case SRC_KEY:
         return key_down(kc, s->arg) ? 255 : 0;
+    case SRC_MOUSE:
+        return (g_mouse_held & (1L << s->arg)) ? 255 : 0;
     case SRC_PAD_BUTTON:
         if (!have_pad)
             return 0;
@@ -963,6 +1162,18 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         default:      out->sThumbRY = (SHORT)v; break;
         }
     }
+    /* Mouse look goes on top of the right stick's bindings rather than in
+     * place of them: the pad's stick, or keys bound to it, still turn. */
+    if (port == 0 && g_look.on) {
+        float look[2];
+
+        look_axes(look);
+        if (look[0] != 0.0f || look[1] != 0.0f) {
+            say_first_press(port, "mouse look");
+            out->sThumbRX = add_look(out->sThumbRX, look[0]);
+            out->sThumbRY = add_look(out->sThumbRY, look[1]);
+        }
+    }
     return 1;
 }
 
@@ -981,7 +1192,8 @@ unsigned recomp_bindings_present_mask(void)
     mask = 0;
     for (i = 0; i < PORTS; i++) {
         Controller *c = &g_ctl[i];
-        if (c->device == DEV_KEYBOARD || (c->device == DEV_PAD && c->has_key)) {
+        if (c->device == DEV_KEYBOARD || (c->device == DEV_PAD && c->has_key) ||
+            (i == 0 && c->device != DEV_NONE && g_look.on)) {
             mask |= 1u << i;
         } else if (c->device == DEV_PAD) {
             RecompPadState st;

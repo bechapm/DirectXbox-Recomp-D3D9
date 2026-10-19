@@ -118,7 +118,7 @@ static uint64_t      g_copied_until;    /* "copied" shown until then */
 static BindConfig g_bind;
 static int        g_bind_port;          /* 0..3, the controller being edited */
 static int        g_bind_top;           /* first control shown: the list scrolls */
-static int        g_bind_col;           /* 0 pad, 1 keyboard */
+static int        g_bind_col;           /* 0 pad, 1 keyboard and mouse */
 static int        g_capturing;          /* waiting for a press to bind */
 static int        g_capture_armed;      /* everything released since we started */
 static int        g_bind_dirty;
@@ -127,18 +127,21 @@ static int        g_bind_dirty;
  * the rest of the window state because the capture below reads it. */
 static int        g_sel;
 
-#define BIND_ROWS_VISIBLE 5
+#define BIND_ROWS_VISIBLE 8           /* the head rows and the first control */
 
-/* The input list starts with three rows that are not controls: which
- * controller is being edited, what it reads from, and putting it back.
+/* The input list starts with rows that are not controls: which controller
+ * is being edited, what it reads from, mouse look, and putting it back.
  * They live in the list rather than off to one side so they are reached
  * the same way as everything else -- one way to move, one way to
  * change, and no second idea to learn. */
-#define BIND_HEAD_ROWS 4
+#define BIND_HEAD_ROWS 7
 #define BIND_ROW_PORT   0
 #define BIND_ROW_DEVICE 1
 #define BIND_ROW_API    2       /* SDL3 or XInput, for every controller */
-#define BIND_ROW_RESET  3
+#define BIND_ROW_MOUSE  3       /* mouse look: this game's setting, not the bindings' */
+#define BIND_ROW_SENS   4       /* how far the mouse pushes the stick */
+#define BIND_ROW_DEAD   5       /* where on the stick any movement starts */
+#define BIND_ROW_RESET  6
 #define BIND_TOTAL_ROWS (BIND_HEAD_ROWS + BIND_CONTROLS)
 
 static const char *frame_cap_label(int i)
@@ -611,6 +614,27 @@ static const char *capture_key(void)
     return NULL;
 }
 
+/* The name a "mouse:" source gives each LMOUSE_* button. */
+static const char *mouse_source(int button)
+{
+    switch (button) {
+    case LMOUSE_LEFT:   return "mouse:left";
+    case LMOUSE_RIGHT:  return "mouse:right";
+    case LMOUSE_MIDDLE: return "mouse:middle";
+    case LMOUSE_X1:     return "mouse:x1";
+    case LMOUSE_X2:     return "mouse:x2";
+    default:            return NULL;
+    }
+}
+
+/* The control the selected row binds, or -1 on a head row. */
+static int capture_control(void)
+{
+    int k = g_bind_top + g_sel - BIND_HEAD_ROWS;
+
+    return (k >= 0 && k < BIND_CONTROLS) ? k : -1;
+}
+
 /* Nothing at all held. Entering the capture with A still down would
  * otherwise bind A to whatever the person was trying to rebind. */
 static int everything_released(int pad_index)
@@ -638,9 +662,9 @@ static void capture_tick(void)
         return;
 
     {
-        int k = g_bind_top + g_sel - BIND_HEAD_ROWS;
+        int k = capture_control();
 
-        if (k >= 0 && k < BIND_CONTROLS) {
+        if (k >= 0) {
             char *dst = (g_bind_col == 0) ? g_bind.port[g_bind_port].pad_src[k]
                                           : g_bind.port[g_bind_port].key_src[k];
             snprintf(dst, BIND_SOURCE_LEN, "%s", got);
@@ -648,6 +672,28 @@ static void capture_tick(void)
         }
     }
     g_capturing = 0;
+}
+
+/* A mouse button while a binding waits for its answer. In the keyboard
+ * and mouse column it is the answer, whichever button; in the pad column
+ * it is not something a pad can do, so it gives up, as Escape does. The
+ * press that started the capture arrived before it did, and a button
+ * still held from it sends no second press, so it cannot bind itself. */
+static int capture_mouse(int button)
+{
+    const char *got = mouse_source(button);
+    int k = capture_control();
+
+    if (!g_capturing)
+        return 0;
+    if (!g_capture_armed)
+        return 1;                       /* still waiting for a clean start */
+    if (g_bind_col == 1 && got && k >= 0) {
+        snprintf(g_bind.port[g_bind_port].key_src[k], BIND_SOURCE_LEN, "%s", got);
+        g_bind_dirty = 1;
+    }
+    g_capturing = 0;
+    return 1;
 }
 
 /* ------------------------------------------------------------ persistence */
@@ -1054,6 +1100,26 @@ static void nav(int dx, int dy, int accept, int cancel, int tabdelta)
                                    ? RECOMP_PAD_API_XINPUT : RECOMP_PAD_API_SDL);
                 g_bind_dirty = 1;
             }
+        } else if (k == BIND_ROW_MOUSE) {
+            if (dx || accept)
+                g_settings.mouse_look = !g_settings.mouse_look;
+        } else if (k == BIND_ROW_SENS) {
+            g_settings.mouse_sensitivity += dx;
+            if (g_settings.mouse_sensitivity < RECOMP_MOUSE_SENSITIVITY_MIN)
+                g_settings.mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_MIN;
+            if (g_settings.mouse_sensitivity > RECOMP_MOUSE_SENSITIVITY_MAX)
+                g_settings.mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_MAX;
+            /* Back to the default, the one value worth finding again. */
+            if (accept)
+                g_settings.mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
+        } else if (k == BIND_ROW_DEAD) {
+            g_settings.mouse_deadzone += dx;
+            if (g_settings.mouse_deadzone < 0)
+                g_settings.mouse_deadzone = 0;
+            if (g_settings.mouse_deadzone > RECOMP_MOUSE_DEADZONE_MAX)
+                g_settings.mouse_deadzone = RECOMP_MOUSE_DEADZONE_MAX;
+            if (accept)
+                g_settings.mouse_deadzone = RECOMP_MOUSE_DEADZONE_DEFAULT;
         } else if (k == BIND_ROW_RESET) {
             if (accept) {
                 BindConfig d;
@@ -1265,7 +1331,7 @@ static void draw(void)
             theme_text(h2, "CONTROLLER", 10, 700,
                        g_bind_col == 0 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
             h2.x += 210;
-            theme_text(h2, "KEYBOARD", 10, 700,
+            theme_text(h2, "KEYBOARD / MOUSE", 10, 700,
                        g_bind_col == 1 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
         }
 
@@ -1316,6 +1382,29 @@ static void draw(void)
                                    ? "Xbox controllers only (XInput)"
                                    : "All controllers (SDL3)",
                            12, 400, lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
+            } else if (k == BIND_ROW_MOUSE) {
+                theme_text(lr, "Mouse look", 12, 600,
+                           lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
+                theme_text(cv, g_settings.mouse_look
+                                   ? "On  (the mouse moves controller 1's right stick)"
+                                   : "Off",
+                           12, 400, lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
+            } else if (k == BIND_ROW_SENS) {
+                snprintf(line, sizeof line, "%d%s", g_settings.mouse_sensitivity,
+                         g_settings.mouse_sensitivity == RECOMP_MOUSE_SENSITIVITY_DEFAULT
+                             ? "  (default)" : "");
+                theme_text(lr, "Mouse sensitivity", 12, 600,
+                           lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
+                theme_text(cv, line, 12, 400,
+                           lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
+            } else if (k == BIND_ROW_DEAD) {
+                snprintf(line, sizeof line, "%d%% of a push%s", g_settings.mouse_deadzone,
+                         g_settings.mouse_deadzone == RECOMP_MOUSE_DEADZONE_DEFAULT
+                             ? "  (default)" : "");
+                theme_text(lr, "Mouse deadzone", 12, 600,
+                           lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
+                theme_text(cv, line, 12, 400,
+                           lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
             } else if (k == BIND_ROW_RESET) {
                 theme_text(lr, "Reset this controller", 12, 600,
                            lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
@@ -1338,13 +1427,20 @@ static void draw(void)
                 cv.x += 210;
                 theme_text(cv,
                            (g_capturing && lit > 0.5 && g_bind_col == 1)
-                               ? "press a key..." : bind_source_label(bp->key_src[c]),
+                               ? "press a key or click..." : bind_source_label(bp->key_src[c]),
                            12, 400,
                            (lit > 0.5 && g_bind_col == 1) ? THEME_GREEN : THEME_TEXT_DIM,
                            THEME_LEFT);
             }
 
-            if (lit > 0.5 && k <= BIND_ROW_API)
+            if (lit > 0.5 && k == BIND_ROW_SENS)
+                theme_arrows(arrows_rect(rr),
+                             g_settings.mouse_sensitivity > RECOMP_MOUSE_SENSITIVITY_MIN,
+                             g_settings.mouse_sensitivity < RECOMP_MOUSE_SENSITIVITY_MAX, lit);
+            else if (lit > 0.5 && k == BIND_ROW_DEAD)
+                theme_arrows(arrows_rect(rr), g_settings.mouse_deadzone > 0,
+                             g_settings.mouse_deadzone < RECOMP_MOUSE_DEADZONE_MAX, lit);
+            else if (lit > 0.5 && k < BIND_ROW_RESET)
                 theme_arrows(arrows_rect(rr), 1, 1, lit);
         }
 
@@ -1367,14 +1463,24 @@ static void draw(void)
             int k = g_bind_top + g_sel;
 
             theme_text_wrapped(r,
-                g_capturing ? "Press what you want this to be. Escape cancels."
+                g_capturing ? (g_bind_col == 1
+                                   ? "Press a key, or click any mouse button. Escape cancels."
+                                   : "Press what you want this to be. Escape cancels.")
                 : k == BIND_ROW_PORT   ? "Which of the four controllers these bindings are for."
                 : k == BIND_ROW_DEVICE ? "What this controller reads: a gamepad, the keyboard, or nothing."
                 : k == BIND_ROW_API    ? "All controllers reads Xbox, PlayStation, Switch and most other pads. "
                                          "Xbox controllers only is the older XInput path, for a pad that misbehaves. "
                                          "Every game uses this."
+                : k == BIND_ROW_MOUSE  ? "Moving the mouse turns controller 1's right stick, and the stick "
+                                         "itself still works. Click in the game to give it the pointer; "
+                                         "switching away gives it back. This game only."
+                : k == BIND_ROW_SENS   ? "How far a movement of the mouse pushes the stick: higher turns faster. "
+                                         "A or Enter goes back to the default. This game only."
+                : k == BIND_ROW_DEAD   ? "Where on the stick the slightest movement starts. Raise it if slow "
+                                         "movements do nothing; lower it if the view creeps or jumps. "
+                                         "A or Enter goes back to the default. This game only."
                 : k == BIND_ROW_RESET  ? "Put this controller back to the built-in mapping."
-                : "Left and right choose the controller or the keyboard column. "
+                : "Left and right choose the controller or the keyboard and mouse column. "
                   "A or Enter rebinds. Bindings are shared by every game.",
                 11, THEME_TEXT_DIM);
         }
@@ -1497,6 +1603,11 @@ const char *launcher_title(void)
     return g_title_name;
 }
 
+int launcher_mouse_button(int button)
+{
+    return capture_mouse(button);
+}
+
 void launcher_draw(void)
 {
     draw();
@@ -1611,6 +1722,29 @@ void launcher_hover(int mx, int my)
         i = hit_bind_row(mx, my);
     if (i >= 0 && i != g_sel)
         g_sel = i;
+}
+
+/* The wheel scrolls the one list that is longer than the window, the Input
+ * tab's, a row a notch. The selection stays on its row while that row is
+ * still in view, and the row under the pointer is then lit as a move would
+ * light it. The other tabs fit, so the wheel has nothing to do there. */
+void launcher_wheel(int rows, int mx, int my)
+{
+    int last = BIND_TOTAL_ROWS - BIND_ROWS_VISIBLE, top, k;
+
+    if (!rows || g_tab != TAB_INPUT || g_capturing)
+        return;
+    if (last < 0)
+        last = 0;
+    k = g_bind_top + g_sel;
+    top = g_bind_top + rows;
+    if (top < 0) top = 0;
+    if (top > last) top = last;
+    if (k < top) k = top;
+    if (k >= top + BIND_ROWS_VISIBLE) k = top + BIND_ROWS_VISIBLE - 1;
+    g_bind_top = top;
+    g_sel = k - top;
+    launcher_hover(mx, my);
 }
 
 void launcher_tick(void)

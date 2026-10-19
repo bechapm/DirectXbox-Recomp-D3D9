@@ -196,6 +196,14 @@ typedef struct RecompSettings {
     int  fullscreen;            /* 0 or 1: borderless, on the window's monitor */
     int  vrr;                   /* 0 or 1: present for variable refresh when fullscreen */
     int  frame_interp;          /* 1 (off) to 4: frames shown for each the game draws */
+    /* Mouse look (src/input/input_bindings.c): the mouse moves controller
+     * 1's right stick, on top of whatever is bound to it. Per title, unlike
+     * the bindings, because a camera on the mouse is right for one game and
+     * a surprise in the next. */
+    int  mouse_look;            /* 0 or 1 */
+    int  mouse_sensitivity;     /* RECOMP_MOUSE_SENSITIVITY_MIN..MAX */
+    int  mouse_deadzone;        /* 0..RECOMP_MOUSE_DEADZONE_MAX: percent of a push
+                                 * every movement starts at */
     char game_dir[512];         /* empty means beside the executable */
 
     /* System Link (src/kernel/xbox_net_udp.c). */
@@ -209,6 +217,23 @@ typedef struct RecompSettings {
 /* The port a System Link host listens on when nobody chooses one. The same
  * number as XBOX_NET_DEFAULT_PORT, which the runtime falls back to. */
 #define RECOMP_SYSLINK_DEFAULT_PORT 27610
+
+/* Mouse look's defaults and ranges: the one place they are decided. The
+ * launcher's rows, the settings file and the runtime all read these, so a
+ * better default found by playing is a change here and nowhere else.
+ *
+ * Sensitivity: a full push of the stick at 100,000 / sensitivity mouse
+ * counts a second, so 80 is a full push at 1,250 -- an unhurried turn on an
+ * 800 dpi mouse -- and each step is 1.25% of the default.
+ * Deadzone: the percent of a push any movement starts at, so a slow one
+ * gets past the title's own dead zone. 5% by default; raise it for a title
+ * whose own dead zone swallows slow movements.
+ * Both chosen by playing (Oct 2026; they were 25 and 20). */
+#define RECOMP_MOUSE_SENSITIVITY_DEFAULT 80
+#define RECOMP_MOUSE_SENSITIVITY_MIN     1
+#define RECOMP_MOUSE_SENSITIVITY_MAX     100
+#define RECOMP_MOUSE_DEADZONE_DEFAULT    5
+#define RECOMP_MOUSE_DEADZONE_MAX        90
 
 void recomp_settings_defaults(RecompSettings *s);
 

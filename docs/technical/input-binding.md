@@ -84,6 +84,8 @@ or `[]` unbinds.
 | `pad:dpad_up` .. `pad:dpad_right` | the host D-pad |
 | `pad:lt` `pad:rt` | analog triggers, 0-255 |
 | `pad:lx+` `pad:lx-` `pad:ly+` .. `pad:ry-` | one half of one stick axis |
+| `mouse:left` `mouse:right` `mouse:middle` | a mouse button, heard by the game's window (Oct 2026) |
+| `mouse:x1` `mouse:x2` | the mouse's side buttons, back and forward |
 
 **Controls** are the 24 inputs an Xbox pad has: `a b x y black white start
 back ltrigger rtrigger`, `dpad_up/down/left/right`, `lthumb`, `rthumb`, and
@@ -128,6 +130,68 @@ The sticks have no keyboard default. Every comfortable key around WASD is
 already a button in that map, and guessing would have silently changed what
 existing runs do.
 
+## The mouse
+
+*October 2026.* Two things, and they live in different files on purpose.
+
+**Mouse buttons are sources.** `mouse:left` and the rest bind like any key,
+on any port, and count as a key for whether a port is present. Only the game
+window hears them, so `src/hle/hle_d3d8.c` passes them on: from its window
+messages on Windows and from the SDL shell's events elsewhere
+(`host_window_callbacks.on_mouse_button`). Unlike the keyboard on Windows,
+which `GetAsyncKeyState` reads whatever is in front, a click in another
+window is not a press. A window that loses the focus lets every button go.
+The wheel is not a source.
+
+**Mouse look is a setting of the title, not a binding.** `mouse_look = 1` in
+the title's settings file (`RECOMP_MOUSE_LOOK`; the launcher's Input tab has
+it as a checkbox) moves **controller 1's right stick** with the mouse. It is
+added after the bindings have been sampled, so whatever is bound to
+`rstick_*` -- the pad's own stick by default -- still works, and a still
+mouse adds nothing. Per title because a camera on the mouse is right for a
+shooter and a surprise in a racing game; bindings are the person's, shared
+by every game.
+
+A stick says how fast to turn, so the push is proportional to the mouse's
+speed: the counts since the last look over the time since, worked out again
+at most every 12 ms whatever the title's polling rate, averaged with the
+period before (a 125 Hz mouse lands one report in some periods and two in
+others), and kept on the stick. Two settings shape it, both rows on the
+launcher's Input tab, lines in the title's settings file and environment
+variables:
+
+| setting | range | default | what it does |
+|---|---|---|---|
+| `mouse_sensitivity` (`RECOMP_MOUSE_SENSITIVITY`) | 1-100 | 80 | a full push at 100,000 / sensitivity counts a second, so 80 is 1,250 -- an unhurried turn on an 800 dpi mouse; each step is 1.25% of the default |
+| `mouse_deadzone` (`RECOMP_MOUSE_DEADZONE`) | 0-90 % | 5 | where on the stick the slightest movement starts, so a slow one gets past the title's own dead zone. Too low and slow movements do nothing; too high and the view creeps or jumps |
+
+**Tuning them.** The defaults and ranges are `RECOMP_MOUSE_*` in
+`src/config/recomp_config.h` and nowhere else: the launcher's rows, the
+settings file's comments and the runtime all read them, so a better default
+found by playing is a one-line change there. A setting already written to a
+title's file keeps its value, so a new default reaches a player who has
+never moved the row, and one who has keeps theirs. In the launcher, A or
+Enter on either row puts it back to the default. To try values without the
+launcher, set the environment variables, which beat the file; the
+`[INPUT] mouse look:` line at start-up says which values a run got.
+Players' pads differ from title to title in the dead zone they apply, so a
+deadzone that suits one title may not suit the next -- which is part of why
+these are per title.
+
+With it on, the window takes the pointer while it is in front: hidden and
+kept inside it. On Windows the motion is raw input (`WM_INPUT`), which keeps
+coming at the edge of the screen and has no pointer acceleration in it, and
+the cursor is clipped to the client area; elsewhere it is SDL's relative
+mouse mode. Switching away gives the pointer back; switching to the window,
+or a click in it, takes it again; on Windows that click is not passed to the
+title.
+A `RECOMP_WINDOW_BACKGROUND=1` run never takes it. The `[INPUT] mouse look:`
+line at start-up says it is on and with what; the first movement is named
+like any first press.
+
+`tests/input_mouse` drives both through `recomp_bindings_sample` with no
+window and no pad.
+
 ## The UI
 
 ```
@@ -158,6 +222,14 @@ the port simply reports empty until it is plugged in.
 
 Capture compares against the pad state taken when the dialog opened, so a
 stick resting off centre or a trigger resting high does not bind itself.
+A click on the capture box binds that mouse button (left, right or middle;
+Tk cannot see the side buttons everywhere), and a click on its own buttons
+does what they say.
+
+The launcher's Input tab binds them too: its second column is "keyboard /
+mouse", and while a binding there waits for its answer any mouse button,
+the side ones included, is taken. A click while the pad column waits gives
+up, as Escape does.
 
 ## What the runtime does with it
 

@@ -197,6 +197,10 @@ OSes in `src/config/recomp_config.h`), else one beside the executable — and fa
 back to exactly the old behaviour when there is none. `py -3 -m tools.input_ui` is the UI
 that writes it. See `docs/technical/input-binding.md`. `RECOMP_FAKE_INPUT` and
 `RECOMP_INPUT_SEQ` still apply to controller 1 and ignore the bindings.
+**The mouse (Oct 2026):** `mouse:left|right|middle|x1|x2` are binding sources, and the
+title's `mouse_look` setting (launcher Input tab checkbox, `RECOMP_MOUSE_LOOK`) adds the
+mouse's speed to controller 1's right stick on top of its bindings, with the game window
+holding the pointer while it is in front. Same doc, "The mouse".
 
 **Update, 22 Sep 2026 -- TimeSplitters: Future Perfect (XDK 5849) reaches its front end.**
 Five faults sat on top of each other and each needed its own measurement; the

@@ -291,7 +291,16 @@ static float upload_and_measure(int reg)
     static const float row[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
 
     d3d8_vsh_set_constant(reg, row, 1);
-    return d3d8_vsh_constants()[reg * 4 + 1] / row[1];
+    return d3d8_vsh_constants_for_draw(1)[reg * 4 + 1] / row[1];
+}
+
+/* The same for a draw into a texture rather than the screen. */
+static float upload_and_measure_offscreen(int reg)
+{
+    static const float row[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
+
+    d3d8_vsh_set_constant(reg, row, 1);
+    return d3d8_vsh_constants_for_draw(0)[reg * 4 + 1] / row[1];
 }
 
 /* The one widescreen switch, as the renderer acts on it. What it resolves
@@ -323,6 +332,10 @@ static void test_hor_plus(void)
     check(d3d8_vsh_hor_plus_reg() == 96, t, "a Hor+ title's register is the one it names");
     check(upload_and_measure(96) == 0.75f, t, "a Hor+ title's projection is scaled by 0.75");
     check(upload_and_measure(60) == 1.0f, t, "and no other register is");
+    check(upload_and_measure_offscreen(96) == 1.0f, t,
+          "a draw into a texture (a shadow map) is not widened");
+    check(d3d8_vsh_constants()[96 * 4 + 1] == 2.0f, t,
+          "the stored constant is left as the title set it");
 
     /* Settings set by hand still decide. */
     set_env("RECOMP_HOR_PLUS", "0");

@@ -49,6 +49,31 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out);
  * takes it. Nothing happens for a keyboard port or a pad without motors. */
 void recomp_bindings_rumble(unsigned port, unsigned short low, unsigned short high);
 
+/* ---- the mouse ----------------------------------------------------------
+ *
+ * Fed by whoever owns the game window (src/hle/hle_d3d8.c), because only
+ * the window hears the mouse. Its buttons are `mouse:` sources any control
+ * can be bound to. Its motion is mouse look: with the title's `mouse_look`
+ * setting on (RECOMP_MOUSE_LOOK), controller 1's right stick follows the
+ * mouse as well as whatever is bound to it, so the pad's own stick still
+ * works. Every call is safe from any thread. */
+enum {
+    RECOMP_MOUSE_LEFT, RECOMP_MOUSE_RIGHT, RECOMP_MOUSE_MIDDLE,
+    RECOMP_MOUSE_X1, RECOMP_MOUSE_X2,
+    RECOMP_MOUSE_BUTTONS
+};
+
+/* Mouse look is on and controller 1 reads something: the window should
+ * take the pointer (hide it and keep it inside) while it has the focus. */
+int  recomp_mouse_look(void);
+/* Relative motion in mouse counts, x right and y down. Only counted while
+ * mouse look is on. */
+void recomp_mouse_move(float dx, float dy);
+void recomp_mouse_button(int button, int down);
+/* The window lost the focus or the pointer: every button up, and motion
+ * not yet read is dropped, so nothing is left held or moving. */
+void recomp_mouse_release(void);
+
 #ifdef __cplusplus
 }
 #endif

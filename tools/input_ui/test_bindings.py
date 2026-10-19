@@ -69,6 +69,20 @@ class Sources(unittest.TestCase):
                        "key:z", "key:#0", "key:#999"):
             self.assertFalse(bindings.is_valid_source(source), repr(source))
 
+    def test_the_mouse_buttons_are_valid_and_its_movement_is_not(self):
+        for source in ("mouse:left", "mouse:right", "mouse:middle",
+                       "mouse:x1", "mouse:x2"):
+            self.assertTrue(bindings.is_valid_source(source), source)
+        for source in ("mouse:", "mouse:Left", "mouse:wheel", "mouse:x+"):
+            self.assertFalse(bindings.is_valid_source(source), source)
+
+    def test_a_mouse_binding_survives_a_load_and_a_save(self):
+        config = bindings.normalise({"controllers": [
+            {"port": 1, "bindings": {"rtrigger": ["pad:rt", "mouse:left"]}}]})
+        self.assertEqual(config["controllers"][0]["bindings"]["rtrigger"],
+                         ["pad:rt", "mouse:left"])
+        self.assertEqual(bindings.source_label("mouse:x2"), "Mouse forward button")
+
     def test_a_key_code_is_written_by_name_when_it_has_one(self):
         self.assertEqual(bindings.key_source(0x0D), "key:RETURN")
         self.assertEqual(bindings.key_source(ord("Z")), "key:Z")

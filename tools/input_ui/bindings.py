@@ -14,7 +14,8 @@ The file is JSON:
       "pad_api": "sdl",
       "controllers": [
         {"port": 1, "device": "gamepad:0", "deadzone": 7849,
-         "bindings": {"a": ["pad:a", "key:Z"], "start": "key:RETURN", ...}},
+         "bindings": {"a": ["pad:a", "key:Z"], "start": "key:RETURN",
+                      "rtrigger": ["pad:rt", "mouse:left"], ...}},
         ...
       ]
     }
@@ -87,6 +88,14 @@ PAD_SOURCES = (["pad:" + b for b in PAD_BUTTONS]
                + ["pad:lt", "pad:rt"]
                + ["pad:" + a for a in PAD_AXES])
 
+# What a "mouse:" source may name: the buttons the game window hears. x1
+# and x2 are the side buttons (back and forward). Mirrors MOUSE_BUTTONS in
+# src/input/input_bindings.c. Mouse movement is not a source: mouse look is
+# a per-title setting (mouse_look in the title's settings file) that moves
+# controller 1's right stick on top of its bindings.
+MOUSE_BUTTONS = ["left", "right", "middle", "x1", "x2"]
+MOUSE_SOURCES = ["mouse:" + b for b in MOUSE_BUTTONS]
+
 # Virtual-key names a "key:" source may use, beyond the single letters and
 # digits (which are their own code on Windows). Mirrors the KEYS table in
 # src/input/input_bindings.c.
@@ -148,7 +157,7 @@ def is_valid_source(source):
     """Is this a source string the runtime will understand?"""
     if not isinstance(source, str) or not source:
         return False
-    if source in PAD_SOURCES:
+    if source in PAD_SOURCES or source in MOUSE_SOURCES:
         return True
     if source.startswith("key:"):
         name = source[4:]
@@ -183,6 +192,12 @@ def source_label(source):
     if source.startswith("key:"):
         name = source[4:]
         return "Key #" + name[1:] if name.startswith("#") else name
+    if source.startswith("mouse:"):
+        return {
+            "left": "Left mouse button", "right": "Right mouse button",
+            "middle": "Middle mouse button", "x1": "Mouse back button",
+            "x2": "Mouse forward button",
+        }.get(source[6:], source)
     if source.startswith("pad:"):
         name = source[4:]
         pretty = {

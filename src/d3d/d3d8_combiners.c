@@ -1239,6 +1239,15 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
         } else if (show && strcmp(show, "tc0") == 0) {    /* stage 0 coordinates */
             EMIT("    result.rgb = float3(frac(input.tc0.xy), saturate(input.tc0.z));\n");
             EMIT("    result.a = 1.0;\n");
+        } else if (show && strlen(show) == 8 && strncmp(show, "tc", 2) == 0 &&
+                   show[2] >= '0' && show[2] <= '3' && strcmp(show + 3, "range") == 0) {
+            /* tc<n>range: stage n's projected coordinate against 0..1 --
+             * red x < 0, green y < 0, blue outside the square. Where a
+             * border address mode reads its border colour. */
+            EMIT("    { float2 u = input.tc%c.xy / (input.tc%c.w != 0.0 ? input.tc%c.w : 1.0);\n"
+                 "      result.rgb = float3(u.x < 0.0 ? 1.0 : 0.0, u.y < 0.0 ? 1.0 : 0.0, "
+                 "any(abs(u - 0.5) > 0.5) ? 1.0 : 0.0); }\n", show[2], show[2], show[2]);
+            EMIT("    result.a = 1.0;\n");
         } else if (show && strcmp(show, "tc0raw") == 0) { /* coordinate size */
             EMIT("    result.rgb = saturate(abs(input.tc0.xyz) / 16.0);\n");
             EMIT("    result.a = 1.0;\n");

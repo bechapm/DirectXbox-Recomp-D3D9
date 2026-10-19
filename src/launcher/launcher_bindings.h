@@ -37,9 +37,9 @@ typedef struct BindPort {
     BindDevice device;
     int        pad;                       /* pad slot, 0..3 */
     int        deadzone;
-    /* One pad source and one keyboard source per control, which is the
-     * shape the defaults have and the shape a player thinks in. A file
-     * with more sources than that keeps them: see `extra`. */
+    /* One pad source and one keyboard-or-mouse source ("key:" or
+     * "mouse:") per control, which is the shape the defaults have and the
+     * shape a player thinks in. */
     char pad_src[BIND_CONTROLS][BIND_SOURCE_LEN];
     char key_src[BIND_CONTROLS][BIND_SOURCE_LEN];
 } BindPort;

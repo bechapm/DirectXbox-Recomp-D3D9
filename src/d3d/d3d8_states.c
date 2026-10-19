@@ -369,6 +369,21 @@ void d3d8_states_apply_sampler(DWORD stage)
     sd.address_w = RHI_ADDRESS_WRAP;
     sd.max_anisotropy = tss[D3DTSS_MAXANISOTROPY] ? tss[D3DTSS_MAXANISOTROPY] : 1;
 
+    /* What a BORDER stage reads outside 0..1: the title's D3DTSS_BORDERCOLOR
+     * (a D3DCOLOR, ARGB). Left at zero it was transparent black whatever the
+     * title asked for. Turok: Evolution projects its shadow map, or a white
+     * 4x4 stand-in, onto every object through stage 3 with a white border, so
+     * that what lies outside the light's frustum is unshadowed: its weapon
+     * and its foliage, which lie outside it, drew solid black. */
+    {
+        DWORD c = tss[D3DTSS_BORDERCOLOR];
+
+        sd.border[0] = (float)((c >> 16) & 0xFF) / 255.0f;
+        sd.border[1] = (float)((c >>  8) & 0xFF) / 255.0f;
+        sd.border[2] = (float)( c        & 0xFF) / 255.0f;
+        sd.border[3] = (float)((c >> 24) & 0xFF) / 255.0f;
+    }
+
     /* Forced anisotropy, and only where the title already minifies
      * linearly. A stage filtering by nearest texel is almost always the
      * 2D layer -- fonts, HUD art, anything authored to land on exact

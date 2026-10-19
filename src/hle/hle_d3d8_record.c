@@ -12,7 +12,7 @@
  *
  * RECOMP_D3D8_CAPTURE_EVERY=<n> (n >= 1) keeps capturing: after the frame
  * at the requested swap, one more every n swaps, each to <path>_<swap> with
- * the capture extension, at most CAPTURE_MAX_FILES files. A title never
+ * the capture extension, at most 24 files (RECOMP_D3D8_CAPTURE_MAX=<n> for more). A title never
  * reaches the same moment at the same swap twice, so one long run captured
  * throughout is how to get the frame wanted; the files are picked afterwards.
  *
@@ -52,7 +52,7 @@ IDirect3DDevice8 *hle_d3d8_shadow_device(void);
 
 #define CAPTURE_DEFAULT_SWAP    120
 #define CAPTURE_MAX_TEXTURES    1024
-#define CAPTURE_MAX_FILES       24   /* as RECOMP_HLE_D3D8_DUMP */
+static int g_max_files = 24;   /* RECOMP_D3D8_CAPTURE_MAX, as RECOMP_HLE_D3D8_DUMP */
 #define CAPTURE_MAX_LEVELS      16
 #define CAPTURE_STAGES          4    /* d3d8_device.c MAX_TEXTURE_STAGES */
 #define CAPTURE_RENDER_STATES   256  /* d3d8_device.c MAX_RENDER_STATES */
@@ -617,6 +617,9 @@ static void capture_configure(void)
     min_draws = getenv("RECOMP_D3D8_CAPTURE_MINDRAWS");
     if (min_draws && atol(min_draws) > 0)
         g_min_draws = (unsigned long)atol(min_draws);
+    every = getenv("RECOMP_D3D8_CAPTURE_MAX");
+    if (every && atoi(every) > 0)
+        g_max_files = atoi(every);
     if (g_path && *g_path)
         fprintf(stderr, "[HLE-D3D8] capture armed: swap %lu%s%s -> %s (host calls, "
                 "format v%u)\n", g_target_swap,
@@ -684,7 +687,7 @@ void hle_d3d8_capture_swap(unsigned long swaps, uint32_t width, uint32_t height)
                     g_unrecorded_binds);
         fflush(stderr);
         g_files++;
-        if (g_every && g_files < CAPTURE_MAX_FILES)
+        if (g_every && g_files < g_max_files)
             g_target_swap = g_frame + g_every;
         else
             g_path = NULL;               /* done: one frame, or the file cap */
