@@ -120,6 +120,8 @@ typedef struct Envelope {
 typedef struct Buffer {
     uint32_t iface;              /* the IDirectSoundBuffer the game holds */
     uint32_t data, size, format;
+    uint32_t region;      /* the play region's start: data and size are the region's */
+    uint32_t whole;       /* the buffer's own size, as the title's settings hold it */
     int      output;             /* samples we can send to the host */
     /* IDirectSoundBuffer_Pause: the model is stopped with its cursor kept,
      * and paused_flags holds the play flags to resume with. */
@@ -582,8 +584,8 @@ static void pump(Buffer *b, uint64_t now)
     if (!b->output || !out->playing || now <= out->last_ms ||
         now - out->last_ms < 10u)
         return;
-    if (b->data != setting(b->iface, SET_DATA) ||
-        b->size != setting(b->iface, SET_SIZE) ||
+    if (b->data - b->region != setting(b->iface, SET_DATA) ||
+        b->whole != setting(b->iface, SET_SIZE) ||
         b->format != setting(b->iface, SET_FORMAT)) {
         retire(b);
         return;
@@ -752,7 +754,7 @@ static int reclaim_slot(uint64_t now)
         Buffer *b = &g_buffers[i];
         if (b->iface == 0u)
             return 1;
-        if (b->data != setting(b->iface, SET_DATA) ||
+        if (b->data - b->region != setting(b->iface, SET_DATA) ||
             b->format != setting(b->iface, SET_FORMAT)) {
             retire(b);
             if (!gone++)
@@ -787,6 +789,7 @@ static Buffer *model_for_known(Buffer *known, uint32_t iface, uint64_t now)
 {
     Buffer *b = known ? known : find(iface);
     uint32_t size, data, format, tag, channels, bits, align, rate, loop_start;
+    uint32_t play_start, play_len, whole;
     uint32_t decoded_size, decoded_loop, block_align;
     int output;
     uint32_t i;
@@ -796,10 +799,30 @@ static Buffer *model_for_known(Buffer *known, uint32_t iface, uint64_t now)
         return NULL;
     size       = setting(iface, SET_SIZE);
     data       = setting(iface, SET_DATA);
+    whole      = size;
     format     = setting(iface, SET_FORMAT);
     align      = setting(iface, SET_ALIGN);
     rate       = setting(iface, SET_RATE);
     loop_start = setting(iface, SET_LOOP_START);
+    /* The play region (SetPlayRegion): only that part of the buffer plays,
+     * and the loop region is counted from its start. Modelled as a buffer of
+     * its own -- data moved to the region, size its length -- so a sound ends
+     * where its region does and a new region retires the old model as new
+     * data would. XGRA keeps a sound bank in one buffer and plays each sound
+     * as a region of it (a menu blip is 3,302 bytes at 86,952 of 145,308);
+     * played whole, every blip ran on through the rest of the bank, and
+     * every sound overlapped the ones after it. */
+    play_start = setting(iface, SET_PLAY_START);
+    play_len   = setting(iface, SET_PLAY_LEN);
+    if (play_start >= size)
+        play_start = 0u;
+    if (play_start || play_len) {
+        uint32_t len = size - play_start;
+        if (play_len && play_len < len)
+            len = play_len;
+        data += play_start;
+        size = len;
+    }
     tag        = format & 0xFFFFu;
     channels   = (format >> 16) & 0xFFu;
     bits       = format >> 24;
@@ -875,6 +898,8 @@ static Buffer *model_for_known(Buffer *known, uint32_t iface, uint64_t now)
             b->iface = iface;
             b->data = data;
             b->size = size;
+            b->region = play_start;
+            b->whole = whole;
             b->format = format;
             b->output = output;
             b->model.loop_start_bytes = decoded_loop;
@@ -1576,6 +1601,7 @@ HLE_EXPORT(IDirectSoundBuffer_GetCurrentPosition)
         if ((b->format & 0xFFFFu) == TAG_ADPCM && b->output)
             cursor = cursor / (XBOX_ADPCM_BLOCK_SAMPLES * b->model.block_align) *
                      (XBOX_ADPCM_BLOCK_BYTES * b->model.block_align / 2u);
+        cursor += b->region;          /* the title counts from the buffer's start */
         /* RECOMP_DSOUND_CURSOR_TRACE=1: what a title polling for its clock
          * sees, once a second per buffer. A movie paced by its sound stops
          * dead when this stops moving. */
@@ -1617,6 +1643,8 @@ HLE_EXPORT(IDirectSoundBuffer_SetCurrentPosition)
     b = model_for(iface, now);
     if (b) {
         pump(b, now);
+        /* From the buffer's start, as the title counts, to the region's. */
+        position = position >= b->region ? position - b->region : 0u;
         if ((b->format & 0xFFFFu) == TAG_ADPCM && b->output) {
             uint32_t block = XBOX_ADPCM_BLOCK_BYTES * b->model.block_align / 2u;
             if (position >= b->size || position % block != 0u)

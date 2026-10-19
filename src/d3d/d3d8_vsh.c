@@ -973,6 +973,14 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
      * Exact at the vertices; across a triangle the host interpolates it
      * linearly in screen space, where w itself is not. See
      * d3d8_vsh_wbuffer_on. */
+    /* w = 0: a 2D program that leaves w unset gives a sane screen position,
+     * and is drawn with w = 1. A vertex in the eye's own plane does not: the
+     * program's divide by w (RCC, clamped to ~1.8e19) has blown x and y up,
+     * and the NV2A clips it. Given w = 1 it was drawn, and XGRA's flare
+     * triangle -- three vertices at z = 0 under a projection with w = z --
+     * filled the screen's top-right quarter from the centre outwards, one
+     * flat colour. Such a vertex is now dropped (all zero), so a triangle of
+     * them has no area. */
     sb_append(&sb,
         "    /* Undo the Xbox screen-space transform */\n"
         "    if (xboxScreenspaceEnable.x != 0) {\n"
@@ -981,7 +989,12 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "        oPos /= xboxScreenspaceScale;\n"
         "        if (xboxScreenspaceEnable.y != 0 && xboxScreenspaceScale.z != 0)\n"
         "            oPos.z = xboxW / xboxScreenspaceScale.z;\n"
-        "        if (oPos.w == 0) oPos.w = 1;\n"
+        "        if (oPos.w == 0) {\n"
+        "            if (abs(oPos.x) > 1.0e4 || abs(oPos.y) > 1.0e4)\n"
+        "                oPos = float4(0, 0, 0, 0);   /* through the eye: clipped */\n"
+        "            else\n"
+        "                oPos.w = 1;\n"
+        "        }\n"
         "        oPos.xyz *= oPos.w;\n"
         "    }\n\n");
 

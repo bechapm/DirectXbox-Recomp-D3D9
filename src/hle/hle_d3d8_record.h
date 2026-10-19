@@ -61,6 +61,9 @@ int hle_d3d8_capture_active(void);
  * executable. */
 void hle_d3d8_capture_next_frame(void);
 
+/* `name` in the executable's own folder (hle_d3d8.c): where F11 writes. */
+void hle_d3d8_beside_exe(char *out, size_t bytes, const char *name);
+
 /* ------------------------------------------------------- deferred frames
  *
  * RECOMP_HLE_D3D8_DEFER=1 (or `defer_draws = 1` in the title's settings

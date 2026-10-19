@@ -504,10 +504,15 @@ int hle_ds3d_mix(uint32_t key, uint32_t channels, int32_t voice_volume, int forc
         }
     }
     if (tracing() && now - v->trace_ms >= 1000u) {
-        fprintf(stderr, "[DS3D] voice %08X %s mode %u at %.1f m: distance %d, cone %d "
-                "(hundredths dB), ears %.2f/%.2f, doppler x%.3f, volume %d, %u bins:",
-                key, three_d ? "3D" : "2D", v->now.mode, (double)distance, dist, cone,
-                (double)ear_left, (double)ear_right, (double)ratio, voice_volume, count);
+        fprintf(stderr, "[DS3D] voice %08X %s mode %u at %.1f m: distance %d (min %.1f max %.1f "
+                "rolloff %.2f curve %u points), cone %d (hundredths dB), ears %.2f/%.2f, "
+                "doppler x%.3f, volume %d, into %08X%s, %u bins:",
+                key, three_d ? "3D" : "2D", v->now.mode, (double)distance, dist,
+                (double)v->now.min_distance, (double)v->now.max_distance,
+                (double)(g_listener.rolloff_factor * v->now.rolloff_factor),
+                v->now.curve ? v->now.curve_points : 0u, cone,
+                (double)ear_left, (double)ear_right, (double)ratio, voice_volume,
+                v->output, v->mixin ? " (a mix-in)" : "", count);
         for (k = 0; k < count; k++)
             fprintf(stderr, " %u@%d", bins[k], vols[k]);
         fprintf(stderr, " -> L %.2f R %.2f C %.2f BL %.2f BR %.2f\n",
@@ -1435,3 +1440,4 @@ HLE_EXPORT(IDirectSound_CreateSoundBuffer)
     PASS(IDirectSound_CreateSoundBuffer);
     buffer_created(desc, out);
 }
+

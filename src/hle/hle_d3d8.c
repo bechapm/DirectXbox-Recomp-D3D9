@@ -65,6 +65,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "platform/host_main.h"   /* host_exe_path: where F11 writes */
 #include "hle.h"
 #include "recomp_config.h"
 
@@ -1193,6 +1194,7 @@ struct shadow_program {
      * stream 0 vertex, as they are when the host can read the format
      * (packed_raw, packed_size bytes) and unpacked when it cannot. */
     uint8_t  packed_stream[SHADOW_MAX_PACKED];
+    uint8_t  packed_reg[SHADOW_MAX_PACKED];      /* the v register it feeds */
     uint8_t  packed_raw[SHADOW_MAX_PACKED];
     UINT     packed_size[SHADOW_MAX_PACKED];
     int      other_streams;              /* any register from stream 1..15 */
@@ -2007,6 +2009,22 @@ unsigned long hle_d3d8_screen_changes(void)
 /* Set by the key that asks for the frame on screen; see overlay_frame. */
 static int g_dump_requested;
 
+/* `name` in the executable's own folder: where F11's picture and capture go.
+ * They were relative names, so they landed in the folder the game was started
+ * from -- / for a game opened from Finder, which cannot be written, and the
+ * key appeared to do nothing. Falls back to the bare name. */
+void hle_d3d8_beside_exe(char *out, size_t bytes, const char *name)
+{
+    char dir[1024];
+
+    if (host_exe_path(dir, sizeof dir)) {
+        host_path_dirname(dir);
+        snprintf(out, bytes, "%s/%s", dir, name);
+    } else {
+        snprintf(out, bytes, "%s", name);
+    }
+}
+
 static void shadow_dump_next_frame(void)
 {
     g_dump_requested = 1;
@@ -2195,7 +2213,7 @@ static void shadow_dump_frame(void)
     static int configured, every = 300, written, keep_last, max_files = 24;
     static unsigned long min_draws, last_dump, from_swap;
     static char ring[24][512];
-    static char asked_prefix[8];
+    static char asked_prefix[1024];
     int asked;
     char path[512];
 
@@ -2237,7 +2255,7 @@ static void shadow_dump_frame(void)
     asked = g_dump_requested;
     g_dump_requested = 0;
     if (asked && (!prefix || !*prefix)) {
-        snprintf(asked_prefix, sizeof asked_prefix, "frame");
+        hle_d3d8_beside_exe(asked_prefix, sizeof asked_prefix, "frame");
         prefix = asked_prefix;
     }
     if (!asked) {
@@ -3650,6 +3668,7 @@ static void shadow_read_declaration(int slot, uint32_t handle)
             p->packed_out[packed] = out;
             p->packed_format[packed] = format;
             p->packed_stream[packed] = (uint8_t)(stream == base ? 0u : stream);
+            p->packed_reg[packed] = (uint8_t)i;
             p->packed_raw[packed] = 0;
             p->packed_size[packed] = size;
             packed++;
@@ -3663,6 +3682,7 @@ static void shadow_read_declaration(int slot, uint32_t handle)
             p->packed_out[packed] = out;
             p->packed_format[packed] = format;
             p->packed_stream[packed] = (uint8_t)(stream == base ? 0u : stream);
+            p->packed_reg[packed] = (uint8_t)i;
             p->packed_raw[packed] = 1;
             p->packed_size[packed] = size;
             packed++;
@@ -5918,6 +5938,40 @@ HLE_EXPORT(D3DDevice_CopyRects)
 }
 
 
+/* What a packed register whose stream has no buffer reads: the register's
+ * current value (d3d8_vsh_get_vertex_data; (0, 0, 0, 1) until the title sets
+ * one), in the form its slot in the expanded vertex holds -- floats for an
+ * unpacked format, or the host's own format for one copied as it is. */
+static void packed_current(const struct shadow_program *p, int k, uint8_t *dst)
+{
+    float v[4];
+    int floats;
+    UINT size;
+
+    d3d8_vsh_get_vertex_data(p->packed_reg[k], v);
+    if (!p->packed_raw[k]) {
+        floats = xbox_vsdt_expanded(p->packed_format[k], &size);
+        memcpy(dst, v, (size_t)floats * sizeof v[0]);
+        return;
+    }
+    switch (p->packed_format[k]) {
+    case 0x12: case 0x22: case 0x32: case 0x42:          /* FLOAT1..4 */
+        memcpy(dst, v, p->packed_size[k]);
+        break;
+    case 0x40: {                                          /* D3DCOLOR, BGRA */
+        int c;
+        for (c = 0; c < 4; c++) {
+            float f = v[c == 3 ? 3 : 2 - c];
+            dst[c] = (uint8_t)(f <= 0 ? 0 : f >= 1 ? 255 : (int)(f * 255.0f + 0.5f));
+        }
+        break;
+    }
+    default:                                              /* shorts, bytes */
+        memset(dst, 0, p->packed_size[k]);
+        break;
+    }
+}
+
 /* The vertices a program with NORMPACKED3 registers reads: each vertex copied
  * behind its unpacked normals, as shadow_read_declaration laid them out. The
  * bits are x:11, y:11, z:10, signed, divided by 1023, 1023 and 511
@@ -6026,7 +6080,14 @@ static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *s
         base[k] = first == NO_FIRST_VERTEX ? NULL
                 : (const uint8_t *)hle_d3d8_stream_vertices(p->packed_stream[k], first,
                                                             vertices, &sstride[k]);
-        if (!base[k] || sstride[k] < p->packed_offset[k] + p->packed_size[k]) {
+        /* A stream with no buffer behind it: the NV2A reads the register's
+         * current value for every vertex (packed_current below). XGRA's
+         * fixed-function declarations put the normal on stream 2 and never
+         * bind it; refusing those draws took two of every three of them,
+         * its skies and terrain among them. */
+        if (!base[k])
+            continue;
+        if (sstride[k] < p->packed_offset[k] + p->packed_size[k]) {
             *failed = 1;
             return NULL;
         }
@@ -6048,9 +6109,15 @@ static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *s
         uint8_t *dst = out + (size_t)v * out_stride;
 
         for (k = 0; k < p->packed_count; k++) {
-            const uint8_t *at = base[k] + (size_t)v * sstride[k] + p->packed_offset[k];
+            const uint8_t *at;
             float n[4];
             int c, count;
+
+            if (!base[k]) {
+                packed_current(p, k, dst + p->packed_out[k]);
+                continue;
+            }
+            at = base[k] + (size_t)v * sstride[k] + p->packed_offset[k];
 
             if (p->packed_raw[k]) {
                 memcpy(dst + p->packed_out[k], at, p->packed_size[k]);
