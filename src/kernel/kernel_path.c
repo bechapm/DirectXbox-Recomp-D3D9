@@ -16,6 +16,7 @@
 #include "xbox_console_id.h"
 #include "xbox_watchpoint.h"
 #include "recomp_config.h"   /* recomp_config_title_id: per-title cache */
+#include "platform/host_main.h"   /* host_exe_path: the default disc overlay */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -125,24 +126,46 @@ static const char *system_dir_setting(void)
  * A title update is a set of deltas against the disc's files, each checked
  * by hash, so the online updater patching the hard-drive copy's XBE made a
  * file 7 bytes off the update's and gave up with ERROR_INVALID_DATA. The
- * title's launcher sets it; the updater the title launches inherits it.
- * Read through D: only; nothing is written there. */
-static int disc_overlay_for(const char *xbox_path, char *out, size_t n)
+ * title's build may keep one in a disc_overlay folder beside its executable,
+ * which is the default when it holds a default.xbe; the updater the title
+ * launches inherits it (xbox_launch_note_return). Read through D: only;
+ * nothing is written there. */
+const char *xbox_path_disc_overlay(void)
 {
     static int looked;
     static const char *dir;
+    static char beside[1024];
+
+    if (!looked) {
+        const char *v = recomp_config_lookup("RECOMP_DISC_OVERLAY", "disc_overlay");
+        const char *how = "disc_overlay";
+        char probe[1100];
+
+        looked = 1;
+        dir = (v && *v) ? v : NULL;
+        if (!dir && host_exe_path(beside, sizeof beside)) {
+            host_path_dirname(beside);
+            strncat(beside, "/disc_overlay", sizeof beside - strlen(beside) - 1);
+            snprintf(probe, sizeof probe, "%s/default.xbe", beside);
+            if (host_file_exists(probe)) {
+                dir = beside;
+                how = "beside the executable";
+            }
+        }
+        if (dir)
+            fprintf(stderr, "  [PATH] D: has %s laid over it (%s)\n", dir, how);
+    }
+    return dir;
+}
+
+static int disc_overlay_for(const char *xbox_path, char *out, size_t n)
+{
+    const char *dir = xbox_path_disc_overlay();
     static const char *const prefixes[] = {
         "\\Device\\CdRom0\\", "D:\\", "\\??\\D:\\",
     };
     size_t i, k;
 
-    if (!looked) {
-        const char *v = recomp_config_lookup("RECOMP_DISC_OVERLAY", "disc_overlay");
-        looked = 1;
-        dir = (v && *v) ? v : NULL;
-        if (dir)
-            fprintf(stderr, "  [PATH] D: has %s laid over it (disc_overlay)\n", dir);
-    }
     if (!dir || !xbox_path)
         return 0;
     for (i = 0; i < sizeof prefixes / sizeof prefixes[0]; i++) {

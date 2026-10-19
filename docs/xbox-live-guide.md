@@ -128,73 +128,98 @@ works best with UDP port 3074 forwarded to this PC, as on a console.
 Many games need an update before Insignia lets them sign in. The game then
 says **"A required update is available for the Xbox Live service"**. On a
 console, choosing OK runs the dashboard's online updater, which downloads the
-update and installs it on the hard disk (`E:\TDATA\<title id>\$u`); the game
-then runs the updated executable from there.
+update and installs it on the hard disk (`E:\TDATA\<title id>\$u`); from then
+on the console starts the updated executable from there instead of the
+disc's.
 
-The recompiled game does the same, with three more programs in the chain: the
-recompiled updater, and, after it, a build of the game made from the updated
-executable. The game's own page says how to build that one.
+The recompiled game does the same with three programs: the game built from
+the disc, the recompiled updater, and a second build of the game made from
+the updated executable. A game project with a build script (Rainbow Six 3's
+`scripts/build.py`) does all of the below for you; this is what it does.
 
-### 5a. Build the online updater (once)
+### 5a. The online updater
 
-The updater is the 5960 dashboard's `update.xbe`, recompiled. Its project is
-`titles/xodash-update` in the toolkit; its files come from your console's C:
-drive (Step 2).
+The updater is the 5960 dashboard's `update.xbe`, recompiled: the project
+`titles/xodash-update`. It comes from your console's C: drive (Step 2), which
+is also its own files (fonts, screens, sounds):
 
-1. Make its game folder, `games/xodash-update/`, from your copy of C:
-   - the contents of `C:\xodash\` (`update.xbe`, `media\`, `audio\`, ...),
-     with `update.xbe` renamed to `default.xbe`;
-   - everything at the root of `C:\` beside them (`xboxdash.xbe`, `fonts\`,
-     `xodash\`, the `.xtf` fonts, `xboxdashdata.*`). On a disk that ignores
-     case, `C:\Audio` and `xodash\audio` are one folder: merge them.
-2. Make its XDK symbols, as for any title:
-   `.venv/bin/python -m tools.xdk_symbols games/xodash-update/default.xbe --cli <XbSymbolDatabaseCLI>`
-3. Link the folder into the project, lift and build:
+1. Its folder: your copy of C:, with `C:\xodash\update.xbe` copied to the top
+   as `default.xbe`.
+2. Its XDK symbols, as for any title:
+   `.venv/bin/python -m tools.xdk_symbols <folder>/default.xbe --cli <XbSymbolDatabaseCLI>`
+3. Lift and build:
 
    ```bash
-   ln -s ../../games/xodash-update titles/xodash-update/game
-   .venv/bin/python scripts/recompile.py games/xodash-update/default.xbe \
+   .venv/bin/python scripts/recompile.py <folder>/default.xbe \
        --work-dir games/_pipeline/xodash-update --project titles/xodash-update
    cmake -S titles/xodash-update -B titles/xodash-update/build/Release -G Ninja -DCMAKE_BUILD_TYPE=Release
    cmake --build titles/xodash-update/build/Release --target xodash_update_recomp --parallel
    ```
 
-### 5b. The settings that join the programs up
+4. Put `xodash_update_recomp` beside the game's executable, or in an
+   `updater/` folder beside it with the C: folder as `updater/game`.
+
+### 5b. How the programs find each other
+
+With the files laid out like this, nothing needs setting:
+
+```text
+<play folder>/
+  <game>_recomp            the disc's build
+  <game>_<update>_recomp   the update's build, once it is made (5c)
+  disc_overlay/            the disc's own files, for a hard-drive copy (below)
+  updater/
+    xodash_update_recomp
+    game/                  your C: drive, with update.xbe as default.xbe
+```
+
+- **The game starts the updater.** When it launches the dashboard's
+  `update.xbe`, the runtime starts `xodash_update_recomp` from beside it or
+  from `updater/`, with the game's folder as the updater's D:, as on a
+  console, where the updater runs from the game's disc.
+- **The updater comes back.** When it is done it launches the game again, and
+  that is the executable that started it.
+- **One console.** The updater sees the game's E: drive (`hdd_dir`, else the
+  game folder), console identity, network and disc overlay: they go along
+  with each hand-over.
+- **The update runs once it is installed.** On a console the game's own
+  start-up launches `E:\TDATA\<title id>\$u\default.xbe` when it is there. The
+  disc's build does the same, before any of the game runs: when the update's
+  build is beside it, it starts that instead. If that build is not made yet,
+  it says so and the game closes (5c).
+
+**The disc overlay, for a hard-drive copy.** An update is a set of patches
+against the disc's original files, each checked afterwards. A copy of a game
+made to run from a console's hard disk has its `default.xbe` patched (the
+original kept as `default.bak`). The game's build script puts the disc's
+`default.xbe` in `disc_overlay/` beside the executable; the runtime lays it
+over D:. A file the copy left out and the update patches (Rainbow Six 3's
+`downloader.xbe`) is skipped by the updater, with a line in the log, and the
+rest is installed. A disc ripped whole needs no overlay.
+
+Each of these can be set by hand instead:
 
 | Setting | Environment | What it does |
 | --- | --- | --- |
-| `hdd_dir = <folder>` | `RECOMP_HDD_DIR` | One E: drive for every program, as on a console. The game writes its saves there, and the updater installs the update there. **Copy the game's existing `game/UDATA` and `game/TDATA` into it first**, or the game starts without its saves. |
-| `launch_map = <entries>` | `RECOMP_LAUNCH_MAP` | Which recompiled program to start when one launches another. `;`-separated `<name or title id>=<executable>`, optionally `\|<game folder>`. |
-| `disc_overlay = <folder>` | `RECOMP_DISC_OVERLAY` | Files that stand in for the disc's (see below). |
+| `hdd_dir = <folder>` | `RECOMP_HDD_DIR` | One E: drive for every program, somewhere other than the game folder. **Copy the game's existing `game/UDATA` and `game/TDATA` into it first**, or the game starts without its saves. |
+| `updater = <path>` | `RECOMP_UPDATER` | The recompiled updater, when it is elsewhere. |
+| `title_update_exe = <path>` | `RECOMP_TITLE_UPDATE_EXE` | The update's build, when it is not beside the disc's. |
+| `disc_overlay = <folder>` | `RECOMP_DISC_OVERLAY` | Files that stand in for the disc's. |
+| `launch_map = <entries>` | `RECOMP_LAUNCH_MAP` | Which program to start when one launches another, over all of the above: `;`-separated `<name or title id>=<executable>`, optionally `\|<game folder>`. |
 | `system_dir = <folder>` | `RECOMP_SYSTEM_DIR` | The C: drive. The updater sets it to its own folder; you need not. |
-
-A launch map for a game whose title ID is `55530013`:
-
-```text
-update.xbe=<toolkit>/titles/xodash-update/build/Release/xodash_update_recomp|<game project>/game;55530013=<the update build of the game>|<game project>/game
-```
-
-The game folder after `|` is the updater's D: drive: on a console the updater
-runs from the game's disc and reads the disc's files to patch them.
-
-**`disc_overlay`, for a hard-drive copy.** An update is a set of patches
-against the disc's original files, each checked afterwards. A copy of a game
-made to run from a console's hard disk has its `default.xbe` patched (the
-original kept as `default.bak`), and often leaves out files the disc has. Put
-the originals in a folder and point `disc_overlay` at it:
-
-- `default.xbe`: a copy of the game's `default.bak`;
-- any file the update patches that your copy is missing (the game's page
-  says which).
-
-A disc ripped whole needs no overlay.
+| `RECOMP_UPDATE_STRICT=1` | | Stop the install at a file whose disc original is missing, instead of skipping it. |
 
 ### 5c. Run it
 
-Start the game with `syslink`, `hdd_dir`, `launch_map` and `disc_overlay`
-set. Sign in, choose **OK** on "A required update is available", then **Yes**
-in the updater. It downloads and installs the update ("Xbox Live is updating
-your system") and starts the game again, now updated.
+Start the game with `syslink = nat` (Step 4). Sign in, choose **OK** on "A
+required update is available", then **Yes** in the updater. It downloads and
+installs the update ("Xbox Live is updating your system") and starts the
+game again.
+
+Then build the game from the update's executable,
+`<E: drive>/TDATA/<title id>/$u/default.xbe`, as the game's page says (its
+build script does it when run again), and put it beside the disc's. From
+then on the disc's build starts it.
 
 ## What the log says
 
@@ -206,8 +231,11 @@ your system") and starts the game again, now updated.
 | `[NET] DNS: AS.XBOXLIVE.COM, asked of 46.101.64.175` | sign-in has started |
 | `[NET] UDP from the console's port 3074 leaves this PC from port <n> (its own was taken)` | something else on this PC holds 3074 (another copy of a game?) |
 | `[PATH] E: (\Device\Harddisk0\Partition1) is <folder> (hdd_dir)` | the shared E: drive is in use |
-| `[KERNEL] HalReturnToFirmware: launching '<path>' ... as <executable>` | one program handing over to the next (`launch_map`) |
-| `[KERNEL] HalReturnToFirmware: '<path>' ... has no recompiled image in launch_map` | the game asked for a program that is not recompiled or not mapped; it exits |
+| `[KERNEL] HalReturnToFirmware: launching '<path>' ... as <executable>` | one program handing over to the next |
+| `[KERNEL] HalReturnToFirmware: '<path>' ... has no recompiled image in launch_map` | the game asked for a program that is not recompiled or not found (5b); it exits |
+| `[UPDATE] title update installed: starting <executable>` | the disc's build handing over to the update's |
+| `[UPDATE] The title update is installed (...), but the program built from it ... is not beside this one` | the update's build is not made yet (5c); the game closes |
+| `[UPDATE] d:\<file> is not on this disc, so its update cannot be applied: skipped` | a hard-drive copy left the file out; the rest installs |
 
 No log line contains a key or an account secret.
 
@@ -221,10 +249,11 @@ No log line contains a key or an account secret.
 | `fails its checksums` | not an EEPROM dump, or damaged | back up again |
 | `no HDD key` or `HDD key is all zeros` | key not found, or `hddkey.bin` used | see "The HDD key" in Step 3 |
 | "A required update is available" | the game needs a title update | Step 5 |
-| the game closes on OK at "required update" | no `launch_map` entry for `update.xbe` | Step 5b |
+| the game closes on OK at "required update" | the updater is not beside the game or in `updater/` | Step 5a, 5b |
 | "To use the Xbox Live Dashboard, your system must be updated" in the updater | the updater cannot see the dashboard on C: | Step 5a: `xboxdash.xbe` and `xodash\` must be in its game folder |
-| "Unable to continue due to technical difficulties" in the updater | it cannot reach the game's files on the shared E: | `hdd_dir` set for both programs, with the game's `TDATA` copied in |
-| the update fails part-way | a file the update patches is not the disc's original | `disc_overlay` (Step 5b) |
+| "Unable to continue due to technical difficulties" in the updater | it cannot reach the game's files on the shared E: | started by hand rather than by the game; or `hdd_dir` without the game's `TDATA` copied in |
+| the update fails part-way | a file the update patches is not the disc's original | the disc overlay (Step 5b) |
+| "A required update is available" again after updating | the update's build is not made, or not beside the disc's | Step 5c; the log says `[UPDATE] title update installed ... not beside` |
 | two copies cannot see each other in System Link | both load one identity | `console_dir = off` on one |
 
 ## Playing fair
@@ -244,8 +273,9 @@ your sign-in traffic.
 | EEPROM reads, single settings and whole sections | `src/kernel/kernel_xbox.c` | none |
 | Accounts onto the virtual disk | `xbox_console_import_accounts` | `console_accounts = import / replace / off` |
 | One program launching another | `src/kernel/kernel_bridge.c` (`HalReturnToFirmware`) | `launch_map` |
+| Title updates: the updater found, the way back, the update's build started | `src/kernel/xbox_title_update.c` | `updater`, `title_update_exe` |
 | Shared E:, the C: drive, the disc overlay | `src/kernel/kernel_path.c` | `hdd_dir`, `system_dir`, `disc_overlay` |
-| The online updater | `titles/xodash-update` | |
+| The online updater; a file missing from the disc skipped | `titles/xodash-update` | `RECOMP_UPDATE_STRICT` |
 
 Diagnostics: `RECOMP_NET_PCAP=<file>` writes every network frame for
 Wireshark (private: it holds sign-in traffic); `RECOMP_XC_TRACE=1` logs each

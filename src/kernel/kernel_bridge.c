@@ -1507,6 +1507,10 @@ static void bridge_HalReturnToFirmware(void)
                 }
                 e = semi ? semi + 1 : NULL;
             }
+            /* No entry: the recompiled updater beside this executable, or
+             * the executable that launched this one (xbox_title_update.c). */
+            if (!exe[0])
+                xbox_launch_default(xpath, BRIDGE_MEM32(page + 4), exe, sizeof exe);
             if (exe[0]) {
                 static char hex[2 * 0x1000 + 1];
                 /* "exe|game folder": the image's own files. Without one the
@@ -1533,6 +1537,7 @@ static void bridge_HalReturnToFirmware(void)
                                 " as %s, with its launch data (launch_map)\n",
                         xpath, tid, exe);
                 fflush(stderr);
+                xbox_launch_note_return();
                 host_launch_other(exe);
                 fprintf(stderr, "  [KERNEL] could not start %s; exiting instead\n", exe);
             } else if (xpath[0]) {

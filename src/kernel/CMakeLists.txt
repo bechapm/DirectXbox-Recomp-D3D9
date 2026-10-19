@@ -26,6 +26,7 @@ set(KERNEL_SOURCES
     xbox_net_udp.c
     xbox_net_nat.c
     xbox_console_id.c
+    xbox_title_update.c
     xbox_crypto_soft.c
     icall_feedback.c
     exit_trace.c

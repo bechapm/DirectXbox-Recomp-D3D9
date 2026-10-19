@@ -146,7 +146,7 @@ the recompiled pair that layout, all inherited across the hand-off:
 
     RECOMP_LAUNCH_MAP = update.xbe=<xodash_update_recomp>|<rs3 game>;55530013=<rs3_recomp>|<rs3 game>
     RECOMP_HDD_DIR    = <one folder>     E: shared by both (hdd_dir)
-    RECOMP_DISC_XBE   = <rs3 game>/default.bak   what D:\default.xbe reads as (disc_xbe)
+    RECOMP_DISC_OVERLAY = <folder>        the disc's default.xbe, laid over D: (disc_overlay)
     RECOMP_SYSTEM_DIR = (the updater sets it to its own folder: a copy of
                         the console's C:, with xboxdash.xbe and xodash\)
     RECOMP_SYSLINK    = nat
@@ -160,12 +160,43 @@ gateway (51.68.122.14:3074 -- the first working SG connection), downloads
 over TCP, unpacks it into `z:\$t` and installs into `TDATA\55530013\$u`.
 `$u\default.xbe` comes out byte for byte the genuine 0x501 XBE.
 
-It stops at `downloader.xbe`: the update carries it as an 896-byte delta
+It stopped at `downloader.xbe`: the update carries it as an 896-byte delta
 (PA19) against the disc's `d:\downloader.xbe`, and a hard-drive copy made
 for a console drops that file (with update.xbe), so the delta has nothing
 to apply to and the hash check fails (ERROR_INVALID_DATA). A console
-running the same copy fails the same way. The disc's downloader.xbe is
-what finishes the install.
+running the same copy fails the same way.
+
+The updater now skips such a file (18 Oct, `titles/xodash-update`
+`recomp_manual.c`). The install is a state machine (`sub_000608B6` on the
+state at +0xC): state 9 (`sub_00061127`) opens the disc's original, leaving
+its size at +0x74 = 0 when there is none, and state 0x12 (`sub_000606AB`)
+checks the SHA-1, setting state 8 (next file) or failing with
+0x8007000D. A failed check with no original is turned into state 8, the
+output (`f:\$u\<name>`) removed and the source name logged; state 9's path
+buffer (+0x38034) is reused by then, so it is kept when state 9 runs. The
+install then matches the console's minus that one file.
+
+### Without settings (18 Oct 2026)
+
+`src/kernel/xbox_title_update.c` gives the chain defaults, so a play folder
+laid out as the guide's Step 5b needs no launch map:
+
+- no `launch_map` entry for `...update.xbe`: `xodash_update_recomp` beside
+  the executable or in `updater/` (`updater` setting), with this title's
+  game folder (its D:);
+- no entry for a title ID: `RECOMP_RETURN_TO`, which each hand-off sets to
+  `<title id>=<its own executable>|<game folder>`;
+- `hdd_dir`, `console_dir`, `syslink` and the disc overlay go along in the
+  environment, since the updater reads `FFFE0000.conf`, not the title's;
+- `disc_overlay` defaults to `disc_overlay/` beside the executable when it
+  holds a `default.xbe`;
+- the disc's build, after `xbox_path_init`, calls
+  `xbox_title_update_handoff`: with `E:\TDATA\<id>\$u\default.xbe` present and
+  the update's build beside it (or `title_update_exe`), it starts that,
+  passing the XBE's host path in `RECOMP_TITLE_UPDATE_XBE`. The disc's XAPI
+  launches `\Device\Harddisk0\Partition1\TDATA\<id>\$u\default.xbe` itself at
+  start-up when it is there (seen on RS3 with no launch data), so that launch
+  maps to the same build; without one the title ends, as before.
 
 What it took in the runtime, each the blocker after the one before:
 

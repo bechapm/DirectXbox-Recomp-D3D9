@@ -75,6 +75,7 @@ under [docs/technical/](docs/technical/); this table is the summary.
 | Title | XDK | Where it is |
 |---|---|---|
 | **TimeSplitters 2** | 4721 | **Playable**  |
+| **Rainbow Six 3** | 5659 | **Playable**, and online on [Xbox Live (Insignia)](#playing-on-xbox-live-insignia). Its own project: [Rainbow-six-three-recomp](https://github.com/phobos665/Rainbow-six-three-recomp). |
 | **BLiNX: the Time Sweeper** | 4831 | **In-Game** |
 | **Mortal Kombat: Deadly Alliance** | 4721 | **In-Game** Reaches its Arcade fights. Cooperative tasks run on host fibers ([how](docs/technical/mkda-coroutine.md)). |
 | **Hunter: The Reckoning** | 4361 | **In-Game** Menus, cinema and the first level at 60 fps, with scripted input. [Notes](docs/technical/hunter-bringup.md). |
@@ -185,6 +186,81 @@ That is normal, and it is the process rather than a failure of it:
 [docs/technical/memory-watchpoints.md](docs/technical/memory-watchpoints.md) answers "who wrote
 this value" in three runs.
 
+## Playing on Xbox Live (Insignia)
+
+A recompiled game can sign in to [Insignia](https://insignia.live/), the free revival of the
+original Xbox Live, and play online with people on real consoles. **Rainbow Six 3** is the game
+this is confirmed with, signed in and playing online on macOS. Its project,
+[Rainbow-six-three-recomp](https://github.com/phobos665/Rainbow-six-three-recomp), does every
+step below except the first two with one command, so it is the example here.
+
+Insignia only lets in consoles it knows, so the game signs in as **your own Xbox**. You give it
+a backup of that console; the rest is automatic.
+
+### What you need
+
+- An original Xbox you own that can run homebrew (softmodded or chipped), with the EvoX
+  dashboard and FTP access.
+- A free account at [insignia.live](https://insignia.live/).
+- Your copy of the game. A copy made to run from the Xbox's hard disk is fine.
+
+### 1. Sign the Xbox up (once, on the console)
+
+1. If your modded BIOS blocks Xbox Live, run Insignia's **xblunblock** first.
+2. Run the **Insignia Setup Assistant** and register the console.
+3. Sign in once from the dashboard's **Xbox Live** section, so your gamertag is on the console.
+
+### 2. Back up the Xbox (after step 1)
+
+1. In EvoX, choose **Backup eeprom**. It writes `eeprom.bin`, `hddinfo.txt` and `disk.bin`.
+2. Connect to the Xbox over FTP and copy those three files, and the whole **C:** drive
+   (about 100 MB: it holds the online updater that installs game updates).
+
+These files are your console's identity. **Never share them**, or logs made with them.
+
+### 3. Set up Rainbow Six 3
+
+Clone this repository and the game's project side by side, put the game's files in its `game/`
+folder and the backup in its `xboxbackup/` folder:
+
+```text
+xboxrecomp/                     this repository
+Rainbow-six-three-recomp/
+  game/                         the game's files (default.xbe and the rest)
+  xboxbackup/
+    eeprom.bin
+    hddinfo.txt
+    disk.bin
+    C/                          everything from the Xbox's C: drive
+```
+
+Then, in `Rainbow-six-three-recomp/`:
+
+```bash
+python3 scripts/doctor.py     # should end with "Xbox Live: ready."
+python3 scripts/build.py      # Windows: scripts\build.bat
+```
+
+### 4. Install the game's update (once)
+
+Insignia needs the game's last title update. The game fetches it itself, as a console does:
+
+1. Start `build/play/rs3_recomp`.
+2. On the main menu choose **Xbox Live** and sign in.
+3. At "A required update is available", choose **OK**.
+4. The updater opens: choose **Yes**. When it says "Xbox Live is updating your system", it
+   closes and the game starts again.
+5. Quit the game and run `python3 scripts/build.py` again. This builds the updated game.
+
+### 5. Play
+
+Start `build/play/rs3_recomp`. It opens the updated game by itself. Choose **Xbox Live** and
+sign in: your gamertag appears on the main menu, and you can join games and use Friends.
+
+**Other games** need the same backup and steps, plus their own project set up the same way.
+[docs/xbox-live-guide.md](docs/xbox-live-guide.md) explains what each piece does, the settings
+behind them, and what to check when sign-in fails.
+
 ## How it works
 
 ```mermaid
@@ -265,6 +341,7 @@ way the console would schedule it.
 **Start here**
 - [INSTRUCTIONS.md](INSTRUCTIONS.md): the whole journey on one page
 - [Getting Started](docs/GETTING_STARTED.md): from XBE to running game, with the reasons
+- [Xbox Live (Insignia)](docs/xbox-live-guide.md): playing online, with your own console's identity
 - [Tools reference](tools/README.md) and [runtime libraries](src/README.md)
 - [Decompilation guide](docs/DECOMP.md): using the toolkit as a function splitter, without ever lifting
 

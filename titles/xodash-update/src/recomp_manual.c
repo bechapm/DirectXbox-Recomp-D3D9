@@ -24,6 +24,8 @@
 #include <stdlib.h>   /* getenv, exit: the spin verdict below */
 #include <string.h>   /* strcmp: RECOMP_ICALL_FATAL */
 
+#include "platform/xbox_winnt.h"   /* BOOL, DWORD, MAX_PATH: the updater's skipped files */
+
 /* One diagnostic report, one piece.
  *
  * Each report below is a dozen fprintf calls and the CRT takes its lock per
@@ -427,3 +429,97 @@ void recomp_icall_not_code_log(uint32_t va, uint32_t saved_esp)
     fflush(stderr);
 }
 
+
+/* ── The online updater: a file whose disc original is missing ────────────
+ *
+ * A title update is a list of files, each either whole or a delta (PA19)
+ * against the file the disc has. Per file the updater opens the disc's
+ * original (state 9, sub_00061127), writes the new file into E:\TDATA\<id>\$u
+ * (its F:\$u), and checks its SHA-1 against the package's (state 0x12,
+ * sub_000606AB); a mismatch ends the whole install with ERROR_INVALID_DATA.
+ *
+ * A copy of a game made to run from a console's hard disk often leaves files
+ * out. Rainbow Six 3's update 0x501 carries downloader.xbe as an 896-byte
+ * delta against d:\downloader.xbe, which those copies do not have: with
+ * nothing to patch, the check fails and nothing after it is installed.
+ *
+ * So: when the check fails for a file whose original was absent (state 9
+ * left its size, +0x74, at 0), the file is skipped -- its broken output is
+ * removed from $u -- and the install goes on to the next file (state 8, as
+ * after a good check). A file that came whole has no original either, but
+ * passes its check and never reaches this. Any other mismatch fails as
+ * before. RECOMP_UPDATE_STRICT=1 turns the skip off.
+ *
+ * State 9 builds the original's path at +0x38034, a buffer the later states
+ * reuse, so it is kept here when state 9 runs. */
+extern void sub_00061127_gen(void);
+extern void sub_000606AB_gen(void);
+int xbox_EnvSwitch(const char *name, int default_on);
+#if defined(_WIN32)
+typedef WCHAR xbox_host_char;       /* as kernel/kernel.h has it */
+#else
+typedef char  xbox_host_char;
+#endif
+BOOL xbox_translate_path(const char *xbox_path, xbox_host_char *host_path_buf, DWORD buf_size);
+
+#define UPD_MEM32(va) (*(volatile uint32_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
+#define UPD_PTR(va)   ((const char *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
+
+static char s_upd_source[260];       /* "d:\downloader.xbe": the original state 9 asked for */
+
+void sub_00061127(void)
+{
+    uint32_t install = UPD_MEM32(g_esp + 4);
+    size_t i;
+    const char *p;
+
+    s_upd_source[0] = 0;
+    sub_00061127_gen();
+    if (!install)
+        return;
+    p = UPD_PTR(install + 0x38034u);
+    for (i = 0; i + 1 < sizeof s_upd_source && p[i] >= 0x20 && p[i] < 0x7F; i++)
+        s_upd_source[i] = p[i];
+    s_upd_source[p[i] ? 0 : i] = 0;   /* kept only if it is a whole string */
+}
+
+/* The output of a skipped file: d:\<name> is written as f:\$u\<name>. */
+static void upd_remove_output(const char *source)
+{
+    char guest[300];
+    xbox_host_char host[MAX_PATH];
+    int r;
+
+    if ((source[0] != 'd' && source[0] != 'D') || source[1] != ':' || source[2] != '\\')
+        return;
+    snprintf(guest, sizeof guest, "f:\\$u\\%s", source + 3);
+    if (!xbox_translate_path(guest, host, MAX_PATH))
+        return;
+#if defined(_WIN32)
+    r = _wremove(host);
+#else
+    r = remove(host);
+#endif
+    if (r == 0)
+        fprintf(stderr, "[UPDATE]   removed its unusable output, %s\n", guest);
+}
+
+void sub_000606AB(void)
+{
+    static int skip = -1;
+    uint32_t install = UPD_MEM32(g_esp + 4);
+
+    sub_000606AB_gen();
+    if (skip < 0)
+        skip = !xbox_EnvSwitch("RECOMP_UPDATE_STRICT", 0);
+    if (!skip || g_eax != 0x8007000Du || !install || UPD_MEM32(install + 0x74) != 0)
+        return;
+    fprintf(stderr, "[UPDATE] %s is not on this disc, so its update cannot be "
+                    "applied: skipped, the rest is installed (RECOMP_UPDATE_STRICT=1 "
+                    "to stop instead)\n", s_upd_source[0] ? s_upd_source : "a file");
+    if (s_upd_source[0])
+        upd_remove_output(s_upd_source);
+    fflush(stderr);
+    UPD_MEM32(install + 0xC) = 8;      /* the next file, as after a good check */
+    g_eax = 0;
+}
