@@ -200,3 +200,29 @@ which polls an address at every function entry. It needs a
 between entering one function and entering the next. Prefer
 `RECOMP_WATCH_WRITE`; keep the old one for watching a value across a long
 run where exactness does not matter.
+
+## When the trap does not fire
+
+A write can miss `RECOMP_WATCH_WRITE`. On a busy page the trap is lifted for a
+moment to let one write through, and a host `memcpy` storing 32 bytes at a time
+can land inside a watched range without its first byte being the watched one.
+Pro Evolution Soccer 5's heap free lists were zeroed with no report at all, in
+every run. Three switches answer it without a trap:
+
+- `RECOMP_WATCH_POLL=0xADDR[,...]`: a host thread reads each dword every 50 us
+  and reports the moment it changes, with every byte range on its 4 KB page
+  that changed with it. The extent and contents name the kind of write: 248
+  zero bytes exactly over free-list heads 81..111 was one row of an image.
+  `RECOMP_WATCH_POLL_SNAP=1` spins instead of sleeping and prints every
+  thread's stack at the change (macOS).
+- `RECOMP_WATCH_KCALL=0xADDR[,...]`: the word is compared at every kernel
+  call, before and after the bridge, and a change is reported between two
+  named calls with the guest stack and the ebp chain. Plain build.
+- `RECOMP_WATCH_VA` (above, `--trace-all-entries`) now names the function
+  entered before the change as well as the one entered after it.
+
+In that order they took the heap from "zero by swap 4" to "between two heap
+calls on the main thread" to "between entering libpng's png_combine_row and
+the next function" -- and the row pointer it was handed came from an image
+allocated with height 0, because `imul bl` had been lifted as a 32-bit
+multiply that overwrote edx.

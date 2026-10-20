@@ -176,6 +176,23 @@ static void test_widescreen_resolution(void)
     }
 }
 
+/* What the guest is told: 16:9 only for a title with a mode of its own.
+ * A Hor+ title is told 4:3, so it draws its whole frame for the runtime to
+ * widen, instead of fitting a 4:3 picture into a 16:9 one itself. */
+static void test_guest_flag(void)
+{
+    check_int(recomp_widescreen_guest_flag_from(0, RECOMP_WIDE_NATIVE), 0,
+              "guest flag: off");
+    check_int(recomp_widescreen_guest_flag_from(1, RECOMP_WIDE_NATIVE), 1,
+              "guest flag: on, title with a 16:9 mode");
+    check_int(recomp_widescreen_guest_flag_from(1, RECOMP_WIDE_UNKNOWN), 1,
+              "guest flag: on, title nobody described (resolved as native)");
+    check_int(recomp_widescreen_guest_flag_from(1, RECOMP_WIDE_HOR_PLUS), 0,
+              "guest flag: on, Hor+ title is told 4:3");
+    check_int(recomp_widescreen_guest_flag_from(0, RECOMP_WIDE_HOR_PLUS), 0,
+              "guest flag: off, Hor+ title");
+}
+
 /* The settings files already out there, written by the launcher that had
  * two switches: `widescreen` 0 or 1, `hor_plus` 0 or 0.75, the register
  * always 60. Each must mean what it meant, on every kind of title, both
@@ -433,6 +450,7 @@ int main(void)
               "lookups survive a settings read");
 
     test_widescreen_resolution();
+    test_guest_flag();
     test_older_files();
 
     /* The same resolution as the runtime asks for it: from the settings

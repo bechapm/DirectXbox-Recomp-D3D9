@@ -381,6 +381,7 @@ void xbox_FpsNoteSet(uint32_t object, int was_signalled);
  * thread's instruction pointer and reports by symbol and category. Call from
  * the guest's main thread, which is then named as such. */
 void xbox_SamplerStart(void);
+void xbox_SamplerSnapshotNow(void);   /* every thread's stack, once */
 /* Name the calling runtime thread in the sampler's report. */
 void xbox_NameCurrentThread(const wchar_t *name);
 

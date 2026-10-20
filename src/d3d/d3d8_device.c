@@ -100,11 +100,26 @@ static IDirect3DBaseTexture8  *g_cur_textures[4] = { NULL };
 /* Bound offscreen render target / depth stencil (NULL = default) */
 static D3D8Surface *g_cur_rt = NULL;
 
-/* Whether draws go to the screen (the device's own back buffer) rather than
- * a texture the title renders into. */
+/* A target the screen's width and nearly its height: the title's own
+ * picture of the frame, drawn to the screen afterwards. 90% of the height,
+ * because a title may render its scene a few lines short and scale it --
+ * Pro Evolution Soccer 5 draws a match into 640x448 for a 640x480 screen. */
+static BOOL scene_sized(UINT w, UINT h)
+{
+    UINT gw = d3d8_GetGuestWidth(), gh = d3d8_GetGuestHeight();
+
+    return gw && gh && w >= gw && (unsigned long long)h * 10u >= (unsigned long long)gh * 9u;
+}
+
+/* Whether draws go to the screen rather than a texture the title renders
+ * into: the device's own back buffer, or a scene-sized target (above),
+ * which is what reaches the screen. Hor+ and the camera zoom go by this. A
+ * title that renders its match into a texture and composites it was left
+ * with an unwidened picture in a squeezed 4:3 box; a shadow map or a
+ * reflection is smaller than the screen and still is not widened. */
 BOOL d3d8_target_is_screen(void)
 {
-    return g_cur_rt == NULL;
+    return g_cur_rt == NULL || scene_sized(g_cur_rt->width, g_cur_rt->height);
 }
 static D3D8Surface *g_cur_ds = NULL;
 /* The device's own depth buffer as a surface object, so SetRenderTarget can
@@ -452,21 +467,28 @@ void xbox_D3D8SetVerticalZoom(float zoom)
 
 static BOOL two_d_squeeze(float *k_out, float *cx_out)
 {
-    float k;
+    float k, span;
 
-    if (!g_2d_squeeze || !g_device_state.height || g_cur_rt)
+    if (!g_2d_squeeze || !g_device_state.height)
+        return FALSE;
+    /* Offscreen, only in the title's own picture of the frame: what is
+     * drawn there reaches the screen stretched like everything else. Pro
+     * Evolution Soccer 5 draws its match HUD into its scene texture. */
+    if (g_cur_rt && !scene_sized(g_cur_rt->width, g_cur_rt->height))
         return FALSE;
     k = ((float)g_device_state.width * 9.0f) /
         ((float)g_device_state.height * 16.0f);
     if (!(k > 0.0f && k < 1.0f))
         return FALSE;
     *k_out = k;
+    span = g_cur_rt ? (float)g_cur_rt->width * rt_scale_x()
+                    : (float)g_device_state.width;
     if (g_2d_anchor == XBOX_D3D8_2D_LEFT)
         *cx_out = 0.0f;
     else if (g_2d_anchor == XBOX_D3D8_2D_RIGHT)
-        *cx_out = (float)g_device_state.width;
+        *cx_out = span;
     else
-        *cx_out = (float)g_device_state.width * 0.5f;
+        *cx_out = span * 0.5f;
     return TRUE;
 }
 
@@ -2310,6 +2332,20 @@ static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
  * stages its shader never reads, so a later stage holding something
  * large says nothing; TimeSplitters 2's glow passes, for one, have the
  * frame on stage 0 and a 1x1 white texture on stage 1. */
+/* Whether stage 0 holds a frame the title rendered itself (scene_sized):
+ * a picture of the screen, which spans it. Gladius crossfades between two
+ * such snapshots at its scene changes, and squeezed, the outgoing scene
+ * shrank into the middle of the incoming one. */
+static BOOL draw_samples_scene(void)
+{
+    IDirect3DBaseTexture8 *tex = d3d8_GetStageTexture(0);
+    UINT w = 0, h = 0;
+
+    return tex && IDirect3DBaseTexture8_GetType(tex) == D3DRTYPE_TEXTURE &&
+           (((D3D8Texture *)tex)->usage & D3DUSAGE_RENDERTARGET) &&
+           d3d8_base_size(tex, &w, &h) && scene_sized(w, h);
+}
+
 static BOOL draw_is_screen_pass(void)
 {
     IDirect3DBaseTexture8 *tex;
@@ -2329,10 +2365,7 @@ static BOOL draw_is_screen_pass(void)
      * screen, which spans it. Gladius crossfades between two such snapshots
      * at its scene changes, and squeezed, the outgoing scene shrank into
      * the middle of the incoming one. */
-    if (IDirect3DBaseTexture8_GetType(tex) == D3DRTYPE_TEXTURE &&
-        (((D3D8Texture *)tex)->usage & D3DUSAGE_RENDERTARGET) &&
-        d3d8_base_size(tex, &w, &h) && w >= d3d8_GetGuestWidth() &&
-        h >= d3d8_GetGuestHeight())
+    if (draw_samples_scene())
         return TRUE;
     /* Up to 4x4: Gladius keeps a 4x4 white texture bound for its
      * untextured quads, its fades and cutscene letterbox bars among them,
@@ -2398,6 +2431,12 @@ BOOL d3d8_draw_escapes_squeeze(const void *vertices, UINT stride, UINT count)
      * pieces into fixed-function draws, and one holding part of the score
      * spans more than 75% -- at that threshold it escaped and split the
      * score's digits across the screen. Its menu backdrop covers it all. */
+    /* The title's rendered frame drawn back to the screen is the frame,
+     * whoever draws it: Pro Evolution Soccer 5 composites its match with a
+     * pre-transformed quad inset 9 pixels each side (97% of the width),
+     * and squeezed, the whole match sat in a 4:3 box. */
+    if ((hi - lo) >= (float)guest_w * 0.9f && draw_samples_scene())
+        return TRUE;
     if (g_extent_fixed_function)
         return ((hi - lo) >= (float)guest_w * 0.98f) ? TRUE : FALSE;
     return ((hi - lo) >= (float)guest_w * 0.75f) ? TRUE : FALSE;

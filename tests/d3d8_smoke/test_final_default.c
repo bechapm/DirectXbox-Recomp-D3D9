@@ -48,6 +48,7 @@ UINT d3d8_GetNumLights(void) { return 0; }
 BOOL d3d8_vsh_prepare_draw(DWORD handle) { (void)handle; return FALSE; }
 int  d3d8_vsh_bound_uses_projection(void) { return 1; }
 int  d3d8_vsh_bound_projection_is_ortho(void) { return 0; }
+float d3d8_vsh_hor_plus_for_draw(void) { return 1.0f; }
 DWORD d3d8_GetCurrentFVF(void) { return 0; }
 void d3d8_SetTwoDSqueeze(BOOL on) { (void)on; }
 

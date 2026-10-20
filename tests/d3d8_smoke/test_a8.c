@@ -37,6 +37,7 @@ const D3DMATERIAL8 *d3d8_GetMaterial(void) { return NULL; }
 UINT d3d8_GetNumLights(void) { return 0; }
 int  d3d8_vsh_bound_uses_projection(void) { return 1; }
 int  d3d8_vsh_bound_projection_is_ortho(void) { return 0; }
+float d3d8_vsh_hor_plus_for_draw(void) { return 1.0f; }
 void d3d8_SetTwoDSqueeze(BOOL on) { (void)on; }
 DWORD d3d8_GetCurrentFVF(void) { return 0; }
 

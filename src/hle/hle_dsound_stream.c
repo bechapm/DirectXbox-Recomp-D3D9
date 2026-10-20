@@ -40,8 +40,8 @@
  * keeps the old behaviour, and the five-second line reports the correction
  * being applied so drift can be seen rather than guessed at.
  *
- * Not done: SYNCHPLAYBACK pauses like PAUSE; envelope and 3D settings are
- * ignored; a stream whose format the host cannot play still completes packets
+ * SYNCHPLAYBACK holds a stream until IDirectSound::SynchPlayback
+ * (hle_dsound.c); envelope and 3D settings are ignored; a stream whose format the host cannot play still completes packets
  * on the clock, silently, so the title does not stall on it.
  */
 #include "platform/xbox_winnt.h"
@@ -120,6 +120,7 @@ typedef struct Stream {
     int      output;                 /* the host can play this format */
     int32_t  volume;
     int      paused;
+    int      synch_held;             /* paused by SYNCHPLAYBACK: SynchPlayback starts it */
     Packet   packets[MAX_PACKETS];
     int      head, count;
     uint64_t queued;                 /* end of the last packet queued */
@@ -1078,6 +1079,42 @@ HLE_EXPORT(CDirectSoundStream_Discontinuity)
     HLE_RETURN(DS_OK);
 }
 
+/* Restart a paused stream's clock from where it stopped. Locked. */
+static void resume_stream(Stream *s, uint64_t now)
+{
+    if (!s->paused)
+        return;
+    s->last_event = "resume";
+    s->paused = 0;
+    s->resumed_ms = s->consumed_base < s->queued ? now : 0u;
+    if (!s->resumed_ms)
+        s->consumed_base = s->queued;
+    refeed(s, now);
+}
+
+/* IDirectSound::SynchPlayback: every stream paused with SYNCHPLAYBACK starts
+ * now, together. Returns how many did. (hle_dsound.c) */
+int hle_dsound_stream_synch_playback(void)
+{
+    uint64_t now = now_ms();
+    int i, n = 0;
+
+    lock();
+    for (i = 0; i < MAX_STREAMS; i++) {
+        Stream *s = &g_streams[i];
+        if (!s->iface || !s->synch_held)
+            continue;
+        s->synch_held = 0;
+        s->active_ms = now;
+        if (s->paused) {
+            resume_stream(s, now);
+            n++;
+        }
+    }
+    unlock();
+    return n;
+}
+
 /* HRESULT CDirectSoundStream::Pause(this, DWORD dwPause) */
 HLE_EXPORT(CDirectSoundStream_Pause)
 {
@@ -1109,16 +1146,10 @@ HLE_EXPORT(CDirectSoundStream_Pause)
     s = find_by_object(HLE_ARG(0));
     if (s) {
         s->active_ms = now;
+        s->synch_held = mode == DSSTREAMPAUSE_SYNCHPLAYBACK;
         if (mode == DSSTREAMPAUSE_RESUME) {
-            if (s->paused) {
-                s->last_event = "resume";
-                s->paused = 0;
-                s->resumed_ms = s->consumed_base < s->queued ? now : 0u;
-                if (!s->resumed_ms)
-                    s->consumed_base = s->queued;
-                refeed(s, now);
-            }
-        } else {                      /* PAUSE, and SYNCHPLAYBACK treated the same */
+            resume_stream(s, now);
+        } else {                      /* PAUSE, and SYNCHPLAYBACK until SynchPlayback */
             /* RECOMP_DSOUND_IGNORE_PAUSE=1: refuse to pause, as an
              * experiment. A decoder that stops feeding because its
              * output never drains looks exactly like one that has

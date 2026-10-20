@@ -873,3 +873,14 @@ void recomp_widescreen_resolve(RecompWidescreen *out)
         recomp_config_lookup("RECOMP_HOR_PLUS_REG", "hor_plus_register"),
         g_wide_mode, g_wide_register, out);
 }
+
+int recomp_widescreen_guest_flag_from(int on, RecompWideMode mode)
+{
+    return on && mode != RECOMP_WIDE_HOR_PLUS;
+}
+
+int recomp_widescreen_guest_flag(void)
+{
+    return recomp_widescreen_guest_flag_from(
+        recomp_config_bool("RECOMP_WIDESCREEN", "widescreen", 0), g_wide_mode);
+}

@@ -1007,6 +1007,26 @@ static void ff_vs_prepare_draw(DWORD fvf)
 
             mat4_mul(wv, (const float *)world, (const float *)view);
             mat4_mul(wvp, wv, (const float *)proj);
+            /* Hor+ reaches fixed-function draws too: x is the first column
+             * of the row-vector product, scaled by the factor a program's
+             * projection register gets for the same draw. Not for an
+             * orthographic projection (a constant w column), which places
+             * 2D. Pro Evolution Soccer 5 draws its players through a
+             * program and their blob shadows through fixed function, and in
+             * widescreen each shadow sat outside its player, farther from
+             * the middle the farther out he stood. */
+            {
+                const float *p = (const float *)proj;
+                float hp = d3d8_vsh_hor_plus_for_draw();
+                BOOL ortho = p[3] == 0.0f && p[7] == 0.0f && p[11] == 0.0f &&
+                             p[15] == 1.0f;
+
+                if (hp != 1.0f && !ortho) {
+                    int r;
+                    for (r = 0; r < 4; r++)
+                        wvp[r * 4] *= hp;
+                }
+            }
             mat4_transpose(wvp_t, wvp);
             memcpy(cb->wvp, wvp_t, sizeof(wvp_t));
 

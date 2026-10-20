@@ -20,6 +20,7 @@ import struct
 
 from .disasm import Instruction, Operand, LOOP_JUMPS
 from .config import is_code_address, is_data_address, va_to_file_offset
+from tools.disasm.switch_bound import case_count
 
 # Function export names of the Windows libraries the host exe links
 # (kernel32/user32/gdi32/advapi32/winmm/ws2_32/ole32/dbghelp/...). A guest
@@ -2398,12 +2399,8 @@ class Lifter:
     def _lift_imul(self, insn, ops):
         nops = len(ops)
         if nops == 1:
-            # One operand: edx:eax = eax * ops[0]
-            src = _fmt_operand_read(ops[0])
-            return [
-                f"{{ int64_t _r = (int64_t)(int32_t)eax * (int64_t)(int32_t){src};",
-                f"  eax = (uint32_t)_r; edx = (uint32_t)(_r >> 32); }}"
-            ]
+            # One operand, at the operand's width (_one_operand_multiply).
+            return self._one_operand_multiply(ops[0], signed=True)
         elif nops == 2:
             # Two operand: dst = dst * src
             dst = _fmt_operand_read(ops[0])
@@ -2416,15 +2413,50 @@ class Lifter:
             return [_fmt_operand_write(ops[0], f"(uint32_t)((int32_t){src} * (int32_t){imm})")]
         return ["/* imul: unexpected form */"]
 
+    def _one_operand_multiply(self, op, signed):
+        """mul/imul with one operand, at that operand's width.
+
+        x86 multiplies AL by a byte into AX, AX by a word into DX:AX, and EAX
+        by a dword into EDX:EAX. Every form used to be lifted as the dword
+        one, so `imul bl` overwrote all of eax and edx -- the same mistake
+        div had (below). Pro Evolution Soccer 5's libpng computes a row's
+        pixel depth with `imul bl` while edx holds the image height, and the
+        height that reached png_set_IHDR was the product's high half: 0. D3DX
+        then allocated an empty image and an empty row table, libpng wrote
+        each row through whatever that table's memory held, and the rows
+        landed on the heap's own free lists.
+        """
+        src = _fmt_operand_read(op)
+        width = _operand_width(op) or 4
+        if width == 1:
+            if signed:
+                expr = f"(uint32_t)((int32_t)(int8_t)LO8(eax) * (int32_t)(int8_t){src})"
+            else:
+                expr = f"(uint32_t)LO8(eax) * (uint32_t)(uint8_t){src}"
+            return [f"SET_LO16(eax, {expr});"]
+        if width == 2:
+            if signed:
+                prod = f"(uint32_t)((int32_t)(int16_t)LO16(eax) * (int32_t)(int16_t){src})"
+            else:
+                prod = f"(uint32_t)LO16(eax) * (uint32_t)(uint16_t){src}"
+            return [f"{{ uint32_t _r = {prod};",
+                    "  SET_LO16(eax, _r); SET_LO16(edx, _r >> 16); }"]
+        if signed:
+            return [
+                f"{{ int64_t _r = (int64_t)(int32_t)eax * (int64_t)(int32_t){src};",
+                f"  eax = (uint32_t)_r; edx = (uint32_t)(_r >> 32); }}"
+            ]
+        return [
+            f"{{ uint64_t _r = (uint64_t)eax * (uint64_t){src};",
+            f"  eax = (uint32_t)_r; edx = (uint32_t)(_r >> 32); }}"
+        ]
+
     def _lift_muldiv(self, insn, ops, m):
         if len(ops) < 1:
             return [f"/* {m}: no operand */"]
         src = _fmt_operand_read(ops[0])
         if m == "mul":
-            return [
-                f"{{ uint64_t _r = (uint64_t)eax * (uint64_t){src};",
-                f"  eax = (uint32_t)_r; edx = (uint32_t)(_r >> 32); }}"
-            ]
+            return self._one_operand_multiply(ops[0], signed=False)
         # div/idiv at the operand's width. x86 divides AX by a byte (quotient
         # in AL, remainder in AH), DX:AX by a word, and EDX:EAX by a dword;
         # every form used to be lifted as the dword one, so `div cl` divided
@@ -3095,11 +3127,28 @@ class Lifter:
                     break
         return targets
 
-    def _analyze_switch_table(self, ops):
+    def _image_bytes(self, va, size):
+        """size bytes of the image at va, or None."""
+        offset = va_to_file_offset(va) if self.xbe_data else None
+        if offset is None or offset + size > len(self.xbe_data):
+            return None
+        return self.xbe_data[offset:offset + size]
+
+    def _switch_cap(self, dispatch_va, cap=256):
+        """The table reader's entry cap: 256, or the switch's own case count
+        when its bounds check says it has more (switch_bound.py)."""
+        if dispatch_va is not None:
+            cases = case_count(self._image_bytes, dispatch_va)
+            if cases and cases > cap:
+                return cases
+        return cap
+
+    def _analyze_switch_table(self, ops, dispatch_va=None):
         """Detect if an indirect jmp operand is an intra-function switch table.
         Pattern: jmp [reg*scale + table_base] or jmp [reg + table_base]
         Returns (targets: list[int]) if ALL table entries are within the current
-        function, else empty list."""
+        function, else empty list. dispatch_va, the jump's own address, lets a
+        table longer than the reader's cap be read whole."""
         if not ops or ops[0].type != "mem":
             return []
         op = ops[0]
@@ -3109,7 +3158,8 @@ class Lifter:
         table_va = op.mem_disp
         targets = self.jump_table_targets.get(table_va)
         if targets is None:
-            targets = self._read_jump_table(table_va)
+            targets = self._read_jump_table(
+                table_va, max_entries=self._switch_cap(dispatch_va))
         if not targets:
             return []
         # Truncate at the first entry outside the function rather than
@@ -3213,7 +3263,7 @@ class Lifter:
             return [f"goto loc_{insn.jump_target:08X};"]
         elif len(ops) >= 1:
             # Detect intra-function switch tables (computed gotos)
-            switch_targets = self._analyze_switch_table(ops)
+            switch_targets = self._analyze_switch_table(ops, insn.address)
             if switch_targets:
                 target_expr = _fmt_operand_read(ops[0])
                 unique_targets = sorted(set(switch_targets))

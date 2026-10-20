@@ -298,14 +298,16 @@ NTSTATUS __stdcall xbox_ExQueryNonVolatileSetting(
          * 16:9 and HDTV code paths that have never run here.
          *
          * RECOMP_WIDESCREEN turns the widescreen bit on, and a title with
-         * a 16:9 mode of its own then uses it. The host's output shape
+         * a 16:9 mode of its own then uses it. Not for a title declared
+         * HOR_PLUS, whose camera the runtime widens: it is told 4:3 and
+         * keeps drawing its whole frame (recomp_widescreen_guest_flag). The host's output shape
          * reads the same variable (src/d3d/d3d8_display.c): a title told
          * it is widescreen while the host presents 4:3 looks worse than
          * one told the truth, so the two must not disagree. */
         if (ValueLength >= sizeof(ULONG)) {
             ULONG flags = 0;
 
-            if (recomp_config_bool("RECOMP_WIDESCREEN", "widescreen", 0))
+            if (recomp_widescreen_guest_flag())
                 flags |= XC_VIDEO_FLAGS_WIDESCREEN;
             if (xbox_kernel_console_pal60())
                 flags |= XC_VIDEO_FLAGS_60Hz;

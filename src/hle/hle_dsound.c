@@ -127,6 +127,7 @@ typedef struct Buffer {
      * and paused_flags holds the play flags to resume with. */
     int      paused;
     uint32_t paused_flags;
+    int      synch_held;         /* paused by SYNCHPLAYBACK: SynchPlayback starts it */
     RecompDsoundBufferModel model;        /* what the game is told */
     RecompDsoundBufferModel output_model; /* what has been sent */
     int      primed;             /* the host voice has had its pre-roll */
@@ -1493,8 +1494,8 @@ enum { DSBPAUSE_RESUME = 0u, DSBPAUSE_PAUSE = 1u, DSBPAUSE_SYNCHPLAYBACK = 2u };
  * not replaced, so the model never heard of it, GetStatus said PLAYING for
  * ever, and the title hung for good straight after its difficulty select.
  *
- * SYNCHPLAYBACK pauses too: it holds the buffer so that several can be
- * resumed together, which from the title's side looks the same. */
+ * SYNCHPLAYBACK pauses too: it holds the buffer until IDirectSound::
+ * SynchPlayback starts every held buffer and stream together (below). */
 static uint32_t pause_buffer(uint32_t iface, uint32_t how)
 {
     uint64_t now = now_ms();
@@ -1509,6 +1510,7 @@ static uint32_t pause_buffer(uint32_t iface, uint32_t how)
     if (b) {
         pump(b, now);
         recomp_dsound_buffer_cursor(&b->model, now);
+        b->synch_held = how == DSBPAUSE_SYNCHPLAYBACK;
         if (how == DSBPAUSE_RESUME) {
             if (b->paused) {
                 b->paused = 0;
@@ -1528,6 +1530,58 @@ static uint32_t pause_buffer(uint32_t iface, uint32_t how)
     }
     unlock();
     return RECOMP_DSOUND_OK;
+}
+
+/* HRESULT IDirectSound::SynchPlayback(this)
+ *
+ * Starts every buffer and stream paused with SYNCHPLAYBACK, together. Pro
+ * Evolution Soccer 5's movie player creates its sound stream, pauses it with
+ * DSSTREAMPAUSE_SYNCHPLAYBACK, queues two packets and calls SynchPlayback.
+ * Not replaced, the call reached the APU, which this path does not use; the
+ * stream stayed paused, its packets never completed, and the player waited
+ * on them for good after the logos. */
+int hle_dsound_stream_synch_playback(void);   /* hle_dsound_stream.c */
+
+static uint32_t synch_playback(void)
+{
+    uint64_t now = now_ms();
+    int i, buffers = 0, streams;
+
+    lock();
+    for (i = 0; i < SLOTS; i++) {
+        Buffer *b = &g_buffers[i];
+        if (!b->iface || !b->synch_held)
+            continue;
+        b->synch_held = 0;
+        if (b->paused) {
+            b->paused = 0;
+            if (recomp_dsound_buffer_play(&b->model, b->paused_flags, now)
+                    == RECOMP_DSOUND_OK) {
+                resync_output(b, 0);
+                notify_start(b, now);
+            }
+            buffers++;
+        }
+    }
+    unlock();
+    streams = hle_dsound_stream_synch_playback();
+    {
+        static int said;
+        if (said++ < 4)
+            fprintf(stderr, "[DSOUND] SynchPlayback: %d buffer(s) and %d "
+                    "stream(s) started\n", buffers, streams);
+    }
+    return RECOMP_DSOUND_OK;
+}
+
+HLE_EXPORT(IDirectSound_SynchPlayback)
+{
+    HLE_RETURN(synch_playback());
+}
+
+HLE_EXPORT(CDirectSound_SynchPlayback)
+{
+    HLE_RETURN(synch_playback());
 }
 
 /* HRESULT IDirectSoundBuffer_Pause(this, DWORD dwPause) */

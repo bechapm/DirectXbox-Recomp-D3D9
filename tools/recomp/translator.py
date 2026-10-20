@@ -1026,7 +1026,9 @@ class FunctionTranslator:
                 table_va = operand.mem_disp
                 if not (start <= table_va < upper):
                     continue
-                targets = self._read_local_jump_table(table_va, start, upper)
+                targets = self._read_local_jump_table(
+                    table_va, start, upper,
+                    max_entries=self.lifter._switch_cap(insn.address))
                 if not targets:
                     continue
                 jump_tables[table_va] = targets
@@ -1334,7 +1336,7 @@ class FunctionTranslator:
             leaders = set(imm_refs)
             for insn in insns:
                 if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
-                    targets = self.lifter._analyze_switch_table(insn.operands)
+                    targets = self.lifter._analyze_switch_table(insn.operands, insn.address)
                     for t in targets:
                         if start <= t < end:
                             leaders.add(t)
@@ -1714,7 +1716,7 @@ class FunctionTranslator:
         # Add switch table targets (indirect jmp with intra-function table)
         for insn in instructions:
             if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
-                switch_targets = self.lifter._analyze_switch_table(insn.operands)
+                switch_targets = self.lifter._analyze_switch_table(insn.operands, insn.address)
                 for t in switch_targets:
                     label_addrs.add(t)
 
@@ -1830,7 +1832,7 @@ class FunctionTranslator:
         unseen_entries = set(self.lifter.imm_code_refs)
         for insn in instructions:
             if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
-                unseen_entries.update(self.lifter._analyze_switch_table(insn.operands))
+                unseen_entries.update(self.lifter._analyze_switch_table(insn.operands, insn.address))
         edge_vars, edge_sets, block_lines = [], [], {}
 
         for bb in blocks:

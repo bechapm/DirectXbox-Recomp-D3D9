@@ -170,6 +170,16 @@ void recomp_widescreen_resolve_from(int on, const char *hor_plus, const char *re
                                     RecompWideMode mode, int title_register,
                                     RecompWidescreen *out);
 
+/* Whether the console tells the title it is on a 16:9 set (the EEPROM's
+ * XC_VIDEO flag, the AV pack's widescreen bits): widescreen is on and the
+ * title has a 16:9 mode of its own to use. Not for a HOR_PLUS title. It has
+ * no such mode, the runtime widens its camera instead, and it has to keep
+ * drawing its full 4:3 frame for that -- Pro Evolution Soccer 5, told 16:9,
+ * pillarboxes its own picture to keep the 4:3 shape, and the widened view
+ * then sat inside its bars. `_from` is the same from its inputs. */
+int recomp_widescreen_guest_flag(void);
+int recomp_widescreen_guest_flag_from(int on, RecompWideMode mode);
+
 /* ------------------------------------------------------------ settings */
 
 /* hor_plus and hor_plus_register left for the title to decide. Written to

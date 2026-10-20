@@ -11340,6 +11340,69 @@ static int bridge_may_block(uint32_t ordinal)
 /* Current dispatching slot */
 static RECOMP_TLS int g_kernel_dispatch_slot = -1;
 
+/* RECOMP_WATCH_KCALL=0xADDR[,...]: compare each dword at every kernel call,
+ * before and after the bridge, and name the two calls a change falls
+ * between. Brackets a write no trap sees (RECOMP_WATCH_POLL says when;
+ * this says between which two known points of the guest's own code). */
+static uint32_t g_kpoll_va[4], g_kpoll_last[4];
+static int      g_kpoll_n = -1;
+static ULONG    g_kpoll_prev_ord;
+static uint32_t g_kpoll_prev_ret;
+static long long g_kpoll_prev_n;
+
+static void kpoll_check(const char *when, ULONG ordinal, uint32_t ret)
+{
+    int i;
+
+    if (g_kpoll_n < 0) {
+        const char *e = getenv("RECOMP_WATCH_KCALL");
+        char *end;
+        g_kpoll_n = 0;
+        while (e && *e && g_kpoll_n < 4) {
+            uint32_t va = (uint32_t)strtoul(e, &end, 0);
+            if (end == e)
+                break;
+            g_kpoll_va[g_kpoll_n] = va;
+            g_kpoll_last[g_kpoll_n++] = BRIDGE_MEM32(va);
+            e = *end == ',' ? end + 1 : end;
+        }
+    }
+    for (i = 0; i < g_kpoll_n; i++) {
+        uint32_t now = BRIDGE_MEM32(g_kpoll_va[i]);
+        if (now == g_kpoll_last[i])
+            continue;
+        fprintf(stderr, "[KPOLL] 0x%08X: 0x%08X -> 0x%08X %s kernel call #%lld "
+                "(ordinal %lu, ret 0x%08X, guest thread %u); the call before was "
+                "#%lld (ordinal %lu, ret 0x%08X)\n",
+                g_kpoll_va[i], g_kpoll_last[i], now, when, g_kernel_call_count,
+                (unsigned long)ordinal, ret, xbox_CurrentGuestThreadId(),
+                g_kpoll_prev_n, (unsigned long)g_kpoll_prev_ord, g_kpoll_prev_ret);
+        {
+            /* Code addresses on the guest stack, innermost first. */
+            uint32_t k, shown = 0;
+            fprintf(stderr, "[KPOLL]   guest stack:");
+            for (k = 0; k < 256 && shown < 14; k++) {
+                uint32_t v = BRIDGE_MEM32(g_esp + 4u * k);
+                if (v >= 0x00012000u && v < 0x00738000u) {
+                    fprintf(stderr, " %08X", v);
+                    shown++;
+                }
+            }
+            fprintf(stderr, "\n[KPOLL]   ebp chain:");
+            {
+                uint32_t fp = g_ebp;
+                for (k = 0; k < 16 && fp >= 0x00010000u && fp < 0x04000000u; k++) {
+                    fprintf(stderr, " %08X", BRIDGE_MEM32(fp + 4));
+                    fp = BRIDGE_MEM32(fp);
+                }
+            }
+            fprintf(stderr, "\n");
+        }
+        fflush(stderr);
+        g_kpoll_last[i] = now;
+    }
+}
+
 static void kernel_thunk_dispatch(void)
 {
     int slot = g_kernel_dispatch_slot;
@@ -11367,6 +11430,8 @@ static void kernel_thunk_dispatch(void)
      * used to do exactly that and reported every wait as being called from
      * the object it was waiting on. */
     g_kernel_caller = g_esp ? BRIDGE_MEM32(g_esp) : 0;
+    if (g_kpoll_n)
+        kpoll_check("before", ordinal, g_kernel_caller);
 
     kcaller_arm_once();
     if (ordinal == g_kcaller_ordinal)
@@ -11497,6 +11562,13 @@ static void kernel_thunk_dispatch(void)
          * read zero under the lock or it is not measuring what it claims. */
         xbox_GuestLockRestoreForKernel(_guest_held);
         xbox_GuestLiftedEnter();
+        if (g_kpoll_n) {
+            uint32_t _kret = g_kernel_caller;
+            kpoll_check("inside", ordinal, _kret);
+            g_kpoll_prev_n = g_kernel_call_count;
+            g_kpoll_prev_ord = ordinal;
+            g_kpoll_prev_ret = _kret;
+        }
         if (g_esp != _esp_before) {
             static uint8_t said[XBOX_KERNEL_THUNK_TABLE_SIZE];
             if (!said[slot]) {

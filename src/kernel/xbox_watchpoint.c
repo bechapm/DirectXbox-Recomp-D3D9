@@ -67,6 +67,8 @@
 #include <dbghelp.h>
 #else
 #include <dlfcn.h>
+#include <pthread.h>
+#include <time.h>
 #include "win32_compat.h"
 #endif
 
@@ -280,12 +282,136 @@ static void print_stack(void)
     fprintf(stderr, "\n");
 }
 
+/* RECOMP_WATCH_POLL=0xADDR[,0xADDR...]: a host thread reads each dword every
+ * 50 us and reports the moment it changes, with the last indirect-call
+ * targets. It sees a write by any path -- one through a mirror alias, a
+ * device writing guest memory through the arena's second view, a page that
+ * was re-protected -- which RECOMP_WATCH_WRITE's page trap cannot. It does
+ * not name the writer; the report's place in the log says what was going
+ * on, and the icall ring narrows it. Found Pro Evolution Soccer 5's heap
+ * free-list heads zeroed between swaps 2 and 4 with no trap ever firing. */
+#define MAX_POLL 8
+static uint32_t g_poll_va[MAX_POLL];
+static int      g_n_poll;
+/* RECOMP_WATCH_POLL_SNAP=1: spin rather than sleep, and print every
+ * thread's stack at each change (macOS). */
+static int      g_poll_snap;
+
+extern volatile uint32_t g_icall_trace[16];
+extern volatile uint32_t g_icall_trace_idx;
+
+/* The 4 KB around a polled word, so a report can say what else changed
+ * with it: the extent and contents of the write name its kind. */
+static uint8_t g_poll_page[MAX_POLL][4096];
+
+static void poll_page_diff(int i)
+{
+    uint32_t page = g_poll_va[i] & ~0xFFFu;
+    const uint8_t *now = guest_base() + page;
+    uint32_t o = 0;
+    int runs = 0;
+
+    while (o < 4096u && runs < 12) {
+        uint32_t start, end;
+        if (now[o] == g_poll_page[i][o]) { o++; continue; }
+        start = o;
+        while (o < 4096u && now[o] != g_poll_page[i][o]) o++;
+        end = o;
+        fprintf(stderr, "[POLL]   0x%08X..0x%08X changed (%u bytes), now",
+                page + start, page + end, end - start);
+        for (o = start; o < end && o < start + 16u; o++)
+            fprintf(stderr, " %02X", now[o]);
+        fprintf(stderr, "%s\n", end - start > 16u ? " ..." : "");
+        o = end;
+        runs++;
+    }
+    memcpy(g_poll_page[i], now, 4096);
+}
+
+static void poll_loop(void)
+{
+    uint32_t last[MAX_POLL];
+    int i, reports = 0;
+
+    for (i = 0; i < g_n_poll; i++) {
+        last[i] = guest_read32(g_poll_va[i]);
+        memcpy(g_poll_page[i], guest_base() + (g_poll_va[i] & ~0xFFFu), 4096);
+    }
+    for (;;) {
+        for (i = 0; i < g_n_poll; i++) {
+            uint32_t now = guest_read32(g_poll_va[i]);
+            if (now == last[i])
+                continue;
+            if (reports++ < 400) {
+                uint32_t k, idx = g_icall_trace_idx;
+                if (g_poll_snap)
+                    xbox_SamplerSnapshotNow();     /* first: the writer moves on */
+                fprintf(stderr, "[POLL] 0x%08X: 0x%08X -> 0x%08X; last icalls:",
+                        g_poll_va[i], last[i], now);
+                for (k = 1; k <= 6; k++)
+                    fprintf(stderr, " %08X", g_icall_trace[(idx - k) & 15]);
+                fprintf(stderr, "\n");
+                poll_page_diff(i);
+                fflush(stderr);
+            }
+            last[i] = now;
+        }
+#ifdef _WIN32
+        Sleep(0);
+#else
+        if (!g_poll_snap) {
+            struct timespec ts = { 0, 50000 };
+            nanosleep(&ts, NULL);
+        }
+#endif
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI poll_thread(LPVOID unused) { (void)unused; poll_loop(); return 0; }
+#else
+static void *poll_thread(void *unused) { (void)unused; poll_loop(); return NULL; }
+#endif
+
+static void poll_init(void)
+{
+    const char *spec = getenv("RECOMP_WATCH_POLL");
+    char *end;
+
+    g_poll_snap = getenv("RECOMP_WATCH_POLL_SNAP") != NULL;
+
+    while (spec && *spec && g_n_poll < MAX_POLL) {
+        uint32_t va = (uint32_t)strtoul(spec, &end, 0);
+        if (end == spec)
+            break;
+        if (guest_in_ram(va, 4)) {
+            g_poll_va[g_n_poll++] = va;
+            fprintf(stderr, "[POLL] polling 0x%08X, currently 0x%08X\n",
+                    va, guest_read32(va));
+        }
+        spec = *end == ',' ? end + 1 : end;
+    }
+    if (!g_n_poll)
+        return;
+#ifdef _WIN32
+    CloseHandle(CreateThread(NULL, 0, poll_thread, NULL, 0, NULL));
+#else
+    {
+        pthread_t t;
+        if (pthread_create(&t, NULL, poll_thread, NULL) == 0)
+            pthread_detach(t);
+    }
+#endif
+}
+
 void xbox_watch_init(void)
 {
     const char *spec = getenv("RECOMP_WATCH_WRITE");
     const char *p;
     const char *budget = getenv("RECOMP_WATCH_BUDGET");
 
+    if (xbox_GetMemoryOffset())
+        poll_init();
     if (!spec || !*spec)
         return;
     if (!xbox_GetMemoryOffset()) {

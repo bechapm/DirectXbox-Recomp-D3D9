@@ -1661,6 +1661,11 @@ static float hor_plus_for_draw(BOOL to_screen)
     return hor_plus_factor();
 }
 
+float d3d8_vsh_hor_plus_for_draw(void)
+{
+    return hor_plus_for_draw(d3d8_target_is_screen());
+}
+
 /* Widen the projection register of a constant file about to reach the host. */
 static void hor_plus_widen(NV2AVSConstants *k, float factor)
 {

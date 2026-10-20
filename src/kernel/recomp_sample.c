@@ -1147,11 +1147,41 @@ void xbox_NameCurrentThread(const wchar_t *name)
 #endif
 }
 
+/* Every thread's stack, now, once: for a diagnostic that has just seen
+ * something happen (RECOMP_WATCH_POLL) and wants to know who was running.
+ * The caller's own thread is skipped. macOS only. */
+#if defined(__APPLE__)
+void xbox_SamplerSnapshotNow(void)
+{
+    int i, k;
+
+    s_self_tid = (DWORD)mach_thread_self();
+    refresh_threads();
+    for (i = 0; i < s_thread_count; i++) {
+        uintptr_t frames[10];
+        int n;
+        if (!s_threads[i].alive)
+            continue;
+        n = sample_thread(&s_threads[i], frames, 10);
+        fprintf(stderr, "[SNAP] %-20s", s_threads[i].name);
+        for (k = 0; k < n; k++) {
+            const ResolvedAddr *r = resolve(frames[k]);
+            fprintf(stderr, " %s%s", k ? "<- " : "",
+                    r && r->name[0] ? r->name : "?");
+        }
+        fprintf(stderr, "\n");
+    }
+}
+#else
+void xbox_SamplerSnapshotNow(void) {}
+#endif
+
 #else  /* neither Windows nor macOS */
 
 #include <wchar.h>
 
 void xbox_SamplerStart(void) {}
+void xbox_SamplerSnapshotNow(void) {}
 void xbox_NameCurrentThread(const wchar_t *name) { (void)name; }
 
 #endif

@@ -15,6 +15,7 @@ from capstone import CS_OP_IMM, CS_OP_MEM, CS_OP_REG
 
 from . import config
 from .loader import BinaryImage, SectionInfo
+from .switch_bound import case_count
 
 
 @dataclass
@@ -347,12 +348,14 @@ class DisasmEngine:
         # table and nothing ends at it. Built once: scanning the instruction
         # map per candidate is quadratic on a real image.
         dispatch_end = {}
+        dispatch_at = {}
         for insn in self.instructions.values():
             jt = getattr(insn, "jump_table", None)
             if jt is None:
                 continue
             if insn.end_address > dispatch_end.get(jt, 0):
                 dispatch_end[jt] = insn.end_address
+                dispatch_at[jt] = insn.address
 
         for disp in sorted(self._jt_candidates):
             if disp in self._jt_done:
@@ -368,8 +371,15 @@ class DisasmEngine:
                 continue
             lo = home.virtual_addr
             hi = lo + home.virtual_size
+            # The bounds check before the jump says how long the table is,
+            # when it is longer than the cap (switch_bound.py).
+            limit = max_entries
+            if tbl in dispatch_at:
+                cases = case_count(self.image.read_bytes_at_va, dispatch_at[tbl])
+                if cases and cases > limit:
+                    limit = cases
             entries = 0
-            while entries < max_entries:
+            while entries < limit:
                 target = self.image.read_u32_at_va(tbl + entries * 4)
                 if target == 0 and entries > 0:
                     # A hole: a case value that cannot happen, left as 0

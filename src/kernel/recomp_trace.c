@@ -248,6 +248,7 @@ static int guest_readable(uint32_t va, uint32_t bytes)
 static uint32_t g_watch_va;
 static uint32_t g_watch_last;
 static int g_watch_on = -1, g_watch_primed;
+static const char *g_watch_prev;   /* the entry before, to bracket a change */
 
 static void watch_check(const char *name)
 {
@@ -275,10 +276,12 @@ static void watch_check(const char *name)
     }
     if (now != g_watch_last) {
         fprintf(stderr, "[WATCH] 0x%08X: 0x%08X -> 0x%08X, "
-                "changed before entering %s (call %llu)\n",
-                g_watch_va, g_watch_last, now, name, g_prof_calls);
+                "changed before entering %s (call %llu), after entering %s\n",
+                g_watch_va, g_watch_last, now, name, g_prof_calls,
+                g_watch_prev ? g_watch_prev : "(nothing yet)");
         g_watch_last = now;
     }
+    g_watch_prev = name;
 }
 
 

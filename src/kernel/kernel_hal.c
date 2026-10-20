@@ -839,7 +839,7 @@ VOID __stdcall xbox_AvSendTVEncoderOption(
          * refuses the 60 Hz mode the title then asks for. */
         *Result = AV_PACK_HDTV | xbox_kernel_console_av_standard()
                 | (xbox_kernel_console_pal60() ? AV_REFRESH_60Hz : 0)
-                | (recomp_config_bool("RECOMP_WIDESCREEN", "widescreen", 0)
+                | (recomp_widescreen_guest_flag()
                    ? 0x00010000u /* AV_FLAGS_WIDESCREEN, AV pack word layout */ : 0);
         break;
 
@@ -854,7 +854,7 @@ VOID __stdcall xbox_AvSendTVEncoderOption(
          * be told the console is widescreen here and 4:3 there. */
         *Result = AV_FLAGS_HDTV_480i | AV_FLAGS_HDTV_480p
                 | AV_FLAGS_HDTV_720p
-                | (recomp_config_bool("RECOMP_WIDESCREEN", "widescreen", 0) ? AV_FLAGS_WIDESCREEN : 0)
+                | (recomp_widescreen_guest_flag() ? AV_FLAGS_WIDESCREEN : 0)
                 | AV_FLAGS_60Hz;
         break;
 
@@ -867,7 +867,7 @@ VOID __stdcall xbox_AvSendTVEncoderOption(
         /* Same as capabilities for our purposes */
         *Result = AV_FLAGS_HDTV_480i | AV_FLAGS_HDTV_480p
                 | AV_FLAGS_HDTV_720p
-                | (recomp_config_bool("RECOMP_WIDESCREEN", "widescreen", 0) ? AV_FLAGS_WIDESCREEN : 0)
+                | (recomp_widescreen_guest_flag() ? AV_FLAGS_WIDESCREEN : 0)
                 | AV_FLAGS_60Hz;
         break;
 
