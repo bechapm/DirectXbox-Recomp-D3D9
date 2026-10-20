@@ -370,6 +370,14 @@ stretches non-uniformly — a failure of the bar caused by the window manager ra
 than by any title. Either constrain the window (`WM_SIZING`) or present into a
 centred, aspect-correct sub-rectangle.
 
+*Since done:* the present follows the window and puts bars around the picture
+(`present_scene`, `d3d8_display_fit`). And (Oct 2026) the window opens at the
+shape the picture is presented at: 16:9 at the guest's height with widescreen on
+(854x480 for a 640x480 title), the guest's own size with it off, shrunk to fit
+the screen it opens on (`xbox_D3D8DefaultWindowSize`, `recomp_window_size` and
+`recomp_window_fit` in `src/config`). It used to open at the guest's 4:3 size
+whatever the setting, with the 16:9 picture between bars inside it.
+
 **W8. The guest-framebuffer window.** `src/video/video_pump.c` is the other
 display path (`RECOMP_FB_WINDOW`); it has the same aspect question and none of the
 above applies to it.

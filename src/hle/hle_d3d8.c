@@ -590,6 +590,22 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
     wc.lpszClassName = "xboxrecomp_hle_d3d8_shadow";
     RegisterClassA(&wc);
 
+    {
+        /* No bigger than the screen it opens on, frame included, keeping
+         * its shape: CW_USEDEFAULT puts a new window on the primary
+         * monitor, whose work area is the desktop less the taskbar. */
+        RECT work, frame = { 0, 0, 0, 0 };
+        int w = (int)req->width, h = (int)req->height;
+
+        AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
+        if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
+            recomp_window_fit((work.right - work.left) - (frame.right - frame.left),
+                              (work.bottom - work.top) - (frame.bottom - frame.top),
+                              &w, &h);
+            req->width = (UINT)w;
+            req->height = (UINT)h;
+        }
+    }
     r.left = 0;
     r.top = 0;
     r.right = (LONG)req->width;
@@ -1087,8 +1103,13 @@ static void shadow_create(uint32_t pp_va)
          * thread here, the main thread off Windows) and touches no guest
          * state, so the other guest threads keep running meanwhile. */
         int held = xbox_GuestLockDrop();
+        UINT win_w, win_h;
 
-        hwnd = shadow_window(width, height);
+        /* The window opens at the shape the picture is presented at --
+         * 16:9 in widescreen -- at the guest's height; the back buffer
+         * below stays the guest's own size whatever the window is. */
+        xbox_D3D8DefaultWindowSize(width, height, &win_w, &win_h);
+        hwnd = shadow_window(win_w, win_h);
         xbox_GuestLockRestore(held);
     }
     g_shadow_hwnd = hwnd;

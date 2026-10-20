@@ -269,6 +269,51 @@ static void test_older_files(void)
     remove(path);
 }
 
+/* The window the game opens: the presented shape at the guest's height,
+ * and never bigger than the screen. */
+static void test_window_size(void)
+{
+    int w, h;
+
+    recomp_window_size(640, 480, 0, &w, &h);
+    check_int(w, 640, "4:3: the guest's own width");
+    check_int(h, 480, "4:3: the guest's own height");
+    recomp_window_size(640, 480, 1, &w, &h);
+    check_int(w, 854, "16:9 at 480 rows: 854, never narrower than 16:9");
+    check_int(h, 480, "16:9: the height is kept");
+    recomp_window_size(1280, 720, 1, &w, &h);
+    check_int(w, 1280, "16:9 at 720 rows is exact");
+    recomp_window_size(720, 480, 0, &w, &h);
+    check_int(w, 720, "widescreen off leaves a guest's own shape alone");
+    recomp_window_size(720, 480, 1, &w, &h);
+    check_int(w, 854, "a 720x480 guest in widescreen is 16:9 too");
+    recomp_window_size(0, 0, 1, &w, &h);
+    check_int(w, 854, "no guest size: 640x480, at 16:9");
+    check_int(h, 480, "no guest size: 480 rows");
+
+    w = 854; h = 480;
+    recomp_window_fit(1920, 1040, &w, &h);
+    check_int(w, 854, "fits already: unchanged");
+    check_int(h, 480, "fits already: unchanged height");
+    recomp_window_fit(0, 0, &w, &h);
+    check_int(w, 854, "no limit: unchanged");
+
+    w = 1280; h = 720;
+    recomp_window_fit(1000, 2000, &w, &h);
+    check_int(w, 1000, "too wide: the width is the limit");
+    check_int(h, 562, "too wide: the shape is kept");
+
+    w = 1280; h = 720;
+    recomp_window_fit(2000, 600, &w, &h);
+    check_int(h, 600, "too tall: the height is the limit");
+    check_int(w, 1066, "too tall: the shape is kept");
+
+    w = 1280; h = 720;
+    recomp_window_fit(1000, 500, &w, &h);
+    check(w <= 1000 && h <= 500, "too wide and too tall: inside both");
+    check_int(h, 500, "too wide and too tall: the tighter limit wins");
+}
+
 int main(void)
 {
     const char *path = "test_config_tmp.conf";
@@ -452,6 +497,7 @@ int main(void)
     test_widescreen_resolution();
     test_guest_flag();
     test_older_files();
+    test_window_size();
 
     /* The same resolution as the runtime asks for it: from the settings
      * of this process -- the file above says widescreen = 1 and

@@ -180,6 +180,22 @@ void recomp_widescreen_resolve_from(int on, const char *hor_plus, const char *re
 int recomp_widescreen_guest_flag(void);
 int recomp_widescreen_guest_flag_from(int on, RecompWideMode mode);
 
+/* -------------------------------------------------------------- window */
+
+/* The game window's client size when it opens: the guest's own height, at
+ * the shape the picture is presented at -- 16:9 with widescreen on, so a
+ * 640x480 title opens at 854x480 rather than presenting 16:9 inside a 4:3
+ * window between bars, and the guest's own shape with it off, which is
+ * what the window has always been. Pure, for the tests; the renderer's
+ * xbox_D3D8DefaultWindowSize gives it the widescreen switch it presents
+ * with. A guest size of 0 is 640x480. */
+void recomp_window_size(int guest_w, int guest_h, int widescreen, int *w, int *h);
+
+/* Shrink `w` x `h` to fit inside `max_w` x `max_h`, keeping its shape --
+ * the room the screen it opens on has for a client area. Never grows it,
+ * and a max of 0 or less is no limit. */
+void recomp_window_fit(int max_w, int max_h, int *w, int *h);
+
 /* ------------------------------------------------------------ settings */
 
 /* hor_plus and hor_plus_register left for the title to decide. Written to

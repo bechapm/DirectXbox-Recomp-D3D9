@@ -865,6 +865,43 @@ void recomp_widescreen_resolve_from(int on, const char *hor_plus, const char *re
     }
 }
 
+/* -------------------------------------------------------------- window */
+
+void recomp_window_size(int guest_w, int guest_h, int widescreen, int *w, int *h)
+{
+    if (guest_w <= 0 || guest_h <= 0) {
+        guest_w = 640;
+        guest_h = 480;
+    }
+    /* Rounded up, so the window is never narrower than 16:9: 480 rows give
+     * 854, the usual 16:9 width for them, with the presented picture one
+     * column short of it rather than a row short of 853. 720 is exact. */
+    if (widescreen)
+        guest_w = (int)(((long long)guest_h * 16 + 8) / 9);
+    if (w) *w = guest_w;
+    if (h) *h = guest_h;
+}
+
+void recomp_window_fit(int max_w, int max_h, int *w, int *h)
+{
+    long long cw, ch;
+
+    if (!w || !h || *w <= 0 || *h <= 0)
+        return;
+    cw = *w;
+    ch = *h;
+    if (max_w > 0 && cw > max_w) {
+        ch = ch * max_w / cw;
+        cw = max_w;
+    }
+    if (max_h > 0 && ch > max_h) {
+        cw = cw * max_h / ch;
+        ch = max_h;
+    }
+    *w = cw > 0 ? (int)cw : 1;
+    *h = ch > 0 ? (int)ch : 1;
+}
+
 void recomp_widescreen_resolve(RecompWidescreen *out)
 {
     recomp_widescreen_resolve_from(

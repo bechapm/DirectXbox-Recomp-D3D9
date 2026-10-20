@@ -1261,6 +1261,14 @@ void xbox_D3D8SetFullscreen(BOOL on);
  * present. Windows reads the HWND's client rectangle and ignores this. */
 void xbox_D3D8SetWindowSize(UINT width, UINT height);
 
+/* The client size a window for a guest presenting at guest_w x guest_h
+ * should open at: the guest's height, at the shape the present gives the
+ * picture -- 16:9 when the widescreen setting is on, the guest's own
+ * otherwise (recomp_window_size). Whoever makes the window fits it to the
+ * screen (recomp_window_fit); the present letterboxes whatever size it
+ * becomes after that. */
+void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *height);
+
 /* Where the title's next screen-space draws belong in widescreen, for a title
  * that knows what it is drawing. A 4:3-only title's 2D is squeezed back to
  * 4:3 so the 16:9 stretch leaves it in proportion; the renderer can only

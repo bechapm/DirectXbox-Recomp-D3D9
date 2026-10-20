@@ -9,6 +9,9 @@ add_library(xbox_host STATIC
 )
 target_include_directories(xbox_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xbox_host PUBLIC SDL3::SDL3)
+# recomp_window_fit: the window's size against the screen, the same rule
+# as the Win32 window in src/hle. xbox_config depends on nothing.
+target_link_libraries(xbox_host PRIVATE xbox_config)
 find_package(Threads REQUIRED)
 target_link_libraries(xbox_host PUBLIC Threads::Threads)
 if(APPLE)

@@ -201,6 +201,19 @@ void d3d8_display_output_shape(UINT scene_w, UINT scene_h,
     }
 }
 
+/* The widescreen setting, not d3d8_display_wide_now: a window lasts the
+ * whole run, and the screens a title calls 4:3 are shown in it between
+ * bars. */
+void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *height)
+{
+    int w, h;
+
+    recomp_window_size((int)guest_w, (int)guest_h, d3d8_display_policy()->widescreen,
+                       &w, &h);
+    if (width)  *width = (UINT)w;
+    if (height) *height = (UINT)h;
+}
+
 D3D8DisplayFit d3d8_display_fit(UINT shape_w, UINT shape_h, UINT bb_w, UINT bb_h)
 {
     D3D8DisplayFit f;
