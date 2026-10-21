@@ -83,6 +83,7 @@ against this toolkit, and contains no game code or data. Start with its README.
 | **TimeSplitters 2** | 4721 | ⭐ Perfect | [split2-recomp](https://github.com/phobos665/split2-recomp) |
 | **Gladius** | 5659 | 🟢 Playable | [gladius-recomp](https://github.com/phobos665/gladius-recomp) |
 | **Pro Evolution Soccer 5** | 5849 | 🟢 Playable | [pro-evo-5-recomp](https://github.com/phobos665/pro-evo-5-recomp) |
+| **Max Payne** | 4134 | 🟢 Playable | [payne-recomp](https://github.com/phobos665/payne-recomp) |
 | **Rainbow Six 3** | 5659 | 🟢 Playable | [Rainbow-six-three-recomp](https://github.com/phobos665/Rainbow-six-three-recomp). Online on [Xbox Live (Insignia)](#-playing-on-xbox-live-insignia). |
 
 ### Being brought up
