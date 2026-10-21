@@ -27,7 +27,8 @@ from . import config as _config
 from .disasm import Disassembler
 from .lifter import (Lifter, lift_basic_block, detect_seh_helpers,
                      _RESULT_SNAPSHOT_SETTERS,
-                     detect_setjmp_helpers, _func_ident, _operand_width)
+                     detect_setjmp_helpers, scan_cxx_eh, _func_ident,
+                     _operand_width)
 
 
 # Float compares snapshot at the compare as well, and their conditions read
@@ -436,6 +437,39 @@ FP_STACK_UNDEFS = [
 
 
 
+def _emit_cxx_landing(continuations):
+    """The catch point of a function that owns try blocks.
+
+    recomp_cxx.c longjmps here once one of this function's catch blocks has
+    run, with the frame's ebp and the address the block returned. ebp is the
+    only register local (the rest are globals the runtime has set), so it is
+    the only thing to restore before jumping to the continuation's label. A
+    continuation without one is reported and stops the process: it cannot be
+    resumed anywhere else."""
+    out = ["    if (RECOMP_CXX_SETJMP(_cxf->jb)) {",
+           "        ebp = _cxf->ebp;",
+           "        switch (_cxf->cont) {"]
+    for c in continuations:
+        out.append(f"        case 0x{c:08X}u: goto loc_{c:08X};")
+    out += ["        default: break;",
+            "        }",
+            "        recomp_cxx_lost(_cxf);",
+            "    }"]
+    return out
+
+
+def _emit_cxx_wrapper(name, start):
+    """The function itself: its catch point lives for exactly this call."""
+    return [f"void {name}(void)",
+            "{",
+            "    recomp_cxx_frame _cxf;",
+            f"    recomp_cxx_enter(&_cxf, 0x{start:08X}u);",
+            f"    {name}_cxx(&_cxf);",
+            "    recomp_cxx_leave(&_cxf);",
+            "}",
+            ""]
+
+
 def xbe_title(xbe_data, xbe_path):
     """Human-readable title for generated-file banners.
 
@@ -529,6 +563,9 @@ class FunctionTranslator:
                              xbe_data=xbe_data, seh_prolog=seh_prolog,
                              setjmp_fn=setjmp_fn, longjmp_fn=longjmp_fn,
                              seh_epilog=seh_epilog)
+        # start -> continuations, for functions that own C++ try blocks
+        # (lifter.scan_cxx_eh); set by BatchTranslator.
+        self.cxx_owners = {}
         self.owned_function_starts = set()
         self.recovered_function_starts = set()
         self.jump_table_entry_starts = set()
@@ -1329,6 +1366,11 @@ class FunctionTranslator:
                 value = insn.operands[1].imm
                 if start <= value < end:
                     imm_refs.add(value)
+        # Where this function's catch blocks resume it (lifter.scan_cxx_eh):
+        # labels for the landing switch _emit_cxx_landing writes.
+        cxx_conts = tuple(c for c in self.cxx_owners.get(start, ())
+                          if start < c < end)
+        imm_refs |= set(cxx_conts)
         self.lifter.imm_code_refs = imm_refs
 
         # Collect switch table targets as extra block leaders
@@ -1512,8 +1554,13 @@ class FunctionTranslator:
             lines.append(f" * Frame: {frame_type}")
         lines.append(f" */")
 
-        # Function signature
-        lines.append(f"{ret_type} {name}({param_str})")
+        # Function signature. A function that owns try blocks is emitted as a
+        # body that takes its catch point, behind a wrapper of the real name
+        # (_emit_cxx_wrapper).
+        if cxx_conts:
+            lines.append(f"static void {name}_cxx(recomp_cxx_frame *_cxf)")
+        else:
+            lines.append(f"{ret_type} {name}({param_str})")
         lines.append(f"{{")
 
         # Optional entry trace. Bring-up is mostly "which of these ten init
@@ -1523,12 +1570,12 @@ class FunctionTranslator:
             lines.append(
                 f'    RECOMP_TRACE_ENTER("{name}", 0x{start:08X});')
 
-        # _CxxThrowException. This runtime cannot unwind, so the call inside
-        # does nothing and control falls through the int3 the compiler put
-        # after it: the throw returns, on a stack nobody cleaned up. Report it
-        # here, at the throw, where the arguments are still on the stack and
-        # the type that was thrown can be named -- rather than leaving the
-        # consequences to surface somewhere unrelated later.
+        # _CxxThrowException. The runtime reports the throw here, where the
+        # arguments are still on the stack and the type can be named, and
+        # catches it if a lifted frame does (src/kernel/recomp_cxx.c). Only a
+        # throw nothing catches comes back: the call inside does nothing and
+        # control falls through the int3 the compiler put after it, on a
+        # stack nobody cleaned up.
         # At entry esp points at the return address, so the two __stdcall
         # arguments are just above it.
         if start is not None and start == getattr(self.lifter, "CXX_THROW", None):
@@ -1699,6 +1746,9 @@ class FunctionTranslator:
         # global bridges ebp across function boundaries.
         if frame_type == "fpo_leaf" and "ebp" in used_regs and not has_prologue:
             lines.append(f"    ebp = g_seh_ebp; /* fpo_leaf: inherit caller's frame */")
+
+        if cxx_conts:
+            lines.extend(_emit_cxx_landing(cxx_conts))
 
         lines.append(f"")
 
@@ -1977,6 +2027,8 @@ class FunctionTranslator:
 
         lines.append(f"}}")
         lines.append(f"")
+        if cxx_conts:
+            lines.extend(_emit_cxx_wrapper(name, start))
 
         return "\n".join(lines)
 
@@ -2244,6 +2296,21 @@ class BatchTranslator:
         setjmp_fn, longjmp_fn = detect_setjmp_helpers(
             self.func_db, self.xbe_data, verbose=True)
 
+        # C++ exception frames. Every unwind action and catch block becomes a
+        # function of its own -- nothing in the image calls them, so the
+        # disassembler never found them -- for the runtime to call when it
+        # catches (src/kernel/recomp_cxx.c).
+        eh_prologs = (seh_prolog,) if isinstance(seh_prolog, int) else (seh_prolog or ())
+        self.cxx_eh = scan_cxx_eh(self.func_db, self.xbe_data, eh_prologs,
+                                  verbose=True)
+        for va, end in sorted(self.cxx_eh["funclets"].items()):
+            if va not in self.func_db:
+                self.func_db[va] = {
+                    "start": f"0x{va:08X}", "_addr": va, "end": end,
+                    "size": end - va, "name": f"sub_{va:08X}",
+                    "section": "", "detection_method": "cxx_funclet",
+                    "calls_to": [], "called_by": []}
+
         # Create translator
         self.translator = FunctionTranslator(
             self.xbe_data, self.func_db, self.label_db,
@@ -2254,6 +2321,8 @@ class BatchTranslator:
             trace_all_entries=trace_all_entries,
             icall_sites=self.icall_sites,
             force_returns=force_returns)
+        self.translator.cxx_owners = {
+            s: c for s, c in self.cxx_eh["owners"].items() if c}
         self.translator.discover_static_indirect_targets()
         self.translator.discover_cfg_ownership()
         self.translator.discover_jump_table_entries()

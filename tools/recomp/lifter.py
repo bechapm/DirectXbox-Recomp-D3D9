@@ -1331,6 +1331,195 @@ def detect_cxx_throw(func_db, xbe_data, verbose=False):
     return None
 
 
+# ── C++ catch support: what the lifter needs from MSVC's EH tables ─────────
+#
+# A function with a C++ exception frame installs a handler thunk in its
+# prologue, `mov eax, <FuncInfo>; jmp __CxxFrameHandler`, and FuncInfo says
+# everything the runtime needs to catch (recomp_cxx.c):
+#
+#   FuncInfo      { magic, maxState, pUnwindMap, nTryBlocks, pTryBlockMap }
+#   UnwindMapEntry{ toState, action }            action: a funclet, or 0
+#   TryBlockMapEntry { tryLow, tryHigh, catchHigh, nCatches, pHandlerArray }
+#   HandlerType   { adjectives, pType, dispCatchObj, addressOfHandler }
+#
+# The funclets -- unwind actions and catch blocks -- are entered by a call
+# from the frame handler with ebp set to the frame, so nothing in the image
+# calls them and the disassembler never makes them functions. They are lifted
+# here as functions of their own. A catch block returns, in eax, the address
+# its function resumes at (`mov eax, <continuation>; ret`); those addresses
+# become labels, and a function owning try blocks gets a native catch point
+# that jumps to them (translator: _emit_cxx_try_owner).
+_EH_FUNCINFO_MAGICS = (0x19930520, 0x19930521, 0x19930522)
+_EH_FUNCLET_MAX = 0x1000
+
+
+def _cxx_u32(xbe_data, va):
+    from .config import va_to_file_offset
+    import struct
+
+    off = va_to_file_offset(va) if va else None
+    if off is None or off + 4 > len(xbe_data):
+        return None
+    return struct.unpack("<I", xbe_data[off:off + 4])[0]
+
+
+def _cxx_bytes(xbe_data, va, size):
+    from .config import va_to_file_offset
+
+    off = va_to_file_offset(va) if va else None
+    if off is None or off + size > len(xbe_data):
+        return None
+    return xbe_data[off:off + size]
+
+
+def _cxx_funcinfo(xbe_data, handler_va):
+    """FuncInfo behind an MSVC C++ frame-handler thunk, or None."""
+    thunk = _cxx_bytes(xbe_data, handler_va, 10)
+    if not thunk or thunk[0] != 0xB8 or thunk[5] != 0xE9:
+        return None
+    fi = int.from_bytes(thunk[1:5], "little")
+    return fi if _cxx_u32(xbe_data, fi) in _EH_FUNCINFO_MAGICS else None
+
+
+def _cxx_prologue(xbe_data, start, eh_prologs):
+    """(handler thunk, ebp_frame) an EH prologue at `start` installs, or None.
+
+    ebp_frame: the record sits at ebp - 0x0C with ebp = entry esp - 4, which
+    is what the runtime matches a catching frame on. Both shapes MSVC gives a
+    function with try blocks have it: the inline prologue, and
+    `mov eax, <thunk>; call __EH_prolog`."""
+    code = _cxx_bytes(xbe_data, start, 24)
+    if not code:
+        return None
+    fs0 = bytes((0x64, 0xA1, 0, 0, 0, 0))                # mov eax, fs:[0]
+    if code[:6] == bytes((0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68)) and code[10:16] == fs0:
+        return int.from_bytes(code[6:10], "little"), True
+    if code[:3] == bytes((0x6A, 0xFF, 0x68)) and code[7:13] == fs0:
+        return int.from_bytes(code[3:7], "little"), False
+    if code[:6] == fs0 and code[6:9] == bytes((0x6A, 0xFF, 0x68)):
+        return int.from_bytes(code[9:13], "little"), False
+    if code[0] == 0xB8 and code[5] == 0xE8 and eh_prologs:
+        target = (start + 10 + int.from_bytes(code[6:10], "little", signed=True)) & 0xFFFFFFFF
+        if target in eh_prologs:
+            return int.from_bytes(code[1:5], "little"), True
+    return None
+
+
+def _cxx_funclet_extent(xbe_data, va):
+    """(end, eax immediates, outside targets) of the funclet at va: decoded
+    straight on to the terminator that no earlier branch jumps past. The
+    targets are where its calls and jumps leave it."""
+    from capstone import Cs, CS_ARCH_X86, CS_MODE_32
+    from capstone.x86 import X86_OP_IMM, X86_OP_REG
+
+    from .config import va_to_file_offset
+
+    off = va_to_file_offset(va) if va else None
+    code = xbe_data[off:off + _EH_FUNCLET_MAX] if off is not None else b""
+    if not code:
+        return None, (), ()
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    md.detail = True
+    reach, imms, targets = va, [], []
+    for insn in md.disasm(code, va):
+        end = insn.address + insn.size
+        ops = insn.operands
+        if insn.mnemonic == "mov" and len(ops) == 2 and ops[0].type == X86_OP_REG \
+                and insn.reg_name(ops[0].reg) == "eax" and ops[1].type == X86_OP_IMM:
+            imms.append(ops[1].imm & 0xFFFFFFFF)
+        # A conditional branch says the code goes on to its target. An
+        # unconditional jmp only does inside such a stretch (the else of an
+        # if); past it, it is the funclet's tail -- an unwind action is
+        # `lea ecx, [ebp - n]; jmp <destructor>`.
+        if (insn.group(1) or insn.group(2)) and ops and ops[0].type == X86_OP_IMM:
+            targets.append(ops[0].imm & 0xFFFFFFFF)
+        if insn.group(1) and ops and ops[0].type == X86_OP_IMM:   # CS_GRP_JUMP
+            target = ops[0].imm & 0xFFFFFFFF
+            inside = insn.mnemonic != "jmp" or insn.address < reach
+            if inside and va <= target < va + _EH_FUNCLET_MAX:
+                reach = max(reach, target)
+        terminal = insn.mnemonic in ("ret", "int3", "hlt", "ud2", "jmp")
+        if terminal and insn.address >= reach:
+            return end, tuple(imms), tuple(t for t in targets
+                                           if not va <= t < end)
+    return None, (), ()
+
+
+def scan_cxx_eh(func_db, xbe_data, eh_prologs=(), verbose=False):
+    """MSVC C++ exception frames in the image.
+
+    Returns {"owners": {start: (continuations...)}, "funclets": {va: end}}:
+    the functions that own try blocks with an ebp frame (and the addresses
+    their catch blocks resume at), and every unwind action and catch block,
+    to be lifted as functions."""
+    owners, funclets = {}, {}
+    if not func_db or not xbe_data:
+        return {"owners": owners, "funclets": funclets}
+    eh_prologs = frozenset(eh_prologs or ())
+    u32 = lambda va: _cxx_u32(xbe_data, va) or 0
+
+    def funclet(va):
+        """Lift va, and whatever it calls or jumps to that is no function
+        yet: an unwind action ends `jmp <destructor>`, and a destructor only
+        the EH tables reach (`add ecx, 4; jmp <base destructor>`) was never
+        found by the disassembler either."""
+        if va in funclets:
+            return funclets[va][1]
+        end, imms, targets = _cxx_funclet_extent(xbe_data, va)
+        if not end:
+            return ()
+        funclets[va] = (end, imms)
+        work = list(targets)
+        while work and len(funclets) < 65536:
+            t = work.pop()
+            if t in func_db or t in funclets or not is_code_address(t):
+                continue
+            t_end, t_imms, t_targets = _cxx_funclet_extent(xbe_data, t)
+            if t_end:
+                funclets[t] = (t_end, t_imms)
+                work.extend(t_targets)
+        return imms
+
+    frames = 0
+    for start in sorted(func_db):
+        found = _cxx_prologue(xbe_data, start, eh_prologs)
+        if not found:
+            continue
+        thunk, ebp_frame = found
+        fi = _cxx_funcinfo(xbe_data, thunk)
+        if not fi:
+            continue
+        frames += 1
+        max_state, unwind = u32(fi + 4), u32(fi + 8)
+        n_try, try_map = u32(fi + 12), u32(fi + 16)
+        for state in range(min(max_state, 4096)):
+            action = u32(unwind + 8 * state + 4)
+            if action:
+                funclet(action)
+        conts = set()
+        for t in range(min(n_try, 256)):
+            entry = try_map + 20 * t
+            for c in range(min(u32(entry + 12), 64)):
+                handler = u32(u32(entry + 16) + 16 * c + 12)
+                if handler:
+                    conts.update(funclet(handler))
+        if n_try and ebp_frame:
+            owners[start] = conts
+    # A continuation belongs to its own function: the translator keeps those
+    # inside the function's range.
+    for start, conts in owners.items():
+        info = func_db.get(start, {})
+        end = info.get("end")
+        end = int(end, 16) if isinstance(end, str) else end
+        owners[start] = tuple(sorted(c for c in conts if end and start < c < end))
+    if verbose:
+        import sys
+        print(f"  C++ EH: {frames} frames, {len(owners)} with try blocks, "
+              f"{len(funclets)} funclets", file=sys.stderr)
+    return {"owners": owners,
+            "funclets": {va: end for va, (end, _) in funclets.items()}}
+
+
 def detect_seh_helpers(func_db, xbe_data, verbose=False):
     """Locate __SEH_prolog / __SEH_epilog in the target binary.
 

@@ -695,11 +695,11 @@ void recomp_int3_reached(uint32_t va)
  * A C++ throw, reported where it happens.
  *
  * MSVC compiles `throw x` into _CxxThrowException(&object, &throwinfo), which
- * never returns. This runtime has no exception support: the call does nothing
- * useful and control falls through the int3 the compiler put after it, so the
- * throw *returns*, on a stack nothing unwound and with callee-saved registers
- * nobody restored. Everything afterwards is wreckage, and none of it mentions
- * an exception.
+ * never returns. recomp_cxx.c catches it when a lifted frame does; when none
+ * does, the call does nothing useful and control falls through the int3 the
+ * compiler put after it, so the throw *returns*, on a stack nothing unwound
+ * and with callee-saved registers nobody restored. Everything afterwards is
+ * wreckage, and none of it mentions an exception.
  *
  * Reporting here costs nothing and turns that into one legible line. The
  * _ThrowInfo hanging off the second argument names the type, which is usually
@@ -717,18 +717,71 @@ void recomp_int3_reached(uint32_t va)
  * first one is the one that matters -- everything after it happened on a
  * broken stack.
  * ------------------------------------------------------------------------- */
-void recomp_cxx_throw(uint32_t object_va, uint32_t throwinfo_va)
+/* The frames that could catch it: the guest's SEH chain at fs:[0], each
+ * record { next, handler, state } at ebp - 0x0C of its function. An MSVC
+ * C++ frame's handler is a thunk `mov eax, FuncInfo; jmp __CxxFrameHandler`,
+ * and FuncInfo { magic, maxState, unwindMap, nTryBlocks, tryBlockMap } says
+ * which try blocks cover the record's state and what each one catches
+ * (HandlerType { adjectives, pType, dispCatchObj, addressOfHandler }; pType 0
+ * is catch(...)). Said, not acted on: this runtime does not unwind. */
+static void cxx_print_handlers(void)
+{
+    const uint8_t *mem = (const uint8_t *)(uintptr_t)g_xbox_mem_offset;
+    uint32_t rec;
+    int depth;
+
+#define CXX_RD(va) (*(const uint32_t *)(mem + (va)))
+    if (!guest_readable(XBOX_FS_BASE, 4))
+        return;
+    rec = CXX_RD(XBOX_FS_BASE);
+    fprintf(stderr, "        handlers (fs:[0] chain):\n");
+    for (depth = 0; depth < 24 && rec != 0xFFFFFFFFu && guest_readable(rec, 12); depth++) {
+        uint32_t handler = CXX_RD(rec + 4);
+        int32_t state = (int32_t)CXX_RD(rec + 8);
+        uint32_t fi = 0, t;
+        const uint8_t *h = guest_readable(handler, 10) ? mem + handler : NULL;
+
+        fprintf(stderr, "          frame ebp=0x%08X handler 0x%08X state %d",
+                rec + 0x0Cu, handler, state);
+        if (h && h[0] == 0xB8 && h[5] == 0xE9)          /* mov eax, imm32; jmp */
+            fi = *(const uint32_t *)(h + 1);
+        if (!fi || !guest_readable(fi, 20) || CXX_RD(fi) != 0x19930520u) {
+            fprintf(stderr, " (not a C++ frame)\n");
+            rec = CXX_RD(rec);
+            continue;
+        }
+        fprintf(stderr, " FuncInfo 0x%08X\n", fi);
+        for (t = 0; t < CXX_RD(fi + 12) && t < 16; t++) {
+            uint32_t tb = CXX_RD(fi + 16) + 20u * t, c;
+            if (!guest_readable(tb, 20))
+                break;
+            if (state < (int32_t)CXX_RD(tb) || state > (int32_t)CXX_RD(tb + 4))
+                continue;
+            for (c = 0; c < CXX_RD(tb + 12) && c < 8; c++) {
+                uint32_t ht = CXX_RD(tb + 16) + 16u * c;
+                uint32_t type = guest_readable(ht, 16) ? CXX_RD(ht + 4) : 0;
+                fprintf(stderr, "            try %u catches %.48s at 0x%08X\n", t,
+                        !type ? "(...)" : guest_readable(type + 8, 32)
+                            ? (const char *)(mem + type + 8) : "?",
+                        guest_readable(ht, 16) ? CXX_RD(ht + 12) : 0);
+            }
+        }
+        rec = CXX_RD(rec);
+    }
+#undef CXX_RD
+}
+
+void recomp_cxx_report_throw(uint32_t object_va, uint32_t throwinfo_va)
 {
     enum { SLOTS = 8 };
     static uint32_t seen[SLOTS];
     static int count;
-    const uint8_t *mem = (const uint8_t *)g_xbox_mem_offset;
+    /* Guest VA 0 is host g_xbox_mem_offset, which is 0 on Windows: not a
+     * null test. Gating on it silenced this report there. */
+    const uint8_t *mem = (const uint8_t *)(uintptr_t)g_xbox_mem_offset;
     const char *type_name = NULL;
     uint32_t caller = 0;
     int i;
-
-    if (!mem)
-        return;
 
     /* The throw site, not the throw helper: at entry esp still points at the
      * return address the caller pushed. */
@@ -766,10 +819,10 @@ void recomp_cxx_throw(uint32_t object_va, uint32_t throwinfo_va)
         fprintf(stderr, "        object at 0x%08X, first dword 0x%08X\n",
                 object_va, *(const uint32_t *)(mem + object_va));
     fprintf(stderr,
-        "        This runtime cannot unwind, so the throw will RETURN and\n"
-        "        execution continues on a stack nothing cleaned up. Treat\n"
-        "        anything odd after this line as a consequence, not a new\n"
-        "        bug. RECOMP_THROW_FATAL=1 stops here instead.\n");
+        "        A [CXX] line follows: caught by a lifted frame, or not. If\n"
+        "        not, the throw RETURNS and execution continues on a stack\n"
+        "        nothing cleaned up: treat anything odd after it as a\n"
+        "        consequence, not a new bug. RECOMP_THROW_FATAL=1 stops here.\n");
     fflush(stderr);
 
     /* The throwing function's frame is still live -- a throw is reached by a
@@ -803,6 +856,7 @@ void recomp_cxx_throw(uint32_t object_va, uint32_t throwinfo_va)
             fprintf(stderr, "        [esp+%-3d] %08X %08X %08X %08X\n",
                     i * 4, sp[i], sp[i + 1], sp[i + 2], sp[i + 3]);
     }
+    cxx_print_handlers();
     fflush(stderr);
 
     if (getenv("RECOMP_THROW_FATAL")) {

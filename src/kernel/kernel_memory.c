@@ -124,26 +124,28 @@ VOID __stdcall xbox_MmFreeSystemMemory(PVOID BaseAddress, ULONG NumberOfBytes)
  * Memory Query & Protection
  * ============================================================================ */
 
+/* The console's free memory, as the title sees it: half of its 64 MB, always.
+ *
+ * This used to be the host's free physical memory, capped to that half. The
+ * host's figure says nothing about the guest's 64 MB, and a title budgets
+ * from it: Max Payne creates a particle system only while more than 3.5 MB
+ * is free (XAPI's GlobalMemoryStatus, then a NULL it calls through), so a
+ * host that was short of free memory -- normal on macOS, which fills it with
+ * cache -- crashed it at its first level load. On macOS the host's figure was
+ * also uninitialised stack (GlobalMemoryStatusEx did nothing there), so the
+ * answer moved with unrelated code changes. Every Windows host with more than
+ * 64 MB free already got this value. */
 NTSTATUS __stdcall xbox_MmQueryStatistics(PXBOX_MM_STATISTICS MemoryStatistics)
 {
-    MEMORYSTATUSEX ms;
-    ms.dwLength = sizeof(ms);
-
     if (!MemoryStatistics)
         return STATUS_INVALID_PARAMETER;
-
-    if (!GlobalMemoryStatusEx(&ms))
-        return STATUS_UNSUCCESSFUL;
 
     memset(MemoryStatistics, 0, sizeof(XBOX_MM_STATISTICS));
     MemoryStatistics->Length = sizeof(XBOX_MM_STATISTICS);
 
-    /* Xbox has 64MB RAM. Report plausible values. */
     ULONG page_size = 4096;
     MemoryStatistics->TotalPhysicalPages = 64 * 1024 * 1024 / page_size; /* 16384 pages */
-    MemoryStatistics->AvailablePages = (ULONG)(ms.ullAvailPhys / page_size);
-    if (MemoryStatistics->AvailablePages > MemoryStatistics->TotalPhysicalPages)
-        MemoryStatistics->AvailablePages = MemoryStatistics->TotalPhysicalPages / 2;
+    MemoryStatistics->AvailablePages = MemoryStatistics->TotalPhysicalPages / 2;
 
     return STATUS_SUCCESS;
 }

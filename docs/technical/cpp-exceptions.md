@@ -1,8 +1,8 @@
-# C++ exceptions: the throw is not implemented, and it used to be silent
+# C++ exceptions: reported since September, caught since October
 
 Found 20 September 2026, at the end of the chain that started with Outrun 2's
-null `std::map`. It is the reason that title still does not render, and it
-will stop any title that throws.
+null `std::map`. Until 21 October 2026 a throw was only reported, and it
+stopped any title that threw; see "Catching" below for what runs now.
 
 ## What happens
 
@@ -121,25 +121,54 @@ the object and `_ThrowInfo` pointers as its parameters. That is where an
 implementation belongs: everything a real unwinder needs is already handed to
 it, and nothing else has to be intercepted.
 
-## What it would take to support throws
+## Catching (21 Oct 2026)
 
-The first step is done. The rest are not started:
+Throws are caught now, by the title's own tables. Found on Max Payne's
+*Rooftops and Alleys* 3: a level object that fails its placement check throws
+`X_LevelRuntimeObjectBase::Exception_InitialPosition...`. Two frames catch it
+with `catch (...) { cleanup(); throw; }` and `sub_0003CD80`'s `catch (...)`
+makes the object's creation return false. Uncaught, the throw returned into the
+next function in memory, which copied a range of garbage and faulted at
+`0x74000000`.
 
-1. ~~**Identify `_CxxThrowException`.**~~ Done, 20 Sep 2026, as above.
-2. **Walk the exception registration chain.** `fs:[0]` already holds it: the
-   SEH prologue links a record on every function with a try block, and this
-   runtime already models that well enough for the frame pointers to be right.
-3. **Match the thrown type against each frame's catch table**, using the
-   `_ThrowInfo` and the funclet tables MSVC emits.
-4. **Transfer control to the catch block.** This is the hard part. Each lifted
-   function is a real C function, so resuming inside one after abandoning the
-   frames between means moving the native stack as well as the guest one. The
-   lifter already has this problem for `longjmp` and solves it there; that code
-   is the place to start.
+What each part does:
 
-Step 1 alone is worth doing before any of the rest, because it turns "the title
-threw and we carried on" into "the title threw and we stopped", which is a
-diagnosable failure instead of silent corruption.
+- **Lifter (`lifter.scan_cxx_eh`).** A function with a C++ frame installs a
+  handler thunk `mov eax, <FuncInfo>; jmp __CxxFrameHandler` in its prologue
+  (inline, or through `__EH_prolog`). FuncInfo lists its unwind actions and its
+  try blocks' catch blocks. Those *funclets* are entered by the frame handler
+  with ebp set to the frame, so nothing in the image calls them and the
+  disassembler never finds them; they are lifted as functions of their own,
+  with whatever they call or jump to that is no function yet (destructor
+  thunks only the tables reach). Max Payne: 5,754 frames, 1,044 with try
+  blocks, 9,171 funclets.
+- **Translator.** A function that owns try blocks with an ebp frame is
+  emitted as a body taking a catch point plus a wrapper of its real name
+  (`_emit_cxx_wrapper`). The body takes a native `_setjmp` at entry and, on a
+  landing, jumps to the label of the continuation it was given
+  (`_emit_cxx_landing`). The continuations are the `mov eax, <address>` in
+  each catch block, which returns where its function resumes.
+- **Runtime (`src/kernel/recomp_cxx.c`).** At `_CxxThrowException`, after
+  the `[THROW]` report: walk `fs:[0]` to the first frame whose try covers its
+  state and catches the type (`catch (...)`, or the type_info names match);
+  check every funclet that will run has lifted code (if not, do nothing and
+  let the throw return, as before); run the unwind actions of every frame
+  below it and of that frame down to the try; set the frame's state past the
+  try and `fs:[0]` back to its record; copy the object for a typed catch; run
+  the catch block; destroy the object; set esp to `[ebp - 0x10]` and
+  `_longjmp` to the frame's catch point. A `throw;` inside a catch block
+  rethrows the exception being handled and finds the next frame out.
+
+Every throw prints a `[CXX]` line saying whether it was caught and where.
+`RECOMP_CXX_CATCH=0` turns catching off. A title lifted before this has no
+funclets or catch points, so its throws return as they always did until it is
+lifted again.
+
+Not done: copying a caught object through a virtual base, SEH `__except`
+frames in the chain (skipped, filters not run), a throw out of a destructor
+during unwinding (the console calls terminate()), and a try in a function
+without an ebp frame (MSVC gives every function with a try one). On Windows,
+built but not yet run.
 
 ## Why Outrun 2 throws: as far as it is narrowed
 

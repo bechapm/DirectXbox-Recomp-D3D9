@@ -31,6 +31,7 @@ set(KERNEL_SOURCES
     icall_feedback.c
     exit_trace.c
     recomp_trace.c
+    recomp_cxx.c
     recomp_fps.c
     recomp_sample.c
     nv2a_pb_scan.c

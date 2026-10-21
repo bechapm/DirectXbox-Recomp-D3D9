@@ -24,7 +24,8 @@ RUNTIME_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..
 # Copied into gen/ beside the generated code, in this order. recomp_cpu.h is
 # the register file recomp_types.h includes; titles' recomp_manual.c includes
 # the gen/ copy too, so it always matches the code it was lifted with.
-RUNTIME_HEADERS = ("recomp_types.h", "recomp_types_simd.h", "recomp_cpu.h")
+RUNTIME_HEADERS = ("recomp_types.h", "recomp_types_simd.h", "recomp_cpu.h",
+                   "recomp_cxx.h")
 SIMD_HEADER = "recomp_types_simd.h"
 
 NO_SIMD_DEFINE = "#define RECOMP_NO_SIMD"

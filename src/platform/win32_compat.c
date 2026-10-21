@@ -1755,12 +1755,41 @@ BOOL UnmapViewOfFile(LPCVOID baseAddr)
 
 BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
 {
+    if (!b) return FALSE;
 #if defined(__APPLE__)
-    /* TODO: Darwin has no sysinfo(2): physical memory comes from sysctl, the free
-     * page count from the Mach VM statistics, swap from vm.swapusage. */
+    /* Darwin has no sysinfo(2): physical memory comes from sysctl, the free
+     * page count from the Mach VM statistics, swap from vm.swapusage.
+     *
+     * This was a TODO that filled in nothing and still returned TRUE, so the
+     * caller read its own uninitialised stack as the host's free memory. */
+    uint64_t memsize = 0;
+    size_t len = sizeof(memsize);
+    if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) != 0)
+        return FALSE;
+
+    vm_statistics64_data_t vm;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    vm_size_t page = 0;
+    ULONGLONG avail = 0;
+    if (host_page_size(mach_host_self(), &page) == KERN_SUCCESS &&
+        host_statistics64(mach_host_self(), HOST_VM_INFO64,
+                          (host_info64_t)&vm, &count) == KERN_SUCCESS)
+        /* Inactive and speculative pages are reclaimable at once: macOS keeps
+         * "free" near zero by filling memory with cache. */
+        avail = ((ULONGLONG)vm.free_count + vm.inactive_count +
+                 vm.speculative_count) * page;
+
+    struct xsw_usage sw;
+    len = sizeof(sw);
+    if (sysctlbyname("vm.swapusage", &sw, &len, NULL, 0) != 0)
+        memset(&sw, 0, sizeof(sw));
+
+    b->ullTotalPhys     = memsize;
+    b->ullAvailPhys     = avail < memsize ? avail : memsize;
+    b->ullTotalPageFile = b->ullTotalPhys + sw.xsu_total;
+    b->ullAvailPageFile = b->ullAvailPhys + sw.xsu_avail;
 #else
     struct sysinfo si;
-    if (!b) return FALSE;
     if (sysinfo(&si) != 0) return FALSE;
 
     ULONGLONG unit = si.mem_unit ? si.mem_unit : 1;
