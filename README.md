@@ -1,33 +1,28 @@
 <div align="center">
 
-```
- #   #  ####    ###   #   #         #####   ###    ###   #       ###
- #   #  #   #  #   #  #   #           #    #   #  #   #  #      #
-  # #   ####   #   #   # #            #    #   #  #   #  #       ##
-  # #   #   #  #   #   # #            #    #   #  #   #  #         #
- #   #  #   #  #   #  #   #           #    #   #  #   #  #         #
- #   #  ####    ###   #   #           #     ###    ###   #####   ###
-```
+# DirectXbox Recomp
 
 ### Static recompilation for the original Xbox
 
-**Lift a retail XBE to C. Replace the Direct3D 8 it links with a modern renderer. Run it natively on Windows and Apple Silicon.**
+**Lift a retail XBE to C. Replace the Direct3D 8 it links with a modern renderer.<br/>Run it natively on Windows and Apple Silicon.**
 
 [![CI](https://github.com/phobos665/xboxrecomp/actions/workflows/ci.yml/badge.svg)](https://github.com/phobos665/xboxrecomp/actions/workflows/ci.yml)
 ![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Hosts: Windows · macOS arm64 · Linux](https://img.shields.io/badge/hosts-Windows%20%C2%B7%20macOS%20arm64%20%C2%B7%20Linux-lightgrey)
 ![Renderers: D3D11 · Vulkan](https://img.shields.io/badge/renderers-D3D11%20%C2%B7%20Vulkan-informational)
 
-[Quick start](#quick-start) · [Title status](#title-status) · [How it works](#how-it-works) · [Documentation](#documentation) · [Contributing](CONTRIBUTING.md)
+[Quick start](#-quick-start) · [Title status](#-title-status) · [How it works](#-how-it-works) · [Xbox Live](#-playing-on-xbox-live-insignia) · [Documentation](#-documentation) · [Contributing](CONTRIBUTING.md)
+
+<sub>Formerly <code>xboxrecomp</code>. The repository, CMake targets and library names keep that name.</sub>
 
 </div>
 
 ---
 
-## What this is
+## 📦 What this is
 
-xboxrecomp is a toolkit that turns an original Xbox (2001–2005) executable into a native program.
-It disassembles the game's x86 code, lifts every function to C, and links the result against a
+**DirectXbox Recomp** turns an original Xbox (2001–2005) executable into a native program. It
+disassembles the game's x86 code, lifts every function to C, and links the result against a
 runtime that stands in for the Xbox kernel, the XDK, the GPU and the audio hardware.
 
 There is no interpreter and no JIT. The game's own logic runs as compiled code on your CPU.
@@ -37,11 +32,13 @@ XBE rather than assuming them, and **more than twenty titles** are being brought
 one has found something the toolkit wrongly treated as universal, and fixing that is how it grows.
 
 > [!IMPORTANT]
-> You supply the game. The repository ships tooling and runtime code, never game content, and
-> recompiled output contains the game's code, so do not distribute it. You need a copy you own.
-> Any PR into this repo, I expect you to only use your physically owned games. Do not submit any copyright material as a PR, or **I will ban your account from the repository.**
+> **You supply the game.** The repository ships tooling and runtime code, never game content.
+> Recompiled output contains the game's code, so do not distribute it. You need a copy you own.
+>
+> Any PR into this repository must be made with games you physically own. Do not submit any
+> copyrighted material in a PR, or **your account will be banned from the repository.**
 
-## Why not just use an emulator?
+## 🤔 Why not just use an emulator?
 
 [xemu](https://github.com/xemu-project/xemu) and [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded)
 are excellent, and this project leans on both. Static recompilation is a different trade, and it
@@ -67,38 +64,56 @@ What static recompilation gives you on top of that:
 | 🎛️ **Enhanceable** | Internal resolution, widescreen, frame interpolation and rebindable input sit in the HLE layer, not in the game. |
 | 🗄️ **Preservable** | A game becomes a self-contained native program, with its behaviour written down as source. |
 
-## Title status
+## 🎮 Title status
 
-Status is per title and moves quickly. The newest facts are in each title's bring-up document
-under [docs/technical/](docs/technical/); this table is the summary.
+| | Meaning |
+|---|---|
+| ⭐ **Perfect** | Plays through with no known issues |
+| 🟢 **Playable** | Can be played as a game |
+| 🔵 **In-game** | Reaches gameplay, with gaps |
+| 🟡 **Menus** | Reaches its front end |
 
-| Title | XDK | Where it is |
-|---|---|---|
-| **TimeSplitters 2** | 4721 | **Playable**  |
-| **Rainbow Six 3** | 5659 | **Playable**, and online on [Xbox Live (Insignia)](#playing-on-xbox-live-insignia). Its own project: [Rainbow-six-three-recomp](https://github.com/phobos665/Rainbow-six-three-recomp). |
-| **BLiNX: the Time Sweeper** | 4831 | **In-Game** |
-| **Mortal Kombat: Deadly Alliance** | 4721 | **In-Game** Reaches its Arcade fights. Cooperative tasks run on host fibers ([how](docs/technical/mkda-coroutine.md)). |
-| **Hunter: The Reckoning** | 4361 | **In-Game** Menus, cinema and the first level at 60 fps, with scripted input. [Notes](docs/technical/hunter-bringup.md). |
-| **Halo: Combat Evolved** | 3925 | **In-Game** Main menu, opening cinematic and the first level's cryo bay. [Notes](docs/technical/halo-bringup.md). |
-| **Burnout 2** | 5344 | **In-Game** Logos, menus, HUD and the race, drawn with the title's own vertex programs and register combiners. |
-| **TimeSplitters: Future Perfect** | 5849 | **Menus** Reaches its front end. A memory fault in the title's arena fill blocks the menu. |
-| **Need for Speed: Underground 2**, **WWE Raw 2** | | **In-Game** |
+### Ready to play
 
-All games tested were legitimate **owned** versions of these games.
+These titles have their own projects. Each one builds the game from your own copy of the disc
+against this toolkit, and contains no game code or data. Start with its README.
 
-## Quick start
+| Game | XDK | Status | Project |
+|---|:---:|---|---|
+| **TimeSplitters 2** | 4721 | ⭐ Perfect | [split2-recomp](https://github.com/phobos665/split2-recomp) |
+| **Gladius** | 5659 | 🟢 Playable | [gladius-recomp](https://github.com/phobos665/gladius-recomp) |
+| **Pro Evolution Soccer 5** | 5849 | 🟢 Playable | [pro-evo-5-recomp](https://github.com/phobos665/pro-evo-5-recomp) |
+| **Rainbow Six 3** | 5659 | 🟢 Playable | [Rainbow-six-three-recomp](https://github.com/phobos665/Rainbow-six-three-recomp). Online on [Xbox Live (Insignia)](#-playing-on-xbox-live-insignia). |
+
+### Being brought up
+
+Status moves quickly. The newest facts are in each title's bring-up document under
+[docs/technical/](docs/technical/); this table is the summary.
+
+| Title | XDK | Status | Notes |
+|---|:---:|---|---|
+| **BLiNX: the Time Sweeper** | 4831 | 🔵 In-game | |
+| **Mortal Kombat: Deadly Alliance** | 4721 | 🔵 In-game | Reaches its Arcade fights. Cooperative tasks run on host fibers ([how](docs/technical/mkda-coroutine.md)). |
+| **Hunter: The Reckoning** | 4361 | 🔵 In-game | Menus, cinema and the first level at 60 fps, with scripted input ([notes](docs/technical/hunter-bringup.md)). |
+| **Halo: Combat Evolved** | 3925 | 🔵 In-game | Main menu, opening cinematic and the first level's cryo bay ([notes](docs/technical/halo-bringup.md)). |
+| **Burnout 2** | 5344 | 🔵 In-game | Logos, menus, HUD and the race, drawn with the title's own vertex programs and register combiners. |
+| **Need for Speed: Underground 2** | — | 🔵 In-game | |
+| **WWE Raw 2** | — | 🔵 In-game | |
+
+All games were tested with legitimate copies their testers own.
+
+## 🚀 Quick start
 
 ### Prerequisites
 
-- **Windows 10/11**, **macOS on Apple Silicon**, or **Linux**. Windows uses D3D11 by default;
-  macOS (via MoltenVK) and Linux use the Vulkan renderer. Vulkan builds need a
-  [Vulkan SDK](https://vulkan.lunarg.com/), which provides the loader, DXC and its headers.
-- **Python 3.10+** with `capstone` (`pip install capstone`)
-- **CMake 3.20+** and a C compiler: Visual Studio 2022 or the 2019 Build Tools on Windows
-  (the Build Tools bring a CMake of their own), clang with Ninja on macOS, GCC on Linux
-- **XbSymbolDatabase** (MIT), the submodule `third_party/XbSymbolDatabase`. `tools.xdk_symbols`
-  uses it to name the XDK functions linked into a title
-- A game disc image you own
+| | |
+|---|---|
+| **Host** | Windows 10/11, macOS on Apple Silicon, or Linux. Windows uses D3D11 by default; macOS (via MoltenVK) and Linux use Vulkan. |
+| **Vulkan SDK** | For Vulkan builds: [LunarG Vulkan SDK](https://vulkan.lunarg.com/), which provides the loader, DXC and its headers. |
+| **Python** | 3.10+ with `capstone` (`pip install capstone`). |
+| **Build tools** | CMake 3.20+ and a C compiler: Visual Studio 2022 or the 2019 Build Tools on Windows (which bring their own CMake), clang with Ninja on macOS, GCC on Linux. |
+| **XbSymbolDatabase** | The submodule `third_party/XbSymbolDatabase` (MIT). `tools.xdk_symbols` uses it to name the XDK functions linked into a title. |
+| **A game** | A disc image you own. |
 
 `py -3` below is the Windows Python launcher. On macOS and Linux use `python3`.
 macOS specifics are in [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
@@ -161,10 +176,10 @@ game in a `game` folder beside itself, then in `games/<title>/` relative to itse
 to the terminal that started it, else to `<executable>.log` beside it.
 
 | Key | Does |
-|---|---|
-| **F9** | Show the frame rate |
-| **F10** | Step the frame cap: adaptive, 60, 30, off |
-| **F11** | Save the screen as a BMP and a replayable capture, which is how to report a rendering bug |
+|:---:|---|
+| <kbd>F9</kbd> | Show the frame rate |
+| <kbd>F10</kbd> | Step the frame cap: adaptive, 60, 30, off |
+| <kbd>F11</kbd> | Save the screen as a BMP and a replayable capture, which is how to report a rendering bug |
 
 A keyboard works out of the box, and so does a pad. `py -3 -m tools.input_ui` rebinds either for
 up to four players ([details](docs/technical/input-binding.md)). A title can also build a small
@@ -173,7 +188,7 @@ up to four players ([details](docs/technical/input-binding.md)). A title can als
 
 ### The first run will crash
 
-That is normal, and it is the process rather than a failure of it:
+That is normal. It is the process, not a failure of it:
 
 1. **Boot** past the entry point.
 2. **Stub** what touches hardware you have not implemented.
@@ -186,7 +201,7 @@ That is normal, and it is the process rather than a failure of it:
 [docs/technical/memory-watchpoints.md](docs/technical/memory-watchpoints.md) answers "who wrote
 this value" in three runs.
 
-## Playing on Xbox Live (Insignia)
+## 🌐 Playing on Xbox Live (Insignia)
 
 A recompiled game can sign in to [Insignia](https://insignia.live/), the free revival of the
 original Xbox Live, and play online with people on real consoles. **Rainbow Six 3** is the game
@@ -197,28 +212,36 @@ step below except the first two with one command, so it is the example here.
 Insignia only lets in consoles it knows, so the game signs in as **your own Xbox**. You give it
 a backup of that console; the rest is automatic.
 
-### What you need
+**What you need**
 
 - An original Xbox you own that can run homebrew (softmodded or chipped), with the EvoX
   dashboard and FTP access.
 - A free account at [insignia.live](https://insignia.live/).
 - Your copy of the game. A copy made to run from the Xbox's hard disk is fine.
 
-### 1. Sign the Xbox up (once, on the console)
+> [!CAUTION]
+> The backup files below are your console's identity. **Never share them**, or logs made with them.
+
+<details>
+<summary><b>1. Sign the Xbox up</b> (once, on the console)</summary>
 
 1. If your modded BIOS blocks Xbox Live, run Insignia's **xblunblock** first.
 2. Run the **Insignia Setup Assistant** and register the console.
 3. Sign in once from the dashboard's **Xbox Live** section, so your gamertag is on the console.
 
-### 2. Back up the Xbox (after step 1)
+</details>
+
+<details>
+<summary><b>2. Back up the Xbox</b> (after step 1)</summary>
 
 1. In EvoX, choose **Backup eeprom**. It writes `eeprom.bin`, `hddinfo.txt` and `disk.bin`.
 2. Connect to the Xbox over FTP and copy those three files, and the whole **C:** drive
    (about 100 MB: it holds the online updater that installs game updates).
 
-These files are your console's identity. **Never share them**, or logs made with them.
+</details>
 
-### 3. Set up Rainbow Six 3
+<details>
+<summary><b>3. Set up Rainbow Six 3</b></summary>
 
 Clone this repository and the game's project side by side, put the game's files in its `game/`
 folder and the backup in its `xboxbackup/` folder:
@@ -241,7 +264,10 @@ python3 scripts/doctor.py     # should end with "Xbox Live: ready."
 python3 scripts/build.py      # Windows: scripts\build.bat
 ```
 
-### 4. Install the game's update (once)
+</details>
+
+<details>
+<summary><b>4. Install the game's update</b> (once)</summary>
 
 Insignia needs the game's last title update. The game fetches it itself, as a console does:
 
@@ -252,16 +278,21 @@ Insignia needs the game's last title update. The game fetches it itself, as a co
    closes and the game starts again.
 5. Quit the game and run `python3 scripts/build.py` again. This builds the updated game.
 
-### 5. Play
+</details>
+
+<details>
+<summary><b>5. Play</b></summary>
 
 Start `build/play/rs3_recomp`. It opens the updated game by itself. Choose **Xbox Live** and
 sign in: your gamertag appears on the main menu, and you can join games and use Friends.
+
+</details>
 
 **Other games** need the same backup and steps, plus their own project set up the same way.
 [docs/xbox-live-guide.md](docs/xbox-live-guide.md) explains what each piece does, the settings
 behind them, and what to check when sign-in fails.
 
-## How it works
+## 🔧 How it works
 
 ```mermaid
 flowchart LR
@@ -285,98 +316,74 @@ flowchart LR
 ### The runtime
 
 ```
-┌────────────────────────────────────────────────────────┐
-│  Your title (.exe)                                     │
-│   recomp/gen/*.c      recomp_manual.c      main.c      │
-│   (lifted code)       (hand overrides)     (boot)      │
-├────────────────────────────────────────────────────────┤
-│  xboxrecomp libraries                                  │
-│                                                        │
-│   kernel      Xbox kernel ordinals, XAPI, memory,      │
-│               files, threads, FATX saves               │
-│   hle         The XDK replaced by name: D3D8,          │
-│               DirectSound, XMV movies                  │
-│   d3d         Renderer: register combiners and vertex  │
-│               programs to HLSL, then D3D11 or Vulkan   │
-│   apu / nv2a  Hardware models, from xemu               │
-│   audio       Software mixer and host output           │
-│   input       Pad and keyboard, with bindings          │
-│   host        Window, events, sound device (SDL3)      │
-├────────────────────────────────────────────────────────┤
-│  Windows: D3D11 / XInput    macOS · Linux: Vulkan / SDL3│
-└────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  Your title (executable)                                  │
+│    recomp/gen/*.c     recomp_manual.c     main.c          │
+│    (lifted code)      (hand overrides)    (boot)          │
+├───────────────────────────────────────────────────────────┤
+│  DirectXbox Recomp runtime libraries                      │
+│                                                           │
+│    kernel       Xbox kernel ordinals, XAPI, memory,       │
+│                 files, threads, FATX saves                │
+│    hle          The XDK replaced by name: D3D8,           │
+│                 DirectSound, XMV movies                   │
+│    d3d          Renderer: register combiners and vertex   │
+│                 programs to HLSL, then D3D11 or Vulkan    │
+│    apu / nv2a   Hardware models, from xemu                │
+│    audio        Software mixer and host output            │
+│    input        Pad and keyboard, with bindings           │
+│    host         Window, events, sound device (SDL3)       │
+├───────────────────────────────────────────────────────────┤
+│  Windows: D3D11 / XInput     macOS · Linux: Vulkan / SDL3 │
+└───────────────────────────────────────────────────────────┘
 ```
 
-**HLE with a safety net.** Each replaced XDK function runs the title's own body first, and in
-*shadow mode* repeats the call on a host device in a second window. That makes it possible to
-bring a title up on its own code, and then move draws to the fast path one function at a time.
-See [Shadow mode](docs/technical/shadow-mode.md).
-
-**One renderer, two backends.** The shader generators emit HLSL, which is compiled to DXBC for
-D3D11 or to SPIR-V through DXC for Vulkan. On macOS that runs on MoltenVK.
-See [the Vulkan backend](docs/technical/vulkan-backend.md).
-
-**Capture and replay.** F11 records one frame's host calls. Replaying a capture draws that frame
-with no game running, so two backends can be compared on identical input.
-
-**Memory.** Guest pointers stay 32-bit. On Windows the Xbox address map is reproduced at its own
-addresses with mirror views; on arm64 macOS, which reserves the low 4 GB, guest memory is a 4 GB
-arena at a base offset, and faults on device ranges are handled by a load/store emulator.
-See [Memory layout](docs/technical/memory-layout.md).
-
-**Threads.** Guest code assumes a uniprocessor. On arm64 a guest lock lets one guest thread run
-lifted code at a time, handing over at loop back-edges and blocking calls, and is scheduled the
-way the console would schedule it.
+| | |
+|---|---|
+| **HLE with a safety net** | Each replaced XDK function runs the title's own body first, and in *shadow mode* repeats the call on a host device in a second window. A title can be brought up on its own code, then moved to the fast path one function at a time. See [Shadow mode](docs/technical/shadow-mode.md). |
+| **One renderer, two backends** | The shader generators emit HLSL, compiled to DXBC for D3D11 or to SPIR-V through DXC for Vulkan. On macOS that runs on MoltenVK. See [the Vulkan backend](docs/technical/vulkan-backend.md). |
+| **Capture and replay** | <kbd>F11</kbd> records one frame's host calls. Replaying a capture draws that frame with no game running, so two backends can be compared on identical input. |
+| **Memory** | Guest pointers stay 32-bit. On Windows the Xbox address map is reproduced at its own addresses with mirror views; on arm64 macOS, which reserves the low 4 GB, guest memory is a 4 GB arena at a base offset, and faults on device ranges go through a load/store emulator. See [Memory layout](docs/technical/memory-layout.md). |
+| **Threads** | Guest code assumes a uniprocessor. On arm64 a guest lock lets one guest thread run lifted code at a time, handing over at loop back-edges and blocking calls, and is scheduled the way the console would schedule it. |
 
 ### Platform support
 
 | Host | Renderer | State |
 |---|---|---|
-| Windows x64 | D3D11 (Vulkan with `RECOMP_D3D8_BACKEND=vulkan`) | Reference platform. |
-| macOS arm64 | Vulkan on MoltenVK | TimeSplitters 2 and BLiNX run at 60 fps with sound. |
-| Linux | Vulkan | The runtime builds and its tests pass in CI. No title has been run there yet. |
+| 🪟 Windows x64 | D3D11 (Vulkan with `RECOMP_D3D8_BACKEND=vulkan`) | Reference platform. |
+| 🍎 macOS arm64 | Vulkan on MoltenVK | TimeSplitters 2 and BLiNX run at 60 fps with sound. |
+| 🐧 Linux | Vulkan | The runtime builds and its tests pass in CI. No title has been run there yet. |
 
-## Documentation
+## 📚 Documentation
 
 **Start here**
+
 - [INSTRUCTIONS.md](INSTRUCTIONS.md): the whole journey on one page
 - [Getting Started](docs/GETTING_STARTED.md): from XBE to running game, with the reasons
 - [Xbox Live (Insignia)](docs/xbox-live-guide.md): playing online, with your own console's identity
 - [Tools reference](tools/README.md) and [runtime libraries](src/README.md)
 - [Decompilation guide](docs/DECOMP.md): using the toolkit as a function splitter, without ever lifting
 
-**Pipeline**: [XBE parsing](docs/pipeline/01-xbe-parsing.md) ·
+**Pipeline:** [XBE parsing](docs/pipeline/01-xbe-parsing.md) ·
 [disassembly](docs/pipeline/02-disassembly.md) · [function ID](docs/pipeline/03-function-id.md) ·
 [lifting](docs/pipeline/04-lifting.md) · [runtime](docs/pipeline/05-runtime.md) ·
 [debugging](docs/pipeline/06-debugging.md)
 
-**Runtime modules**: [kernel](src/kernel/README.md) · [D3D8](src/d3d/README.md) ·
+**Runtime modules:** [kernel](src/kernel/README.md) · [D3D8](src/d3d/README.md) ·
 [DirectSound](src/audio/README.md) · [APU](src/apu/README.md) · [NV2A](src/nv2a/README.md) ·
 [input](src/input/README.md)
 
 **Deep dives**
-- Rendering: [Shadow mode](docs/technical/shadow-mode.md) ·
-  [Vulkan backend](docs/technical/vulkan-backend.md) ·
-  [NV2A shader translation](docs/technical/nv2a-shaders.md) ·
-  [Frame interpolation](docs/technical/frame-interpolation.md) ·
-  [Resolution and frame rate](docs/technical/resolution-and-framerate.md) ·
-  [Widescreen](docs/technical/widescreen-and-resolution.md)
-- Runtime: [Register model](docs/technical/register-model.md) ·
-  [Memory layout](docs/technical/memory-layout.md) ·
-  [Indirect calls](docs/technical/indirect-calls.md) ·
-  [Kernel replacement](docs/technical/kernel-replacement.md) ·
-  [SEH](docs/technical/seh-handling.md) ·
-  [C++ exceptions](docs/technical/cpp-exceptions.md)
-- Debugging: [Memory watchpoints](docs/technical/memory-watchpoints.md) ·
-  [xemu as an oracle](docs/technical/xemu-debugging.md) ·
-  [Conformance testing](docs/technical/conformance-testing.md)
-- Project: [Lessons learned](docs/technical/lessons-learned.md) ·
-  [Gap analysis vs xemu](docs/technical/gap-analysis.md) ·
-  [Candidate games](docs/technical/candidate-games.md) ·
-  [Modding models and textures](docs/technical/modding-models-textures.md)
-- Formats: [XBE](docs/formats/xbe.md) · [kernel exports](docs/formats/kernel-exports.md)
 
-## Repository layout
+| Area | Documents |
+|---|---|
+| Rendering | [Shadow mode](docs/technical/shadow-mode.md) · [Vulkan backend](docs/technical/vulkan-backend.md) · [NV2A shader translation](docs/technical/nv2a-shaders.md) · [Frame interpolation](docs/technical/frame-interpolation.md) · [Resolution and frame rate](docs/technical/resolution-and-framerate.md) · [Widescreen](docs/technical/widescreen-and-resolution.md) |
+| Runtime | [Register model](docs/technical/register-model.md) · [Memory layout](docs/technical/memory-layout.md) · [Indirect calls](docs/technical/indirect-calls.md) · [Kernel replacement](docs/technical/kernel-replacement.md) · [SEH](docs/technical/seh-handling.md) · [C++ exceptions](docs/technical/cpp-exceptions.md) |
+| Debugging | [Memory watchpoints](docs/technical/memory-watchpoints.md) · [xemu as an oracle](docs/technical/xemu-debugging.md) · [Conformance testing](docs/technical/conformance-testing.md) |
+| Project | [Lessons learned](docs/technical/lessons-learned.md) · [Gap analysis vs xemu](docs/technical/gap-analysis.md) · [Candidate games](docs/technical/candidate-games.md) · [Modding models and textures](docs/technical/modding-models-textures.md) |
+| Formats | [XBE](docs/formats/xbe.md) · [Kernel exports](docs/formats/kernel-exports.md) |
+
+## 🗂️ Repository layout
 
 ```
 xboxrecomp/
@@ -390,15 +397,15 @@ xboxrecomp/
 └── docs/           pipeline/, technical/, formats/, runtime/
 ```
 
-## Choosing a target
+## 🎯 Choosing a target
 
 | | Easier | Harder |
 |---|---|---|
-| Engine | A documented one, such as RenderWare | A custom engine |
-| Threading | Single-threaded | Heavy cross-thread synchronisation |
-| GPU | Standard D3D8 calls | Hand-written push buffers |
-| Code | Small `.text`, few demand-loaded sections | Large, or many streamed sections |
-| Online | Offline | Xbox Live dependent |
+| **Engine** | A documented one, such as RenderWare | A custom engine |
+| **Threading** | Single-threaded | Heavy cross-thread synchronisation |
+| **GPU** | Standard D3D8 calls | Hand-written push buffers |
+| **Code** | Small `.text`, few demand-loaded sections | Large, or many streamed sections |
+| **Online** | Offline | Xbox Live dependent |
 
 `scripts/survey_xbe_library.py` reads XBE headers and ranks a folder of discs by XDK version,
 D3D8 versus D3D8LTCG, library list, engine and size. It cannot see hand-rolled push buffers or
@@ -408,7 +415,7 @@ whether you want to play the game, so treat the ranking as a start.
 python3 scripts/survey_xbe_library.py /path/to/extracted/discs --csv survey.csv
 ```
 
-## Development
+## 🧪 Development
 
 ```bash
 py -3 -m pytest tools/            # unit tests, no game files needed
@@ -424,10 +431,11 @@ See [Conformance testing](docs/technical/conformance-testing.md).
 The core pipeline needs only Python and Capstone. Ghidra and IDA helpers under `tools/` recover
 symbol names and are never required.
 
-**Scripted runs** should always set `RECOMP_SAVE_DIR=<fresh folder>`, `RECOMP_MUTE=1` and
-`RECOMP_WINDOW_BACKGROUND=1`, so a test never touches a player's saves or takes the focus.
+> [!TIP]
+> **Scripted runs** should always set `RECOMP_SAVE_DIR=<fresh folder>`, `RECOMP_MUTE=1` and
+> `RECOMP_WINDOW_BACKGROUND=1`, so a test never touches a player's saves or takes the focus.
 
-## How you can help
+## 🤝 How you can help
 
 1. **Bring up a new title.** Follow the pipeline and see how far it gets. Partial results show where the toolkit is wrong.
 2. **Improve the lifter.** An unhandled instruction lifts to a bare `/* mnemonic */` comment, so grepping generated output finds the gaps.
@@ -440,29 +448,54 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Contributors are credited in
 [CONTRIBUTORS.md](CONTRIBUTORS.md), including people who never sent a patch and found the wall
 everyone else was about to hit.
 
-## FAQ
+## ❓ FAQ
 
-**Is this legal?** The repository holds tools, runtime code and documentation, and no game code or
-assets. You must own a copy of any game you recompile, and recompiled binaries contain the game's
-code, so do not share them.
+<details>
+<summary><b>Is this legal?</b></summary>
 
-**How is it different from an emulator?** An emulator interprets or translates guest code while it
-runs. Here the whole binary is translated ahead of time into C that compiles to an ordinary
-executable. What it still shares with an emulator is the hardware model: kernel, GPU and audio are
-reimplemented, and most per-title effort goes there.
+The repository holds tools, runtime code and documentation, and no game code or assets. You must
+own a copy of any game you recompile, and recompiled binaries contain the game's code, so do not
+share them.
 
-**Will it be faster than xemu?** Only where the Direct3D 8 layer is replaced rather than emulated.
-Lifted CPU code on its own does not beat a tuned JIT, since guest and host share an instruction
-set. The gains that do hold are HLE at the D3D8 boundary, hosts that are not x86 (where translation
-is no longer same-ISA), and the ability to mod and enhance the result.
+</details>
 
-**Can I use it on Xbox 360 games?** No. Please refer to
-[XenonRecomp](https://github.com/hedge-dev/XenonRecomp) and [ReXGlue](https://github.com/rexglue/rexglue-sdk).
+<details>
+<summary><b>How is it different from an emulator?</b></summary>
 
-**Why C rather than direct binary translation?** C is portable and readable, you can set
-breakpoints in it and change individual functions, and the compiler optimises it.
+An emulator interprets or translates guest code while it runs. Here the whole binary is translated
+ahead of time into C that compiles to an ordinary executable. What it still shares with an
+emulator is the hardware model: kernel, GPU and audio are reimplemented, and most per-title effort
+goes there.
 
-## License
+</details>
+
+<details>
+<summary><b>Will it be faster than xemu?</b></summary>
+
+Only where the Direct3D 8 layer is replaced rather than emulated. Lifted CPU code on its own does
+not beat a tuned JIT, since guest and host share an instruction set. The gains that do hold are
+HLE at the D3D8 boundary, hosts that are not x86 (where translation is no longer same-ISA), and
+the ability to mod and enhance the result.
+
+</details>
+
+<details>
+<summary><b>Can I use it on Xbox 360 games?</b></summary>
+
+No. Please refer to [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) and
+[ReXGlue](https://github.com/rexglue/rexglue-sdk).
+
+</details>
+
+<details>
+<summary><b>Why C rather than direct binary translation?</b></summary>
+
+C is portable and readable, you can set breakpoints in it and change individual functions, and the
+compiler optimises it.
+
+</details>
+
+## ⚖️ License
 
 **GPL-3.0**, see [LICENSE](LICENSE). Third-party components keep their own licences, and
 [NOTICE](NOTICE) lists each with the copyright it carries.
@@ -472,17 +505,15 @@ breakpoints in it and change individual functions, and the compiler optimises it
 | DirectSound replacement in `src/hle/` | GPL-3.0 | Adapted from [doaxbv-re](https://github.com/NoRain211/doaxbv-re) (NoRain211 and contributors) |
 | MCPX APU sources in `src/apu/` | LGPL-2.1-or-later | espes, Jannik Vogel, Matt Borgerson, from xemu |
 | `src/nv2a/nv2a_regs.h` | LGPL-2.1-or-later | espes, Jannik Vogel, from xemu |
-| Earlier xboxrecomp code | MIT | See [Acknowledgements](#acknowledgements) |
+| Earlier upstream xboxrecomp code | MIT | See [Acknowledgements](#-acknowledgements) |
 
 [LICENSES/LGPL-2.1.txt](LICENSES/LGPL-2.1.txt) ships with the LGPL files because the licence
 requires it. LGPL-2.1 permits linking those files from other code, so a recompiled game is
 unaffected; what it asks is that notices stay and the library source stays available.
 
-## Changelog
-
 Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
-## Acknowledgements
+## 🙏 Acknowledgements
 
 This project stands on other people's work.
 
