@@ -228,8 +228,6 @@ typedef struct RecompSettings {
      * a surprise in the next. */
     int  mouse_look;            /* 0 or 1 */
     int  mouse_sensitivity;     /* RECOMP_MOUSE_SENSITIVITY_MIN..MAX */
-    int  mouse_deadzone;        /* 0..RECOMP_MOUSE_DEADZONE_MAX: percent of a push
-                                 * every movement starts at */
     char game_dir[512];         /* empty means beside the executable */
 
     /* System Link (src/kernel/xbox_net_udp.c). */
@@ -250,16 +248,13 @@ typedef struct RecompSettings {
  *
  * Sensitivity: a full push of the stick at 100,000 / sensitivity mouse
  * counts a second, so 80 is a full push at 1,250 -- an unhurried turn on an
- * 800 dpi mouse -- and each step is 1.25% of the default.
- * Deadzone: the percent of a push any movement starts at, so a slow one
- * gets past the title's own dead zone. 5% by default; raise it for a title
- * whose own dead zone swallows slow movements.
- * Both chosen by playing (Oct 2026; they were 25 and 20). */
+ * 800 dpi mouse -- and each step is 1.25% of the default. Chosen by
+ * playing (Oct 2026; it was 25).
+ * There is no deadzone setting: a movement pushes the stick in proportion
+ * from the centre, because any starting push broke the mouse's feel. */
 #define RECOMP_MOUSE_SENSITIVITY_DEFAULT 80
 #define RECOMP_MOUSE_SENSITIVITY_MIN     1
 #define RECOMP_MOUSE_SENSITIVITY_MAX     100
-#define RECOMP_MOUSE_DEADZONE_DEFAULT    5
-#define RECOMP_MOUSE_DEADZONE_MAX        90
 
 void recomp_settings_defaults(RecompSettings *s);
 

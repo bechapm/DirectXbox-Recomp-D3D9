@@ -156,27 +156,27 @@ A stick says how fast to turn, so the push is proportional to the mouse's
 speed: the counts since the last look over the time since, worked out again
 at most every 12 ms whatever the title's polling rate, averaged with the
 period before (a 125 Hz mouse lands one report in some periods and two in
-others), and kept on the stick. Two settings shape it, both rows on the
-launcher's Input tab, lines in the title's settings file and environment
-variables:
+others), and kept on the stick. The push is proportional from the centre:
+there is no dead zone of our own and no starting push to get past the
+title's, because any offset made a slow movement jump and broke the
+mouse's feel (a `mouse_deadzone` setting, 5% by default, was removed in
+Oct 2026; a settings file that still has the line is read without it). One
+setting shapes it, a row on the launcher's Input tab, a line in the title's
+settings file and an environment variable:
 
 | setting | range | default | what it does |
 |---|---|---|---|
 | `mouse_sensitivity` (`RECOMP_MOUSE_SENSITIVITY`) | 1-100 | 80 | a full push at 100,000 / sensitivity counts a second, so 80 is 1,250 -- an unhurried turn on an 800 dpi mouse; each step is 1.25% of the default |
-| `mouse_deadzone` (`RECOMP_MOUSE_DEADZONE`) | 0-90 % | 5 | where on the stick the slightest movement starts, so a slow one gets past the title's own dead zone. Too low and slow movements do nothing; too high and the view creeps or jumps |
 
-**Tuning them.** The defaults and ranges are `RECOMP_MOUSE_*` in
-`src/config/recomp_config.h` and nowhere else: the launcher's rows, the
+**Tuning it.** The default and range are `RECOMP_MOUSE_SENSITIVITY_*` in
+`src/config/recomp_config.h` and nowhere else: the launcher's row, the
 settings file's comments and the runtime all read them, so a better default
 found by playing is a one-line change there. A setting already written to a
 title's file keeps its value, so a new default reaches a player who has
 never moved the row, and one who has keeps theirs. In the launcher, A or
-Enter on either row puts it back to the default. To try values without the
-launcher, set the environment variables, which beat the file; the
-`[INPUT] mouse look:` line at start-up says which values a run got.
-Players' pads differ from title to title in the dead zone they apply, so a
-deadzone that suits one title may not suit the next -- which is part of why
-these are per title.
+Enter on the row puts it back to the default. To try values without the
+launcher, set the environment variable, which beats the file; the
+`[INPUT] mouse look:` line at start-up says which value a run got.
 
 With it on, the window takes the pointer while it is in front: hidden and
 kept inside it. On Windows the motion is raw input (`WM_INPUT`), which keeps

@@ -679,7 +679,6 @@ static struct {
     int ready;
     int on;
     int sensitivity;        /* RECOMP_MOUSE_SENSITIVITY_MIN..MAX */
-    int deadzone;           /* percent of a full push any movement starts at */
 } g_look;
 
 static void look_settings(void)
@@ -693,9 +692,6 @@ static void look_settings(void)
                           RECOMP_MOUSE_SENSITIVITY_DEFAULT);
     g_look.sensitivity = v < RECOMP_MOUSE_SENSITIVITY_MIN ? RECOMP_MOUSE_SENSITIVITY_MIN
                        : v > RECOMP_MOUSE_SENSITIVITY_MAX ? RECOMP_MOUSE_SENSITIVITY_MAX : v;
-    v = recomp_config_int("RECOMP_MOUSE_DEADZONE", "mouse_deadzone",
-                          RECOMP_MOUSE_DEADZONE_DEFAULT);
-    g_look.deadzone = v < 0 ? 0 : (v > RECOMP_MOUSE_DEADZONE_MAX ? RECOMP_MOUSE_DEADZONE_MAX : v);
     g_look.ready = 1;
 }
 
@@ -728,8 +724,8 @@ void recomp_bindings_init(void)
         fprintf(stderr, "[INPUT]   controller %d: %s\n", i + 1, g_ctl[i].label);
     look_settings();
     if (g_look.on)
-        fprintf(stderr, "[INPUT] mouse look: controller 1's right stick, sensitivity %d, "
-                        "every movement from %d%%%s\n", g_look.sensitivity, g_look.deadzone,
+        fprintf(stderr, "[INPUT] mouse look: controller 1's right stick, sensitivity %d%s\n",
+                g_look.sensitivity,
                 g_ctl[0].device == DEV_NONE ? " -- but controller 1 reads nothing" : "");
     fflush(stderr);
 }
@@ -976,19 +972,19 @@ static unsigned long long g_look_at;
 static float g_look_speed[2];               /* the period before, counts a second */
 static float g_look_out[2];                 /* -1..1, x right and y up */
 
-/* Counts a second to -1..1. Any movement starts at the deadzone setting,
- * so a slow one is not lost inside the title's own dead zone. */
+/* Counts a second to -1..1, in proportion from the centre. There is no
+ * dead zone of our own and no jump past the title's: a slow movement is a
+ * small push, as a hand on a mouse expects. (A 5% starting push, settable,
+ * was tried until Oct 2026 and made slow aiming feel wrong.) */
 static float look_shape(float speed)
 {
     float push = speed * (float)g_look.sensitivity / LOOK_FULL_SCALE;
     float mag = push < 0.0f ? -push : push;
-    float start = (float)g_look.deadzone / 100.0f;
 
     if (mag < 0.0005f)
         return 0.0f;
     if (mag > 1.0f)
         mag = 1.0f;
-    mag = start + (1.0f - start) * mag;
     return push < 0.0f ? -mag : mag;
 }
 

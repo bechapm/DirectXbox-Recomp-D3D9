@@ -82,7 +82,6 @@ int main(void)
     set_env("RECOMP_INPUT_CONFIG", path);
     set_env("RECOMP_MOUSE_LOOK", "1");
     set_env("RECOMP_MOUSE_SENSITIVITY", "25");
-    set_env("RECOMP_MOUSE_DEADZONE", "20");
 
     check(recomp_mouse_look() == 1, "mouse look is on for a controller that reads something");
     check((recomp_bindings_present_mask() & 1u) != 0, "controller 1 is present");
@@ -117,8 +116,10 @@ int main(void)
     check(pad.sThumbRX > 0, "moving right pushes the stick right");
     check(pad.sThumbRY > 0, "moving forward pushes the stick up");
     check(pad.sThumbRX > pad.sThumbRY, "further moves further");
-    /* 20% of a push is where any movement starts. */
-    check(pad.sThumbRY >= 32767 / 5, "any movement starts past the dead zone setting");
+    /* No dead zone of our own: a slow movement is a small push, not a
+     * jump to some starting point. 10 counts in ~40 ms at sensitivity 25
+     * is a few percent of a push. */
+    check(pad.sThumbRY < 32767 / 5, "a slow movement is a small push");
     check(pad.sThumbLX == 0 && pad.sThumbLY == 0, "the left stick is not touched");
 
     /* A fast flick is a full push and no more. */

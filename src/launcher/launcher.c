@@ -127,21 +127,20 @@ static int        g_bind_dirty;
  * the rest of the window state because the capture below reads it. */
 static int        g_sel;
 
-#define BIND_ROWS_VISIBLE 8           /* the head rows and the first control */
+#define BIND_ROWS_VISIBLE 8           /* the head rows and the first two controls */
 
 /* The input list starts with rows that are not controls: which controller
  * is being edited, what it reads from, mouse look, and putting it back.
  * They live in the list rather than off to one side so they are reached
  * the same way as everything else -- one way to move, one way to
  * change, and no second idea to learn. */
-#define BIND_HEAD_ROWS 7
+#define BIND_HEAD_ROWS 6
 #define BIND_ROW_PORT   0
 #define BIND_ROW_DEVICE 1
 #define BIND_ROW_API    2       /* SDL3 or XInput, for every controller */
 #define BIND_ROW_MOUSE  3       /* mouse look: this game's setting, not the bindings' */
 #define BIND_ROW_SENS   4       /* how far the mouse pushes the stick */
-#define BIND_ROW_DEAD   5       /* where on the stick any movement starts */
-#define BIND_ROW_RESET  6
+#define BIND_ROW_RESET  5
 #define BIND_TOTAL_ROWS (BIND_HEAD_ROWS + BIND_CONTROLS)
 
 static const char *frame_cap_label(int i)
@@ -1112,14 +1111,6 @@ static void nav(int dx, int dy, int accept, int cancel, int tabdelta)
             /* Back to the default, the one value worth finding again. */
             if (accept)
                 g_settings.mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
-        } else if (k == BIND_ROW_DEAD) {
-            g_settings.mouse_deadzone += dx;
-            if (g_settings.mouse_deadzone < 0)
-                g_settings.mouse_deadzone = 0;
-            if (g_settings.mouse_deadzone > RECOMP_MOUSE_DEADZONE_MAX)
-                g_settings.mouse_deadzone = RECOMP_MOUSE_DEADZONE_MAX;
-            if (accept)
-                g_settings.mouse_deadzone = RECOMP_MOUSE_DEADZONE_DEFAULT;
         } else if (k == BIND_ROW_RESET) {
             if (accept) {
                 BindConfig d;
@@ -1397,14 +1388,6 @@ static void draw(void)
                            lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
                 theme_text(cv, line, 12, 400,
                            lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
-            } else if (k == BIND_ROW_DEAD) {
-                snprintf(line, sizeof line, "%d%% of a push%s", g_settings.mouse_deadzone,
-                         g_settings.mouse_deadzone == RECOMP_MOUSE_DEADZONE_DEFAULT
-                             ? "  (default)" : "");
-                theme_text(lr, "Mouse deadzone", 12, 600,
-                           lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
-                theme_text(cv, line, 12, 400,
-                           lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
             } else if (k == BIND_ROW_RESET) {
                 theme_text(lr, "Reset this controller", 12, 600,
                            lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
@@ -1437,9 +1420,6 @@ static void draw(void)
                 theme_arrows(arrows_rect(rr),
                              g_settings.mouse_sensitivity > RECOMP_MOUSE_SENSITIVITY_MIN,
                              g_settings.mouse_sensitivity < RECOMP_MOUSE_SENSITIVITY_MAX, lit);
-            else if (lit > 0.5 && k == BIND_ROW_DEAD)
-                theme_arrows(arrows_rect(rr), g_settings.mouse_deadzone > 0,
-                             g_settings.mouse_deadzone < RECOMP_MOUSE_DEADZONE_MAX, lit);
             else if (lit > 0.5 && k < BIND_ROW_RESET)
                 theme_arrows(arrows_rect(rr), 1, 1, lit);
         }
@@ -1475,9 +1455,6 @@ static void draw(void)
                                          "itself still works. Click in the game to give it the pointer; "
                                          "switching away gives it back. This game only."
                 : k == BIND_ROW_SENS   ? "How far a movement of the mouse pushes the stick: higher turns faster. "
-                                         "A or Enter goes back to the default. This game only."
-                : k == BIND_ROW_DEAD   ? "Where on the stick the slightest movement starts. Raise it if slow "
-                                         "movements do nothing; lower it if the view creeps or jumps. "
                                          "A or Enter goes back to the default. This game only."
                 : k == BIND_ROW_RESET  ? "Put this controller back to the built-in mapping."
                 : "Left and right choose the controller or the keyboard and mouse column. "
