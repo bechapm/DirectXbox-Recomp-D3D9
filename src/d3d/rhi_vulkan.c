@@ -46,6 +46,21 @@
 #endif
 #include "volk.h"
 #include "vk_mem_alloc.h"
+#if !defined(_WIN32) && !defined(__APPLE__)
+/* Linux's two window systems, as RhiNativeWindow describes them. Their
+ * surface structs are declared by these two Vulkan headers, which want only
+ * the handle types below; X11's own headers would bring macros (None, Bool,
+ * Status, Success) into this file. The entry points are looked up from the
+ * instance (create_native_surface), since volk loads only what its own build
+ * enabled. */
+typedef struct _XDisplay Display;
+typedef unsigned long Window;
+typedef unsigned long VisualID;
+struct wl_display;
+struct wl_surface;
+#include <vulkan/vulkan_xlib.h>
+#include <vulkan/vulkan_wayland.h>
+#endif
 
 #include <ctype.h>
 #include <float.h>
@@ -1091,29 +1106,60 @@ static int has_instance_ext(const char *name)
 }
 
 /* The surface the swap chain presents to: the window's (an HWND on
- * Windows, a CAMetalLayer on Apple -- RhiDeviceDesc.window), or with no
- * window a headless one (VK_EXT_headless_surface), whose swap chain is
- * drawn and read back exactly like a window's and shown nowhere. That is
- * what the replay tool and the tests run on: the whole present path, with
- * no window to open. */
-static const char *surface_ext(int headless)
+ * Windows, a CAMetalLayer on Apple, an X11 or Wayland window on Linux --
+ * RhiDeviceDesc.window), or with no window a headless one
+ * (VK_EXT_headless_surface), whose swap chain is drawn and read back
+ * exactly like a window's and shown nowhere. That is what the replay tool
+ * and the tests run on: the whole present path, with no window to open. */
+static const char *surface_ext(const void *window)
 {
-    if (headless)
+    if (!window)
         return VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME;
 #if defined(_WIN32)
     return VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
     return VK_EXT_METAL_SURFACE_EXTENSION_NAME;
+#elif !defined(__APPLE__)
+    switch (((const RhiNativeWindow *)window)->kind) {
+    case RHI_NATIVE_X11:     return VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
+    case RHI_NATIVE_WAYLAND: return VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
+    default:                 return NULL;
+    }
 #else
     return NULL;
 #endif
 }
 
-static int create_instance(int want_validation, int headless)
+#if !defined(_WIN32) && !defined(__APPLE__)
+static VkResult create_native_surface(const RhiNativeWindow *nw)
+{
+    if (nw->kind == RHI_NATIVE_X11) {
+        VkXlibSurfaceCreateInfoKHR xci = { VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR };
+        PFN_vkCreateXlibSurfaceKHR create = (PFN_vkCreateXlibSurfaceKHR)
+            vkGetInstanceProcAddr(V.instance, "vkCreateXlibSurfaceKHR");
+        if (!create)
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        xci.dpy = (Display *)nw->display;
+        xci.window = (Window)nw->xwindow;
+        return create(V.instance, &xci, NULL, &V.surface);
+    } else {
+        VkWaylandSurfaceCreateInfoKHR wci = { VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR };
+        PFN_vkCreateWaylandSurfaceKHR create = (PFN_vkCreateWaylandSurfaceKHR)
+            vkGetInstanceProcAddr(V.instance, "vkCreateWaylandSurfaceKHR");
+        if (!create)
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        wci.display = (struct wl_display *)nw->display;
+        wci.surface = (struct wl_surface *)nw->surface;
+        return create(V.instance, &wci, NULL, &V.surface);
+    }
+}
+#endif
+
+static int create_instance(int want_validation, const void *window)
 {
     const char *layer = "VK_LAYER_KHRONOS_validation";
     const char *exts[6];
-    const char *surf = surface_ext(headless);
+    const char *surf = surface_ext(window);
     uint32_t next = 0;
     VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     VkInstanceCreateInfo ici = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
@@ -1710,7 +1756,7 @@ static int v_device_create(const RhiDeviceDesc *dd)
     memset(&SC, 0, sizeof SC);
     V.sample_mask = 0xFFFFFFFFu;
     V.topology = RHI_TOPOLOGY_TRIANGLES;
-    if (create_instance(dd->debug || env_on("RECOMP_VK_VALIDATION"), dd->window == NULL) != 0)
+    if (create_instance(dd->debug || env_on("RECOMP_VK_VALIDATION"), dd->window) != 0)
         return -1;
     if (!dd->window) {
         VkHeadlessSurfaceCreateInfoEXT hci = { VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT };
@@ -1727,6 +1773,11 @@ static int v_device_create(const RhiDeviceDesc *dd)
         VkMetalSurfaceCreateInfoEXT mci = { VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT };
         mci.pLayer = (const CAMetalLayer *)dd->window;
         VKCHECK(vkCreateMetalSurfaceEXT(V.instance, &mci, NULL, &V.surface), "window surface");
+#elif !defined(__APPLE__)
+        const RhiNativeWindow *nw = (const RhiNativeWindow *)dd->window;
+        fprintf(stderr, "[RHI] vulkan: presenting to a%s window\n",
+                nw->kind == RHI_NATIVE_X11 ? "n X11" : " Wayland");
+        VKCHECK(create_native_surface(nw), "window surface");
 #else
         fprintf(stderr, "[RHI] vulkan: no window surface on this platform yet\n");
         return -1;

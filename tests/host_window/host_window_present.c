@@ -55,7 +55,7 @@ static void *game_thread(void *arg)
     memset(&cb, 0, sizeof cb);
     cb.on_resize = on_resize;
     w = host_window_open(640, 480, "host_window_present", &cb);
-    layer = w ? host_window_metal_layer(w) : NULL;
+    layer = w ? host_window_present_target(w) : NULL;
     if (!layer) {
         printf("FAIL: no window or no Metal layer\n");
         recomp_host_loop_quit(2);

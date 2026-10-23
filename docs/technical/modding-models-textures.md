@@ -175,7 +175,7 @@ reverse engineering or tooling that transfers to no other game.
 
 | # | Work item | Route | Days | Kind |
 |---|---|---|---|---|
-| T1 | Overlay directory in `kernel_path.c`: try `<overlay>/<rel>` before `<game_dir>/<rel>`, behind an env switch | A | 1 | Toolkit |
+| T1 | Overlay directory in `kernel_path.c`: try `<overlay>/<rel>` before `<game_dir>/<rel>`, behind an env switch. **Done (Oct 2026): `RECOMP_MODS`**, see below | A | 1 | Toolkit |
 | T2 | `P8CK`/`P4CK` unpack + repack tool in `tools/` | A | 0.5 | TS2 (or use `tspak`/`Splitter`: 0) |
 | T3 | `.xbt` ↔ DDS converter, all four format codes | A | 1–2 | TS2 (or use `fmt_xbox.py` as a spec: 1) |
 | T4 | Unsampled content hash at cache-entry time, exposed; `RECOMP_TEX_DUMP` writes every bound texture as DDS named by hash | B | 1–2 | Toolkit |
@@ -187,6 +187,31 @@ reverse engineering or tooling that transfers to no other game.
 disc image that the title loads with no runtime involvement at all.
 
 **Route B textures: 3.5–6 days** (T4–T6), excluding T7.
+
+**T1 is done (15 Oct 2026).** `RECOMP_MODS=<folder>[:<folder>...]` (`;` on Windows)
+names folders laid out like the disc; a file the title opens from the disc
+(`\Device\CdRom0\`, `D:`) is read from the first folder that has it, and
+`[MODS] <path> from <file>` says so. Partitions that also map to the game folder are
+never redirected, so saves cannot land in a mod. Checked on TimeSplitters 2 (macOS):
+a repacked `data/story/l_35_ST.pak` with its character textures filled red drew
+Siberia's guards red. One thing that check found: TS2's level paks carry their own
+copies of every character in the level (byte-identical to `chr.pak`'s, textures under
+the same global numbers), so a character mod replaces files in every pak that holds
+them, not only in `chr.pak`.
+
+A mod can also carry files that are not disc files, for a title's own hooks to read:
+`xbox_mods_find(rel, out, n)` (`kernel.h`) gives the host path of `<mod>/<rel>` in the
+first `RECOMP_MODS` folder that has it, and that folder's index, or -1. TimeSplitters 2
+reads `<mod>/ts2/characters.ini` through it at start-up to add a playable character
+(split2-recomp `docs/formats/roster.md`).
+
+For a title that stacks mods rather than taking each file from the first one that has
+it, `xbox_mods_count()` and `xbox_mods_dir(i)` name the folders and
+`xbox_mods_walk(mod, sub, fn, ctx)` calls `fn` once per file under `<mod>/<sub>`
+(relative path, host path, size), so a title indexes its mods once at start-up.
+TimeSplitters 2 (Oct 2026) uses them to serve single files from inside its archives
+from every mod at once and to read every mod's `characters.ini` (split2-recomp
+`docs/modding.md`); whole files still come from the first mod that has them.
 
 ### Models
 

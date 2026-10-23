@@ -43,7 +43,7 @@ static void *game_thread(void *arg)
         recomp_host_loop_quit(2);
         return NULL;
     }
-    layer = host_window_metal_layer(w);
+    layer = host_window_present_target(w);
     host_window_drawable_size(w, &pw, &ph);
     printf("window open: drawable %dx%d, metal layer %p, background %d, shown %d\n",
            pw, ph, layer, host_window_background(),

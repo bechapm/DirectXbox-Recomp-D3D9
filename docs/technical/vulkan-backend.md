@@ -795,7 +795,7 @@ an M4, MoltenVK 1.4.2, Vulkan SDK 1.4.357.1.
   `RECOMP_VK_DEVICE=<index|name>` overrides. KosmicKrisp has
   `VK_EXT_provoking_vertex` but no headless presentation.
 - **Window.** `RhiDeviceDesc.window` is a `CAMetalLayer` made by `src/host` on
-  the main thread (`host_window_metal_layer`); the backend creates the
+  the main thread (`host_window_present_target`); the backend creates the
   surface itself (`VK_EXT_metal_surface`) through volk, so `src/d3d` needs no
   SDL and no second Vulkan loader. The owner reports the drawable size with
   `xbox_D3D8SetWindowSize`, since there is no HWND to ask.

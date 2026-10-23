@@ -33,6 +33,9 @@ check debian     'ID=debian'             debian
 check fedora     'ID=fedora'             fedora
 check rhel       'ID=rhel
 ID_LIKE="fedora"'                        fedora
+check steamos    'ID=steamos
+ID_LIKE=arch'                            steamos
+check fdo-sdk    'ID=org.freedesktop.platform'  flatpak-sdk
 check unknown    'ID=plan9'              "(none)"
 
 # Missing file must fail cleanly, not crash.

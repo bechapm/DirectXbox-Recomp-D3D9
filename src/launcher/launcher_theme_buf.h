@@ -2,7 +2,9 @@
  * launcher_theme_buf.h -- the back buffer, between the arithmetic that
  * draws into it (launcher_theme.c) and the host half that owns it and its
  * text (launcher_theme_gdi.c on Windows, launcher_theme_coretext.c on
- * macOS). Not for the launcher itself, which goes through launcher_theme.h.
+ * macOS, launcher_theme_freetype.c on Linux), and on Linux the window that
+ * shows it (launcher_sdl.c). Not for the launcher itself, which goes
+ * through launcher_theme.h.
  */
 #ifndef XBOXRECOMP_LAUNCHER_THEME_BUF_H
 #define XBOXRECOMP_LAUNCHER_THEME_BUF_H

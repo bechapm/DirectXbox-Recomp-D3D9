@@ -4,9 +4,16 @@
  *
  * The theme draws into its own buffer at the display's resolution
  * (theme_set_scale, from the window's pixel density), and each frame of it
- * goes on screen through Core Animation (launcher_cocoa.m): the toolkit's
- * SDL has no renderer. Frames, the pad and the glow run at sixty a second
- * off the clock, as the Windows launcher's 16 ms timer does.
+ * goes on screen through Core Animation on macOS (launcher_cocoa.m), where
+ * the toolkit's SDL has no renderer, and through an SDL renderer's
+ * streaming texture on Linux, where it has one for this (the root
+ * CMakeLists) because Wayland gives a window no other way to show a
+ * buffer. Frames, the pad and the glow run at sixty a second off the
+ * clock, as the Windows launcher's 16 ms timer does.
+ *
+ * RECOMP_LAUNCHER_SHOT=<file.bmp> writes the theme's buffer after half a
+ * second (thirty frames) and quits, so the drawing can be checked from a
+ * script without capturing anyone's screen.
  *
  * The game is started with posix_spawn, beside the launcher, in its own
  * directory, with this environment -- so a RECOMP_* variable set for the
@@ -26,8 +33,12 @@
 
 extern char **environ;
 
+#include "launcher_theme_buf.h"
+
+#if defined(__APPLE__)
 void launcher_cocoa_present(void *nswindow, void *cgimage);   /* launcher_cocoa.m */
 void CGImageRelease(void *image);                             /* CoreGraphics */
+#endif
 
 static SDL_Window   *g_win;
 static int           g_quit;
@@ -110,10 +121,14 @@ int lhost_launch(const char *exe, const char *dir)
         posix_spawn_file_actions_addchdir(&fa, dir);
     else
 #endif
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
         posix_spawn_file_actions_addchdir_np(&fa, dir);
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
     err = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
 
@@ -220,6 +235,119 @@ static void on_text(const char *text)
             launcher_char((unsigned char)*text);
 }
 
+/* ------------------------------------------------------------- present */
+
+#if defined(__APPLE__)
+static void *g_nswindow;
+
+static int present_open(void)
+{
+    g_nswindow = SDL_GetPointerProperty(SDL_GetWindowProperties(g_win),
+                                        SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (!g_nswindow) {
+        fprintf(stderr, "launcher: no Cocoa window to draw in\n");
+        return 0;
+    }
+    return 1;
+}
+
+static void present(void)
+{
+    void *image = theme_image();
+
+    if (image) {
+        launcher_cocoa_present(g_nswindow, image);
+        CGImageRelease(image);
+    }
+}
+
+static void present_close(void) { }
+#else
+static SDL_Renderer *g_renderer;
+static SDL_Texture  *g_texture;
+static int           g_tex_w, g_tex_h;
+
+static int present_open(void)
+{
+    g_renderer = SDL_CreateRenderer(g_win, NULL);
+    if (!g_renderer) {
+        fprintf(stderr, "launcher: SDL_CreateRenderer: %s\n", SDL_GetError());
+        return 0;
+    }
+    SDL_SetRenderVSync(g_renderer, 1);
+    return 1;
+}
+
+/* The buffer, 0x00RRGGBB top row first, is SDL's XRGB8888 as it stands. */
+static void present(void)
+{
+    if (!theme_px || theme_w <= 0 || theme_h <= 0)
+        return;
+    if (!g_texture || g_tex_w != theme_w || g_tex_h != theme_h) {
+        if (g_texture)
+            SDL_DestroyTexture(g_texture);
+        g_texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_XRGB8888,
+                                      SDL_TEXTUREACCESS_STREAMING, theme_w, theme_h);
+        if (!g_texture)
+            return;
+        g_tex_w = theme_w;
+        g_tex_h = theme_h;
+    }
+    SDL_UpdateTexture(g_texture, NULL, theme_px, theme_w * 4);
+    SDL_RenderClear(g_renderer);
+    SDL_RenderTexture(g_renderer, g_texture, NULL, NULL);
+    SDL_RenderPresent(g_renderer);
+}
+
+static void present_close(void)
+{
+    if (g_texture)
+        SDL_DestroyTexture(g_texture);
+    if (g_renderer)
+        SDL_DestroyRenderer(g_renderer);
+    g_texture = NULL;
+    g_renderer = NULL;
+}
+#endif
+
+/* RECOMP_LAUNCHER_SHOT: the buffer as a 24-bit BMP, bottom row first. */
+static void write_shot(const char *path)
+{
+    uint8_t hdr[54];
+    uint32_t row = ((uint32_t)theme_w * 3 + 3) & ~3u, size;
+    uint8_t *line;
+    FILE *f;
+    int x, y, i;
+
+    if (!theme_px || theme_w <= 0 || theme_h <= 0 || !(f = fopen(path, "wb"))) {
+        fprintf(stderr, "launcher: RECOMP_LAUNCHER_SHOT: cannot write %s\n", path);
+        return;
+    }
+    size = 54 + row * (uint32_t)theme_h;
+    memset(hdr, 0, sizeof hdr);
+    hdr[0] = 'B'; hdr[1] = 'M';
+    for (i = 0; i < 4; i++) {
+        hdr[2 + i]  = (uint8_t)(size >> (8 * i));
+        hdr[18 + i] = (uint8_t)((uint32_t)theme_w >> (8 * i));
+        hdr[22 + i] = (uint8_t)((uint32_t)theme_h >> (8 * i));
+    }
+    hdr[10] = 54; hdr[14] = 40; hdr[26] = 1; hdr[28] = 24;
+    fwrite(hdr, 1, sizeof hdr, f);
+    line = calloc(1, row);
+    for (y = theme_h - 1; line && y >= 0; y--) {
+        const uint32_t *src = theme_px + (size_t)y * theme_w;
+        for (x = 0; x < theme_w; x++) {
+            line[x * 3 + 0] = (uint8_t)src[x];
+            line[x * 3 + 1] = (uint8_t)(src[x] >> 8);
+            line[x * 3 + 2] = (uint8_t)(src[x] >> 16);
+        }
+        fwrite(line, 1, row, f);
+    }
+    free(line);
+    fclose(f);
+    fprintf(stderr, "launcher: wrote %s (%dx%d)\n", path, theme_w, theme_h);
+}
+
 /* The window's size and its pixels per unit, to the theme. */
 static void fit(void)
 {
@@ -232,7 +360,8 @@ static void fit(void)
 
 int main(int argc, char **argv)
 {
-    void *nswindow;
+    const char *shot = getenv("RECOMP_LAUNCHER_SHOT");
+    int frames = 0;
     uint64_t next_tick;
 
     (void)argc; (void)argv;
@@ -250,10 +379,7 @@ int main(int argc, char **argv)
         SDL_Quit();
         return 1;
     }
-    nswindow = SDL_GetPointerProperty(SDL_GetWindowProperties(g_win),
-                                      SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
-    if (!nswindow) {
-        fprintf(stderr, "launcher: no Cocoa window to draw in\n");
+    if (!present_open()) {
         SDL_DestroyWindow(g_win);
         SDL_Quit();
         return 1;
@@ -265,7 +391,6 @@ int main(int argc, char **argv)
     while (!g_quit) {
         SDL_Event e;
         uint64_t now;
-        void *image;
         int ticks = 0;
 
         while (SDL_PollEvent(&e)) {
@@ -330,10 +455,10 @@ int main(int argc, char **argv)
 
         if (ticks) {
             launcher_draw();
-            image = theme_image();
-            if (image) {
-                launcher_cocoa_present(nswindow, image);
-                CGImageRelease(image);
+            present();
+            if (shot && *shot && ++frames == 30) {
+                write_shot(shot);
+                g_quit = 1;
             }
         }
 
@@ -344,6 +469,7 @@ int main(int argc, char **argv)
     }
 
     SDL_StopTextInput(g_win);
+    present_close();
     SDL_DestroyWindow(g_win);
     theme_shutdown();
     SDL_Quit();

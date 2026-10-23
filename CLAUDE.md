@@ -41,7 +41,7 @@ Verify against the repo rather than trusting the README. Known discrepancies as 
 |---|---|
 | NV2A push-buffer interception is a core feature | Push-buffer parsing is a **stub**, marked "N/A — D3D8 API intercept instead". The project already does D3D8 HLE. |
 | "115 of 366 ordinals resolved, 55 bridged" | Do not trust any number written down; the useful question is per-title, not global. Run `py -3 -m tools.kernel_audit.coverage <analysis.json> --list`, which splits what is missing into "needs a bridge wrapper", "is a data export", and "does not exist yet". Note an ordinal with an `xbox_*` implementation but no bridge silently returns 0. |
-| Portable C output targeting ARM, RISC-V, WASM | Memory model uses `CreateFileMapping` + fixed-address `MapViewOfFileEx` at guest VAs. **"Win32-only in practice" is out of date (Sep 2026):** `src/platform/win32_compat.c` implements those on POSIX, with `MAP_FIXED_NOREPLACE` and a returned-address check, because `xbox_memory_layout.c` depends on a failed placement failing. **Titles run on macOS arm64 since Oct 2026** (see "macOS port" below), where guest memory is a 4 GB arena at a base offset rather than at fixed VAs; on Linux the runtime builds and its tests pass in CI, but no title has been run there yet. The lifted output is portable too: `templates/runtime/recomp_types.h` guards every x86 intrinsic and keeps the MMX/SSE helpers as lane-wise C. See `docs/technical/vulkan-backend.md` §6.5 for the rest of the Linux/Android gap. |
+| Portable C output targeting ARM, RISC-V, WASM | Memory model uses `CreateFileMapping` + fixed-address `MapViewOfFileEx` at guest VAs. **"Win32-only in practice" is out of date (Sep 2026):** `src/platform/win32_compat.c` implements those on POSIX, with `MAP_FIXED_NOREPLACE` and a returned-address check, because `xbox_memory_layout.c` depends on a failed placement failing. **Titles run on macOS arm64 since Oct 2026** (see "macOS port" below), where guest memory is a 4 GB arena at a base offset rather than at fixed VAs; **TimeSplitters 2 runs on x86-64 Linux since Oct 2026** (see "Linux port" below). The lifted output is portable too: `templates/runtime/recomp_types.h` guards every x86 intrinsic and keeps the MMX/SSE helpers as lane-wise C. See `docs/technical/vulkan-backend.md` §6.5 for the rest of the Linux/Android gap. |
 | Burnout 3 is the proven target | True, and it is a **D3D8LTCG** build on XDK 5849 — so LTCG is not disqualifying. |
 
 **Corrected Sep 2026:** that "17 of 66 formats, mipmap level 0 only, no P8 palette, no
@@ -336,6 +336,33 @@ touching it:
 - **Changes that alter Windows behaviour** (lifter output, shared HLE, shared HLSL) need a
   Windows regression of TS2 and BLiNX before `main`.
 
+**Linux port (Oct 2026, branch `feat/linux`): TimeSplitters 2 runs on x86-64 Linux** (a
+Steam Machine on SteamOS, RADV) at 60 fps with sound, scripted to Siberia, and the launcher
+works. What to know:
+
+- **Memory and faults are the x86-64 path.** Guest memory is at fixed VAs as on Windows (no
+  arena offset, no guest lock); trapped MMIO goes through the signal handler and
+  `src/platform/mmio_decode.h`, the decoder Windows' VEH uses. GCC emits instructions MSVC
+  does not at the same sites: the first was `movd [mem], xmm0` on an APU register, so the
+  decoder carries XMM0-15 now. An `undecoded access ... host insn` line names the next one.
+- **Window.** `host_window_present_target` gives the RHI an `RhiNativeWindow` (X11 or
+  Wayland handles from SDL), and `rhi_vulkan.c` makes the surface without X11 or Wayland
+  headers. Only Wayland has been run; the X11 path is built and untried. Wayland lets no
+  client keep its window from taking the focus, so `RECOMP_WINDOW_BACKGROUND=1` cannot keep
+  its promise there: under KWin a scripted run's window takes the focus
+  (`tests/host_window/host_window_present` fails on exactly that and nothing else).
+- **DXC** comes from `tools/linux/fetch_dxc.sh` (Microsoft's Linux release, into
+  `third_party/dxc`); no distribution packages it, and without it the build has no renderer.
+- **SteamOS** has no compiler and a read-only system: build in the Freedesktop SDK Flatpak
+  (`tools/linux/install_deps.sh` prints the command). Built there (glibc 2.42) the binaries
+  need no newer than GLIBC 2.38 and run on SteamOS itself (glibc 2.41).
+- **Launcher.** `launcher_sdl.c` presents through an SDL renderer (the toolkit's SDL is built
+  with its renderer on Linux only) and the text is FreeType with fontconfig
+  (`launcher_theme_freetype.c`). `RECOMP_LAUNCHER_SHOT=<file.bmp>` writes a frame and quits,
+  on macOS too.
+- Not yet: System Link (the network card is not built off Windows), XMV movies (FFmpeg is
+  looked for only in `third_party/ffmpeg` on Linux), and Game Mode (gamescope) is untried.
+
 ---
 
 ## Planned changes, in dependency order
@@ -440,6 +467,16 @@ each other silently. Give each title its own outputs and project:
 py -3 scripts/recompile.py "games/<title>/default.xbe" \
     --work-dir games/_pipeline/<name>/out --project titles/<name>
 ```
+
+**XBE patches (Oct 2026):** when a title's fixed-size table has to grow, the change goes into
+the image *before* the lift, because lifted code has its addresses and counts compiled in.
+`--xbe-patches <file>` (default `config/xbe_patches/<TITLEID>.json`) adds sections, copies
+tables into them and patches same-length operands, each checked against the bytes it replaces;
+every stage reads a patched copy in `<work-dir>/xbe_patched/` (never the player's file), and the
+lift links `recomp_xbe_patches.c` so `xbox_MemoryLayoutInit` patches the unpatched
+`default.xbe` the same way, SHA-1-checked, before mapping it. No patch file, byte-identical
+output. Format and rules: `docs/technical/xbe-patches.md`; `py -3 -m tools.xbe_patch check`
+tries a file out.
 
 Add `--trace-all-entries` only while bringing a title up: it puts a hook at every lifted
 function's entry (for `[TRACE]` lines, `RECOMP_TRACE_ONLY`, the entry profiler and the

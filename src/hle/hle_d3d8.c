@@ -792,7 +792,7 @@ static HWND shadow_window(UINT width, UINT height)
         fprintf(stderr, "[HLE-D3D8] shadow: no window\n");
         return NULL;
     }
-    target = host_window_metal_layer(g_shadow_host);
+    target = host_window_present_target(g_shadow_host);
     if (!target) {
         fprintf(stderr, "[HLE-D3D8] shadow: the window has nothing this renderer can "
                 "present to on this platform\n");

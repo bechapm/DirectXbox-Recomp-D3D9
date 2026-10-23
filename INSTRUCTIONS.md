@@ -44,6 +44,7 @@ Two rules decide whether that sequence is progress or thrash:
 
 ```bash
 bash tools/linux/install_deps.sh
+bash tools/linux/fetch_dxc.sh
 pip install capstone
 ```
 

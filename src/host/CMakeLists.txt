@@ -8,6 +8,8 @@ add_library(xbox_host STATIC
     host_mac.c
 )
 target_include_directories(xbox_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# rhi.h, for RhiNativeWindow only: the handles the renderer presents to.
+target_include_directories(xbox_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../d3d)
 target_link_libraries(xbox_host PUBLIC SDL3::SDL3)
 # recomp_window_fit: the window's size against the screen, the same rule
 # as the Win32 window in src/hle. xbox_config depends on nothing.

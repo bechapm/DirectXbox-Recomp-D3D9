@@ -298,13 +298,27 @@ enum { RHI_CLEAR_DEPTH = 1, RHI_CLEAR_STENCIL = 2 };
 
 /* ---- the calls ----------------------------------------------------------------- */
 
+/* What RhiDeviceDesc.window points to on Linux (and any POSIX host but
+ * Apple): the window system's own handles for the window SDL made, filled in
+ * by its owner (src/host's host_window_present_target) and kept as long as
+ * the window. The handles are plain pointers here so that nothing including
+ * this needs X11's or Wayland's headers. */
+enum { RHI_NATIVE_X11 = 1, RHI_NATIVE_WAYLAND = 2 };
+typedef struct {
+    uint32_t kind;          /* RHI_NATIVE_X11 or RHI_NATIVE_WAYLAND */
+    void    *display;       /* X11: Display *; Wayland: struct wl_display * */
+    void    *surface;       /* Wayland: struct wl_surface *; X11: unused */
+    uint64_t xwindow;       /* X11: the Window (an XID); Wayland: unused */
+} RhiNativeWindow;
+
 /* The device and its swap chain */
 typedef struct {
     /* What the swap chain presents to: an HWND on Windows, a CAMetalLayer on
-     * Apple (made by the window's owner on the main thread), or NULL for no
-     * window: Vulkan then presents to a headless surface (frames are drawn
-     * and read back, and shown nowhere), which is what the replay tool and
-     * the tests use. The D3D11 backend needs an HWND. */
+     * Apple (made by the window's owner on the main thread), an
+     * RhiNativeWindow on Linux, or NULL for no window: Vulkan then presents
+     * to a headless surface (frames are drawn and read back, and shown
+     * nowhere), which is what the replay tool and the tests use. The D3D11
+     * backend needs an HWND. */
     void    *window;
     uint32_t width, height;     /* the swap chain's size */
     uint32_t buffer_count;

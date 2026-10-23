@@ -5,7 +5,8 @@
  * out of the launcher. The shapes are arithmetic over a 32-bit buffer
  * (launcher_theme.c), the same everywhere; the buffer and the text are the
  * host's: GDI and a DIB on Windows (launcher_theme_gdi.c), CoreText on
- * macOS (launcher_theme_coretext.c).
+ * macOS (launcher_theme_coretext.c), FreeType on Linux
+ * (launcher_theme_freetype.c).
  *
  * The look is the original Xbox dashboard's: black, a green glow that
  * comes from behind, panels with soft edges, and the selected thing
@@ -45,9 +46,11 @@ void theme_present(HDC dc);
  * buffer is drawn at the display's own resolution rather than stretched up
  * to it. Takes effect at the next theme_begin; 1 until then. */
 void theme_set_scale(double scale);
-/* The buffer as it is now, for the front end to put on screen: a
- * CGImageRef the caller releases, or NULL. A copy, so drawing the next
- * frame does not reach into the one being shown. */
+/* The buffer as it is now, for the front end to put on screen, or NULL.
+ * macOS: a CGImageRef the caller releases, a copy, so drawing the next
+ * frame does not reach into the one being shown. Linux: the buffer itself
+ * (theme_px), which the front end copies to the screen before drawing
+ * again. */
 void *theme_image(void);
 #endif
 

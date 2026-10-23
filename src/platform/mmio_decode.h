@@ -21,7 +21,9 @@
  * and the ALU, read-modify-write and flag-setting forms a poll loop is built
  * from (DirectSound polls with `test dword [mem], imm32`, a USB driver masks a
  * status register with `and edx, [mem]`, and a C compiler folds `x += REG`
- * into an ALU op with a memory operand). See mmio_emulate for the list.
+ * into an ALU op with a memory operand), and the SSE scalar moves a compiler
+ * uses for a value it holds in an XMM register (GCC stores the APU's voice
+ * registers with `movd [mem], xmm0`). See mmio_emulate for the list.
  * Anything outside that set returns 0 rather than guessing: stepping over an
  * instruction that was not understood corrupts the guest silently, which is
  * far worse than a fault naming the opcode.
@@ -31,6 +33,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /* The decoder is chosen by the CPU, not the OS: it runs wherever the host
  * is x86-64. On Windows the register file is the VEH's CONTEXT; on a POSIX
@@ -47,6 +50,9 @@ typedef struct mmio_x86_ctx {
     uint64_t R8, R9, R10, R11, R12, R13, R14, R15;
     uint64_t Rip;
     uint32_t EFlags;
+    /* XMM0-15, copied in and out like the rest, so that a dry run
+     * (fault_emulate.c) changes nothing until it is committed. */
+    uint8_t  Xmm[16][16];
 } mmio_x86_ctx;
 #define MMIO_X86_DECODER 1
 #endif
@@ -74,6 +80,16 @@ static inline uint64_t *mmio_ctx_reg(mmio_x86_ctx *c, int reg)
     case 14: return (uint64_t *)&c->R14;   case 15: return (uint64_t *)&c->R15;
     default: return NULL;
     }
+}
+
+/* XMM register n's 16 bytes, low lane first. */
+static inline uint8_t *mmio_ctx_xmm(mmio_x86_ctx *c, int n)
+{
+#if defined(_WIN32)
+    return (uint8_t *)&c->Xmm0 + 16 * (n & 15);
+#else
+    return c->Xmm[n & 15];
+#endif
 }
 
 static inline int mmio_modrm_len(const uint8_t *ip, int rex_b)
@@ -196,7 +212,10 @@ static inline uint64_t mmio_imm(const uint8_t *p, int size, int *len)
  * two-operand ALU forms in both directions for ADD/OR/AND/SUB/XOR/CMP
  * (00-03 08-0B 20-23 28-2B 30-33 38-3B), group 1 with an immediate
  * (80/81/83, not ADC/SBB), and TEST against a register or an immediate
- * (84/85, F6/F7 /0 and /1). A register-destination form reads the device
+ * (84/85, F6/F7 /0 and /1), and the SSE scalar moves between an XMM
+ * register and memory: MOVD/MOVQ (66 0F 6E/7E, 66 0F D6, F3 0F 7E) and
+ * MOVSS/MOVSD (F3/F2 0F 10/11), a load zeroing the rest of the register as
+ * the hardware does. A register-destination form reads the device
  * once; a memory-destination form reads, then writes (CMP and TEST only
  * read). ADC/SBB, the rest of F6/F7 (NOT/NEG/MUL/DIV), string moves and
  * anything else return 0.
@@ -209,7 +228,7 @@ static inline int mmio_emulate(mmio_x86_ctx *ctx, uint32_t off, void *dev,
                                mmio_read_fn rd, mmio_write_fn wr)
 {
     const uint8_t *ip = (const uint8_t *)ctx->Rip;
-    int prefix = 0, has66 = 0, rex = 0, has_rex = 0;
+    int prefix = 0, has66 = 0, hasF2 = 0, hasF3 = 0, rex = 0, has_rex = 0;
     const uint8_t *op;
     int size, rex_w, rex_r, rex_b, mlen, reg, ilen, alu;
     uint64_t m, v, imm;
@@ -220,7 +239,8 @@ static inline int mmio_emulate(mmio_x86_ctx *ctx, uint32_t off, void *dev,
     for (;;) {
         uint8_t b = ip[prefix];
         if (b == 0x66)                   { has66 = 1; prefix++; }
-        else if (b == 0xF2 || b == 0xF3) { prefix++; }
+        else if (b == 0xF2)              { hasF2 = 1; prefix++; }
+        else if (b == 0xF3)              { hasF3 = 1; prefix++; }
         else if (b >= 0x40 && b <= 0x4F) { rex = b; has_rex = 1; prefix++; }
         else break;
     }
@@ -330,7 +350,40 @@ static inline int mmio_emulate(mmio_x86_ctx *ctx, uint32_t off, void *dev,
             ctx->Rip += prefix + 2 + mlen;
             return 1;
         }
-        return 0;
+        {
+            /* SSE: 66 is the opcode's mandatory prefix here, not an operand
+             * size. `size` is the memory operand; `load` names the
+             * direction. */
+            int load = -1, n;
+            uint8_t *x;
+            uint8_t b2 = op[1];
+
+            if (has66 && b2 == 0x6E)      { load = 1; size = rex_w ? 8 : 4; }   /* MOVD/Q xmm, m  */
+            else if (has66 && b2 == 0x7E) { load = 0; size = rex_w ? 8 : 4; }   /* MOVD/Q m, xmm  */
+            else if (has66 && b2 == 0xD6) { load = 0; size = 8; }               /* MOVQ m64, xmm  */
+            else if (hasF3 && b2 == 0x7E) { load = 1; size = 8; }               /* MOVQ xmm, m64  */
+            else if ((hasF3 || hasF2) && (b2 == 0x10 || b2 == 0x11)) {          /* MOVSS / MOVSD  */
+                load = b2 == 0x10;
+                size = hasF2 ? 8 : 4;
+            }
+            if (load < 0)
+                return 0;
+            mlen = mmio_modrm_len(op + 2, rex_b);
+            reg  = ((op[2] >> 3) & 7) | (rex_r ? 8 : 0);
+            x    = mmio_ctx_xmm(ctx, reg);
+            n    = size;
+            if (load) {
+                v = rd(dev, off, size) & mmio_size_mask(size);
+                memset(x, 0, 16);
+                memcpy(x, &v, (size_t)n);
+            } else {
+                v = 0;
+                memcpy(&v, x, (size_t)n);
+                wr(dev, off, v, size);
+            }
+            ctx->Rip += prefix + 2 + mlen;
+            return 1;
+        }
 
     default:
         return 0;
@@ -353,6 +406,10 @@ static inline void mmio_x86_from_ucontext(mmio_x86_ctx *c, const ucontext_t *uc)
     c->R8  = g[REG_R8];  c->R9  = g[REG_R9];  c->R10 = g[REG_R10]; c->R11 = g[REG_R11];
     c->R12 = g[REG_R12]; c->R13 = g[REG_R13]; c->R14 = g[REG_R14]; c->R15 = g[REG_R15];
     c->Rip = g[REG_RIP]; c->EFlags = (uint32_t)g[REG_EFL];
+    if (uc->uc_mcontext.fpregs)
+        memcpy(c->Xmm, uc->uc_mcontext.fpregs->_xmm, sizeof c->Xmm);
+    else
+        memset(c->Xmm, 0, sizeof c->Xmm);
 }
 static inline void mmio_x86_to_ucontext(const mmio_x86_ctx *c, ucontext_t *uc)
 {
@@ -362,6 +419,8 @@ static inline void mmio_x86_to_ucontext(const mmio_x86_ctx *c, ucontext_t *uc)
     g[REG_R8]  = c->R8;  g[REG_R9]  = c->R9;  g[REG_R10] = c->R10; g[REG_R11] = c->R11;
     g[REG_R12] = c->R12; g[REG_R13] = c->R13; g[REG_R14] = c->R14; g[REG_R15] = c->R15;
     g[REG_RIP] = c->Rip; g[REG_EFL] = c->EFlags;
+    if (uc->uc_mcontext.fpregs)
+        memcpy(uc->uc_mcontext.fpregs->_xmm, c->Xmm, sizeof c->Xmm);
 }
 #define MMIO_X86_HAVE_UCONTEXT 1
 #elif defined(__APPLE__)
@@ -374,6 +433,7 @@ static inline void mmio_x86_from_ucontext(mmio_x86_ctx *c, const ucontext_t *uc)
     c->R8  = s->__r8;  c->R9  = s->__r9;  c->R10 = s->__r10; c->R11 = s->__r11;
     c->R12 = s->__r12; c->R13 = s->__r13; c->R14 = s->__r14; c->R15 = s->__r15;
     c->Rip = s->__rip; c->EFlags = (uint32_t)s->__rflags;
+    memcpy(c->Xmm, &uc->uc_mcontext->__fs.__fpu_xmm0, sizeof c->Xmm);
 }
 static inline void mmio_x86_to_ucontext(const mmio_x86_ctx *c, ucontext_t *uc)
 {
@@ -383,6 +443,7 @@ static inline void mmio_x86_to_ucontext(const mmio_x86_ctx *c, ucontext_t *uc)
     s->__r8  = c->R8;  s->__r9  = c->R9;  s->__r10 = c->R10; s->__r11 = c->R11;
     s->__r12 = c->R12; s->__r13 = c->R13; s->__r14 = c->R14; s->__r15 = c->R15;
     s->__rip = c->Rip; s->__rflags = c->EFlags;
+    memcpy(&uc->uc_mcontext->__fs.__fpu_xmm0, c->Xmm, sizeof c->Xmm);
 }
 #define MMIO_X86_HAVE_UCONTEXT 1
 #endif

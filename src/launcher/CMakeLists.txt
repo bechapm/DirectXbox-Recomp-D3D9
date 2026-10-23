@@ -16,12 +16,14 @@
 # and gets the launcher beside the game, reading the game's own XBE for the
 # name it shows and the settings file it writes.
 #
-# Windows and macOS. launcher.c is the launcher and is the same on both; the
-# window is launcher_win32.c, or launcher_sdl.c (SDL3) putting its frames
-# up through launcher_cocoa.m; the text is GDI
-# (launcher_theme_gdi.c) or CoreText (launcher_theme_coretext.c). Elsewhere
-# the call is accepted and makes nothing, so a title's CMakeLists need not
-# ask which host it is on.
+# Windows, macOS and Linux. launcher.c is the launcher and is the same on
+# all three; the window is launcher_win32.c, or launcher_sdl.c (SDL3)
+# putting its frames up through launcher_cocoa.m on macOS and an SDL
+# renderer on Linux; the text is GDI (launcher_theme_gdi.c), CoreText
+# (launcher_theme_coretext.c) or FreeType with fontconfig
+# (launcher_theme_freetype.c). Elsewhere, or on a Linux without FreeType's
+# or fontconfig's headers, the call is accepted and makes nothing, so a
+# title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
     cmake_parse_arguments(_launcher "NO_WIDESCREEN" "" "" ${ARGN})
@@ -48,6 +50,22 @@ function(recomp_add_launcher TARGET GAME_EXE)
         # title need not enable another language for one small file.
         set_source_files_properties(${_dir}/launcher_cocoa.m PROPERTIES
             LANGUAGE C COMPILE_OPTIONS "-xobjective-c;-fobjc-arc")
+    elseif(UNIX)
+        find_package(Freetype QUIET)
+        find_package(Fontconfig QUIET)
+        if(NOT Freetype_FOUND OR NOT Fontconfig_FOUND)
+            message(STATUS "recomp_add_launcher(${TARGET}): no launcher: it needs "
+                           "FreeType and fontconfig with their headers")
+            return()
+        endif()
+        add_executable(${TARGET}
+            ${_dir}/launcher.c
+            ${_dir}/launcher_sdl.c
+            ${_dir}/launcher_theme.c
+            ${_dir}/launcher_theme_freetype.c
+            ${_dir}/launcher_bindings.c
+        )
+        target_link_libraries(${TARGET} PRIVATE Freetype::Freetype Fontconfig::Fontconfig m)
     else()
         message(STATUS "recomp_add_launcher(${TARGET}): no launcher on this host")
         return()
@@ -103,11 +121,13 @@ function(recomp_add_launcher TARGET GAME_EXE)
     if(WIN32)
         # The rest is in every Windows.
         target_link_libraries(${TARGET} PRIVATE user32 gdi32)
-    else()
+    elseif(APPLE)
         target_link_libraries(${TARGET} PRIVATE SDL3::SDL3
             "-framework CoreText" "-framework CoreGraphics"
             "-framework CoreFoundation" "-framework Cocoa"
             "-framework QuartzCore")
+    else()
+        target_link_libraries(${TARGET} PRIVATE SDL3::SDL3)
     endif()
 
     # recomp_add_launcher(<target> <exe> NO_WIDESCREEN): a title where

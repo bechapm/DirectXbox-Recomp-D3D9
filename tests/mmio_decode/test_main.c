@@ -403,6 +403,53 @@ int main(void)
       ctx.Rip = (uint64_t)(uintptr_t)neg;
       CHECK("neg refused", mmio_emulate(&ctx, 0x54, NULL, t_read, t_write) == 0); }
 
+    /* SSE scalar moves. The first is the store GCC made of an APU voice
+     * register in TimeSplitters 2 on x86-64 Linux: movd [rax+rdx], xmm0. */
+    { const uint8_t c[] = { 0x66, 0x0F, 0x7E, 0x04, 0x10 };
+      uint8_t *x0 = mmio_ctx_xmm(&ctx, 0);
+      memset(x0, 0xEE, 16);
+      x0[0] = 0x78; x0[1] = 0x56; x0[2] = 0x34; x0[3] = 0x12;
+      CHECK("movd m32,xmm handled", run(c, sizeof c, &ctx));
+      CHECK_U64("movd m32,xmm value", dev.val, 0x12345678);
+      CHECK_U64("movd m32,xmm size", dev.size, 4); }
+    /* movq [rax], xmm9 -- 66 44 0F D6 08 (REX.R) */
+    { const uint8_t c[] = { 0x66, 0x44, 0x0F, 0xD6, 0x08 };
+      uint64_t want = 0x1122334455667788ULL;
+      memcpy(mmio_ctx_xmm(&ctx, 9), &want, 8);
+      CHECK("movq m64,xmm handled", run(c, sizeof c, &ctx));
+      CHECK_U64("movq m64,xmm value", dev.val, want);
+      CHECK_U64("movq m64,xmm size", dev.size, 8); }
+    /* movd xmm3, [rax] -- 66 0F 6E 18: the rest of the register is zeroed */
+    { const uint8_t c[] = { 0x66, 0x0F, 0x6E, 0x18 };
+      uint8_t *x3 = mmio_ctx_xmm(&ctx, 3);
+      uint64_t lo = 0, hi = 0;
+      memset(x3, 0xEE, 16);
+      CHECK("movd xmm,m32 handled", run_rd(c, sizeof c, &ctx, 0xCAFEF00D));
+      memcpy(&lo, x3, 8); memcpy(&hi, x3 + 8, 8);
+      CHECK_U64("movd xmm,m32 low", lo, 0xCAFEF00D);
+      CHECK_U64("movd xmm,m32 zeroes the rest", hi, 0);
+      CHECK_U64("movd xmm,m32 size", dev.size, 4); }
+    /* movss [rax+8], xmm1 -- F3 0F 11 48 08 (disp8) */
+    { const uint8_t c[] = { 0xF3, 0x0F, 0x11, 0x48, 0x08 };
+      uint32_t one = 0x3F800000u;
+      memcpy(mmio_ctx_xmm(&ctx, 1), &one, 4);
+      CHECK("movss m32,xmm handled", run(c, sizeof c, &ctx));
+      CHECK_U64("movss m32,xmm value", dev.val, one);
+      CHECK_U64("movss m32,xmm size", dev.size, 4); }
+    /* movq xmm2, [rax] -- F3 0F 7E 10, and movsd xmm2, [rax] -- F2 0F 10 10 */
+    { const uint8_t q[] = { 0xF3, 0x0F, 0x7E, 0x10 };
+      const uint8_t d[] = { 0xF2, 0x0F, 0x10, 0x10 };
+      uint64_t lo = 0;
+      CHECK("movq xmm,m64 handled", run_rd(q, sizeof q, &ctx, 0x0102030405060708ULL));
+      memcpy(&lo, mmio_ctx_xmm(&ctx, 2), 8);
+      CHECK_U64("movq xmm,m64 value", lo, 0x0102030405060708ULL);
+      CHECK("movsd xmm,m64 handled", run_rd(d, sizeof d, &ctx, 42));
+      CHECK_U64("movsd xmm,m64 size", dev.size, 8); }
+    /* Not a scalar move: movaps [rax], xmm0 (0F 29 00) is refused. */
+    { const uint8_t c[] = { 0x0F, 0x29, 0x00 };
+      ctx.Rip = (uint64_t)(uintptr_t)c;
+      CHECK("movaps refused", mmio_emulate(&ctx, 0x54, NULL, t_read, t_write) == 0); }
+
     /* And the one that must fail. An unknown opcode reported as handled steps
      * over an instruction nobody decoded. (This was F7 /0, TEST imm32, until
      * the decoder learned it.) */

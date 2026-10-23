@@ -438,8 +438,8 @@ static void pump(void)
  * Vulkan backend presents to a headless surface (rhi.h,
  * RhiDeviceDesc.window). That is what a tool run by the dozen from a script
  * wants -- nothing on screen, nothing to take the focus -- and the images
- * are the BMPs. --window (macOS) asks src/host for a background window and
- * hands the device its CAMetalLayer, which is the present path a title
+ * are the BMPs. --window asks src/host for a background window and hands
+ * the device its present target (a CAMetalLayer, or X11/Wayland handles), which is the present path a title
  * takes; main() then runs the host loop and the replay runs beside it. */
 static int g_window;
 #if defined(REPLAY_HAVE_HOST)
@@ -470,9 +470,9 @@ static HWND replay_window(UINT width, UINT height)
     if (!g_window)
         return NULL;
     g_host_window = host_window_open((int)width, (int)height, "xboxrecomp - D3D8 frame replay", &cb);
-    if (!g_host_window || !(layer = host_window_metal_layer(g_host_window))) {
+    if (!g_host_window || !(layer = host_window_present_target(g_host_window))) {
         fprintf(stderr, "[replay] --window: no window%s\n",
-                g_host_window ? " layer (Metal layers are macOS only)" : "");
+                g_host_window ? " to present to" : "");
         return NULL;
     }
     return (HWND)layer;
@@ -1802,10 +1802,10 @@ static int replay_main(int argc, char **argv)
             hold = 1;
 #if !defined(_WIN32)
         else if (!strcmp(argv[i], "--window")) {
-#if defined(REPLAY_HAVE_HOST) && defined(__APPLE__)
+#if defined(REPLAY_HAVE_HOST)
             g_window = 1;
 #else
-            fprintf(stderr, "[replay] --window: this build has no window to give (macOS only)\n");
+            fprintf(stderr, "[replay] --window: this build has no window to give (no src/host)\n");
             return 2;
 #endif
         }
@@ -2030,7 +2030,7 @@ static void *replay_thread(void *p)
  * that ran main() (src/host/host.h). Otherwise the replay is main(). */
 int main(int argc, char **argv)
 {
-#if defined(REPLAY_HAVE_HOST) && defined(__APPLE__)
+#if defined(REPLAY_HAVE_HOST)
     int i;
 
     for (i = 1; i < argc; i++)

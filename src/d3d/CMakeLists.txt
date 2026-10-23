@@ -45,13 +45,16 @@ endif()
 # machine with neither (and says so).
 #
 # DXC's headers: third_party/dxc (the Windows drop, inc/ and bin/x64/), and
-# off Windows also a Vulkan SDK's include/dxc ($VULKAN_SDK, or the
-# system-wide install the macOS SDK installer makes under /usr/local).
+# off Windows also a Unix prefix's include/dxc: third_party/dxc itself (the
+# Linux release tarball, include/dxc and lib/, which tools/linux/fetch_dxc.sh
+# unpacks there), a Vulkan SDK ($VULKAN_SDK), or the system-wide install the
+# macOS SDK installer makes under /usr/local.
 set(XBR_THIRD_PARTY ${CMAKE_CURRENT_LIST_DIR}/../../third_party)
 set(XBR_DXC_INCLUDE "")
 set(XBR_DXC_SEARCH ${XBR_THIRD_PARTY}/dxc/inc)
 if(NOT WIN32)       # Windows keeps to the drop, as it always has
-    list(APPEND XBR_DXC_SEARCH $ENV{VULKAN_SDK}/include/dxc /usr/local/include/dxc)
+    list(APPEND XBR_DXC_SEARCH ${XBR_THIRD_PARTY}/dxc/include/dxc
+         $ENV{VULKAN_SDK}/include/dxc /usr/local/include/dxc)
 endif()
 foreach(dir ${XBR_DXC_SEARCH})
     if(NOT XBR_DXC_INCLUDE AND EXISTS ${dir}/dxcapi.h)

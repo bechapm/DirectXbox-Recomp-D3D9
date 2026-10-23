@@ -11,7 +11,7 @@ only about building and running the *game*:
 | | Pipeline | Game build | Graphics backend |
 |---|---|---|---|
 | **Windows 10/11** | yes | MSVC | D3D11 (default) or Vulkan, the complete path |
-| **Linux** | yes | GCC/Clang | Vulkan, the same renderer; least exercised |
+| **Linux** | yes | GCC/Clang | Vulkan, the same renderer, on X11 or Wayland; TimeSplitters 2 runs (x86-64, SteamOS) |
 | **macOS** | yes (Apple Silicon) | Clang | Vulkan on MoltenVK, the same renderer; TimeSplitters 2 and BLiNX run |
 
 Every platform runs the same renderer (`src/d3d`, through `rhi.h`); only the
@@ -23,7 +23,10 @@ still where titles are proven first.
 - A C compiler: **Visual Studio 2022** (MSVC, C/C++ desktop workload) on
   Windows; GCC or Clang elsewhere
 - **Linux**: `bash tools/linux/install_deps.sh` installs the system libraries
-  (apt/pacman/dnf, needs sudo), plus a Vulkan SDK for the renderer
+  (apt/pacman/dnf, needs sudo; on SteamOS it says how to build in the
+  Freedesktop SDK Flatpak instead), and `bash tools/linux/fetch_dxc.sh` puts
+  DXC, the shader compiler no distribution packages, in `third_party/dxc`.
+  The Vulkan loader and drivers are the desktop's own (Mesa)
 - **macOS**: the [Vulkan SDK](https://vulkan.lunarg.com/) (MoltenVK, the loader,
   DXC). Installed system-wide it is found on its own; otherwise set `VULKAN_SDK`
 - An original Xbox game disc image (ISO/XISO) — you must own the game

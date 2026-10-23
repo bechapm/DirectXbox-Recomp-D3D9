@@ -4,6 +4,7 @@
 #include "host.h"
 #include "host_mac.h"
 #include "recomp_config.h"                /* recomp_window_fit */
+#include "rhi.h"                          /* RhiNativeWindow */
 
 #include <SDL3/SDL.h>
 #ifdef __APPLE__
@@ -195,8 +196,10 @@ struct host_window {
     int background;
 #ifdef __APPLE__
     SDL_MetalView view;
+#else
+    RhiNativeWindow native;             /* what `layer` points to */
 #endif
-    void *layer;
+    void *layer;                        /* host_window_present_target */
     SDL_AtomicInt focus;
     SDL_AtomicInt fullscreen;
 };
@@ -358,11 +361,39 @@ static void layer_on_main(void *arg)
             fprintf(stderr, "[HOST] no Metal layer for the window: %s\n", SDL_GetError());
     }
 #else
-    (void)w;
+    /* Whichever window system SDL's video driver is on: Wayland when there
+     * is a compositor that speaks it, else X11 (Xwayland under gamescope
+     * and most desktops, a plain X server otherwise). */
+    if (!w->layer && w->sdl) {
+        SDL_PropertiesID props = SDL_GetWindowProperties(w->sdl);
+        const char *driver = SDL_GetCurrentVideoDriver();
+
+        memset(&w->native, 0, sizeof w->native);
+        if (driver && !strcmp(driver, "wayland")) {
+            w->native.kind = RHI_NATIVE_WAYLAND;
+            w->native.display = SDL_GetPointerProperty(props,
+                SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
+            w->native.surface = SDL_GetPointerProperty(props,
+                SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+            if (w->native.display && w->native.surface)
+                w->layer = &w->native;
+        } else if (driver && !strcmp(driver, "x11")) {
+            w->native.kind = RHI_NATIVE_X11;
+            w->native.display = SDL_GetPointerProperty(props,
+                SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+            w->native.xwindow = (uint64_t)SDL_GetNumberProperty(props,
+                SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+            if (w->native.display && w->native.xwindow)
+                w->layer = &w->native;
+        }
+        if (!w->layer)
+            fprintf(stderr, "[HOST] no X11 or Wayland handles for the window (video driver %s)\n",
+                    driver ? driver : "none");
+    }
 #endif
 }
 
-void *host_window_metal_layer(host_window *w)
+void *host_window_present_target(host_window *w)
 {
     if (!w)
         return NULL;

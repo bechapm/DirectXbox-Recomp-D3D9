@@ -90,10 +90,12 @@ int host_window_background(void);
 host_window *host_window_open(int width, int height, const char *title,
                               const host_window_callbacks *callbacks);
 
-/* The window's CAMetalLayer (Apple only; NULL elsewhere), made on the main
- * thread the first time it is asked for and kept as long as the window. This
- * is what the Vulkan RHI is given as its window (vkCreateMetalSurfaceEXT). */
-void *host_window_metal_layer(host_window *w);
+/* What the Vulkan RHI is given as its window (RhiDeviceDesc.window), made on
+ * the main thread the first time it is asked for and kept as long as the
+ * window: on Apple the window's CAMetalLayer (vkCreateMetalSurfaceEXT), on
+ * Linux an RhiNativeWindow naming its X11 or Wayland handles. NULL when
+ * there is none. */
+void *host_window_present_target(host_window *w);
 
 /* The SDL_Window behind it, for code that needs SDL directly. */
 struct SDL_Window *host_window_sdl(host_window *w);
@@ -116,7 +118,7 @@ int  host_window_has_focus(host_window *w);
 
 void host_window_set_title(host_window *w, const char *utf8);
 
-/* Destroy the window (its Metal layer with it). A later host_window_open
+/* Destroy the window (its Metal layer or native handles with it). A later host_window_open
  * makes a new one. */
 void host_window_close(host_window *w);
 
