@@ -21,6 +21,7 @@ endif()
 #     recomp_title_widescreen(NATIVE)                  # has a 16:9 mode
 #     recomp_title_widescreen(HOR_PLUS REGISTER 60)    # has none
 #     recomp_title_widescreen(NATIVE REGISTER 176 CENTRE_2D)
+#     recomp_title_widescreen(HOR_PLUS REGISTER 96 187) # two kinds of program
 #
 # CENTRE_2D: the game's 2D is drawn for 4:3 even in its 16:9 mode, so keep
 # all of it at 4:3 but whole-screen flat-colour passes (fades, letterbox
@@ -30,7 +31,11 @@ endif()
 # The player has one widescreen switch. Whether that is the console flag
 # alone or the flag and a wider camera is a fact about the game, and so is
 # the vertex constant register its projection is in (REGISTER, optional for
-# either mode; without it the register is 60). See recomp_config.h,
+# either mode; without it the register is 60). A title whose programs keep
+# their projection in more than one place names each, first the main one:
+# Turok: Evolution's rigid programs read a model-view-projection at c96 and
+# its skinned ones a view-projection at c187, with their bone palette at
+# c96. Each program is widened through the register it reads, and only it. See recomp_config.h,
 # "widescreen", for how it is resolved and what a title that says nothing
 # gets. It is compiled into this library because the game and its launcher
 # both link it, so the two cannot be told different things; a title that
@@ -39,7 +44,7 @@ endif()
 # A title where widescreen cannot be right at all says so to its launcher
 # instead: recomp_add_launcher(... NO_WIDESCREEN).
 function(recomp_title_widescreen MODE)
-    cmake_parse_arguments(_wide "CENTRE_2D" "REGISTER" "" ${ARGN})
+    cmake_parse_arguments(_wide "CENTRE_2D" "" "REGISTER" ${ARGN})
     if(MODE STREQUAL "NATIVE")
         set(_mode 1)                                # RECOMP_WIDE_NATIVE
     elseif(MODE STREQUAL "HOR_PLUS")
@@ -57,12 +62,25 @@ function(recomp_title_widescreen MODE)
         target_compile_definitions(xbox_config PRIVATE RECOMP_TITLE_CENTRE_2D=1)
     endif()
     if(DEFINED _wide_REGISTER)
-        if(NOT _wide_REGISTER MATCHES "^[0-9]+$" OR _wide_REGISTER GREATER 191)
+        list(LENGTH _wide_REGISTER _count)
+        if(_count GREATER 4)
             message(FATAL_ERROR
-                "recomp_title_widescreen: REGISTER ${_wide_REGISTER} is not 0..191")
+                "recomp_title_widescreen: at most 4 REGISTERs, not ${_count}")
         endif()
+        foreach(_reg IN LISTS _wide_REGISTER)
+            if(NOT _reg MATCHES "^[0-9]+$" OR _reg GREATER 191)
+                message(FATAL_ERROR
+                    "recomp_title_widescreen: REGISTER ${_reg} is not 0..191")
+            endif()
+        endforeach()
+        list(POP_FRONT _wide_REGISTER _first)
         target_compile_definitions(xbox_config PRIVATE
-            RECOMP_TITLE_PROJECTION_REGISTER=${_wide_REGISTER})
+            RECOMP_TITLE_PROJECTION_REGISTER=${_first})
+        if(_wide_REGISTER)
+            list(JOIN _wide_REGISTER "," _extra)
+            target_compile_definitions(xbox_config PRIVATE
+                RECOMP_TITLE_EXTRA_PROJECTION_REGISTERS=${_extra})
+        endif()
     endif()
 endfunction()
 

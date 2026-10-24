@@ -55,7 +55,7 @@
  *                    scripts/replay_ab.py.
  *   --place <tag>=<p>  replay the title's widescreen 2D placement for tag
  *                    (hex, or "all") as p: auto, stretch, centre, left,
- *                    right or side. Repeatable. Needs RECOMP_WIDESCREEN=1 to show,
+ *                    right, side or edge. Repeatable. Needs RECOMP_WIDESCREEN=1 to show,
  *                    and is how a title project tries its placement table
  *                    on a captured frame instead of a run.
  *   --solo-tag <tag> draw the untagged draws (the 3D) and only this tag's
@@ -1860,7 +1860,7 @@ static int replay_main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--place") && i + 1 < argc) {
             const char *a = argv[++i], *eq = strchr(a, '=');
-            static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side" };
+            static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side", "edge" };
             const int n = (int)(sizeof names / sizeof names[0]);
             int p;
 

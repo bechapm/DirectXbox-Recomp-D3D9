@@ -2734,9 +2734,16 @@ HLE_EXPORT(D3DDevice_Clear)
         }
         g_shadow_clears++;
         g_shadow_last_color = color;
-        if (shadow_trace_on())
-            fprintf(stderr, "[TRACE swap %lu] (after %lu draws) Clear flags 0x%X color 0x%08X\n",
+        if (shadow_trace_on()) {
+            fprintf(stderr, "[TRACE swap %lu] (after %lu draws) Clear flags 0x%X color 0x%08X",
                     g_shadow_swaps, g_frame_draws, flags, color);
+            if (count && rects) {
+                const D3DRECT *r0 = (const D3DRECT *)HLE_PTR(rects);
+                fprintf(stderr, ", %u rect(s), first %ld,%ld-%ld,%ld", count,
+                        (long)r0->x1, (long)r0->y1, (long)r0->x2, (long)r0->y2);
+            }
+            fprintf(stderr, "\n");
+        }
     }
 }
 

@@ -1287,6 +1287,12 @@ void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *h
  *            draws at both edges (a HUD showing each hand's ammo), where
  *            a single LEFT or RIGHT is wrong for half of what it draws;
  *            each piece has to reach the renderer as its own draw.
+ *   EDGE     span the picture if the draw reaches the screen's left or
+ *            right edge, else as AUTO. For one routine that draws both
+ *            HUD pieces and edge effects: Turok: Evolution draws every 2D
+ *            image through one function, its health box inside the
+ *            screen and its damage indicator as quarter-screen quads that
+ *            overhang the edge, too narrow for AUTO to let span.
  *
  * Holds until changed; 3D draws ignore it; without widescreen nothing is
  * squeezed and it has no effect. `tag` names the title's call site for
@@ -1297,7 +1303,8 @@ enum {
     XBOX_D3D8_2D_CENTRE,
     XBOX_D3D8_2D_LEFT,
     XBOX_D3D8_2D_RIGHT,
-    XBOX_D3D8_2D_SIDE
+    XBOX_D3D8_2D_SIDE,
+    XBOX_D3D8_2D_EDGE
 };
 void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag);
 

@@ -94,7 +94,7 @@ typedef struct {
     int                 decl_layout_count;
     int                 decl_layout_next;
     uint16_t            inputs_read;  /* Which v registers are read */
-    int                 uses_proj;    /* reads the projection's first column */
+    int                 proj_reg;     /* the projection register it reads, or -1 */
     int                 pos_input;    /* v# oPos is copied from, or -1 */
     int                 pos_scale;    /* oPos.x = v.x * c[pos_scale].x + c[pos_offset].x, */
     int                 pos_offset;   /* or -1 for a straight copy (see g_emit_pos_scale) */
@@ -108,13 +108,16 @@ static VshCacheEntry g_vsh_cache[NV2A_VS_CACHE_SIZE];
  * Hash Function (FNV-1a)
  * ================================================================ */
 
-/* Set while a program's HLSL is generated; see the constant emitter. */
-static int g_emit_uses_proj;
+/* Set while a program's HLSL is generated: which of the title's projection
+ * registers it reads (d3d8_vsh_is_projection_reg), or -1. See the constant
+ * emitter. */
+static int g_emit_proj_reg = -1;
 
-/* The same fact about the program currently bound, for the draw path. */
-static int g_bound_uses_proj;
+/* The same fact about the program currently bound, for the draw path: the
+ * register Hor+ widens for its draws, and whether it is 3D at all. */
+static int g_bound_proj_reg = -1;
 
-int d3d8_vsh_bound_uses_projection(void) { return g_bound_uses_proj; }
+int d3d8_vsh_bound_uses_projection(void) { return g_bound_proj_reg >= 0; }
 
 /* Whether the projection the bound program reads is orthographic right now.
  *
@@ -130,9 +133,9 @@ int d3d8_vsh_bound_uses_projection(void) { return g_bound_uses_proj; }
 int d3d8_vsh_bound_projection_is_ortho(void)
 {
     const float *w;
-    int reg = d3d8_vsh_hor_plus_reg() + 3;
+    int reg = g_bound_proj_reg + 3;
 
-    if (!g_bound_uses_proj || reg >= NV2A_VS_MAX_CONSTANTS)
+    if (g_bound_proj_reg < 0 || reg >= NV2A_VS_MAX_CONSTANTS)
         return 0;
     w = g_vsh_constants.c[reg];
 
@@ -360,9 +363,20 @@ static void emit_source(StrBuf *sb, const NV2AVshSrcOperand *src, int scalar)
              * screen coordinates it worked out itself -- the HUD, menus,
              * a full-screen quad -- and is not widened by Hor+, so it needs
              * the compensating squeeze instead. Relative addressing is not
-             * counted: an indexed read is a bone or a light, never this. */
-            if (src->reg_index == d3d8_vsh_hor_plus_reg())
-                g_emit_uses_proj = 1;
+             * counted: an indexed read is a bone or a light, never this.
+             *
+             * A title may keep its projection in more than one register,
+             * by kind of program. The main one wins if the program reads
+             * it, else the first of the others it reads; that is the one
+             * widened for its draws. Turok: Evolution's
+             * skinned programs read their bone palette from c96 by index
+             * and project through c187: as one register they were 2D,
+             * squeezed into the middle 4:3 and clipped there (the bow, the
+             * club, every animated enemy), and widening c96 for them
+             * squashed bone 0 instead. */
+            if (src->reg_index == d3d8_vsh_hor_plus_reg() ||
+                (g_emit_proj_reg < 0 && d3d8_vsh_is_projection_reg(src->reg_index)))
+                g_emit_proj_reg = src->reg_index;
         }
         break;
     default:
@@ -1224,7 +1238,7 @@ static VshCacheEntry *compile_shader(const DWORD *microcode, int num_insns,
     /* Generate HLSL. A source that fills the buffer was cut off. */
     if (!hlsl_buf)
         return NULL;
-    g_emit_uses_proj = 0;
+    g_emit_proj_reg = -1;
     g_emit_pos_input = -1;
     g_emit_pos_scale = g_emit_pos_offset = -1;
     for (int t = 0; t < NV2A_VS_MAX_TEMPS; t++)
@@ -1281,7 +1295,7 @@ static VshCacheEntry *compile_shader(const DWORD *microcode, int num_insns,
 
     entry->vs          = vs;
     entry->inputs_read = program.inputs_read;
-    entry->uses_proj   = g_emit_uses_proj;
+    entry->proj_reg    = g_emit_proj_reg;
     entry->pos_input   = g_emit_pos_input;
     entry->pos_scale   = g_emit_pos_scale;
     entry->pos_offset  = g_emit_pos_offset;
@@ -1586,6 +1600,9 @@ static BOOL g_hor_plus_claimed;
  * its first constants (xbox_D3D8ClaimHorPlus below). */
 static float    g_hor_plus = 1.0f;
 static int      g_projection_reg = RECOMP_PROJECTION_REGISTER_DEFAULT;
+/* The title's other projection registers, for its other kinds of program
+ * (recomp_widescreen_title_extra_registers). */
+static int      g_extra_proj_regs[3], g_extra_proj_count;
 static int      g_wide_resolved;
 static unsigned g_wide_serial;
 
@@ -1624,6 +1641,14 @@ static void wide_resolve(void)
 
     g_hor_plus = factor;
     g_projection_reg = w.projection_register;
+    g_extra_proj_count = recomp_widescreen_title_extra_registers(g_extra_proj_regs, 3);
+    if (g_extra_proj_count && !g_wide_resolved && factor != 1.0f && !g_hor_plus_claimed) {
+        int i;
+        fprintf(stderr, "D3D8 VSH: Hor+ also through");
+        for (i = 0; i < g_extra_proj_count; i++)
+            fprintf(stderr, " c[%d]", g_extra_proj_regs[i]);
+        fprintf(stderr, ", for the programs that project there\n");
+    }
     g_wide_serial = serial;
     g_wide_resolved = 1;
 }
@@ -1666,10 +1691,12 @@ float d3d8_vsh_hor_plus_for_draw(void)
     return hor_plus_for_draw(d3d8_target_is_screen());
 }
 
-/* Widen the projection register of a constant file about to reach the host. */
-static void hor_plus_widen(NV2AVSConstants *k, float factor)
+/* Widen a projection register of a constant file about to reach the host:
+ * the bound program's own (g_bound_proj_reg), so a register some other
+ * program reads for something else -- a bone, a light -- is left alone. */
+static void hor_plus_widen(NV2AVSConstants *k, float factor, int reg)
 {
-    int reg = d3d8_vsh_hor_plus_reg(), i;
+    int i;
 
     if (factor == 1.0f || reg < 0 || reg >= NV2A_VS_MAX_CONSTANTS)
         return;
@@ -1677,12 +1704,12 @@ static void hor_plus_widen(NV2AVSConstants *k, float factor)
         k->c[reg][i] *= factor;
 }
 
-const float *d3d8_vsh_constants_for_draw(int to_screen)
+const float *d3d8_vsh_constants_for_draw(int to_screen, int proj_reg)
 {
     static NV2AVSConstants copy;
 
     memcpy(&copy, &g_vsh_constants, sizeof copy);
-    hor_plus_widen(&copy, hor_plus_for_draw(to_screen != 0));
+    hor_plus_widen(&copy, hor_plus_for_draw(to_screen != 0), proj_reg);
     return &copy.c[0][0];
 }
 
@@ -1742,6 +1769,19 @@ int d3d8_vsh_hor_plus_reg(void)
 {
     wide_resolve();
     return g_projection_reg;
+}
+
+int d3d8_vsh_is_projection_reg(int reg)
+{
+    int i;
+
+    wide_resolve();
+    if (reg == g_projection_reg)
+        return 1;
+    for (i = 0; i < g_extra_proj_count; i++)
+        if (reg == g_extra_proj_regs[i])
+            return 1;
+    return 0;
 }
 
 /* Frame interpolation's registers: what the title said
@@ -2014,7 +2054,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
 
     /* Bind the vertex shader */
     rhi_set_shader(RHI_STAGE_VERTEX, entry->vs);
-    g_bound_uses_proj = entry->uses_proj;
+    g_bound_proj_reg = entry->proj_reg;
     memcpy(g_bound_const_read, entry->const_read, sizeof g_bound_const_read);
     g_bound_const_indexed = entry->const_indexed;
     g_bound_pos_input = entry->pos_input;
@@ -2054,24 +2094,28 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
      * applying (camera_zoom: screen draws only). */
     {
         static BOOL zoomed, widened;
+        static int widened_reg = -1;
         float zoom = camera_zoom();
         BOOL screen = d3d8_target_is_screen();
         BOOL want = zoom != 1.0f && screen;
         float hp = hor_plus_for_draw(screen);
         BOOL widen = hp != 1.0f;
 
-        if (want != zoomed || widen != widened)
+        /* Which register is widened follows the program, so a program that
+         * projects through another one needs the constants again. */
+        if (want != zoomed || widen != widened ||
+            ((widen || want) && g_bound_proj_reg != widened_reg))
             g_vsh_constants_dirty = TRUE;
         if (g_vsh_constants_dirty) {
             mapped = rhi_buffer_map(g_vsh_cb, RHI_MAP_WRITE_DISCARD);
             if (mapped) {
                 memcpy(mapped, &g_vsh_constants, sizeof(g_vsh_constants));
-                hor_plus_widen((NV2AVSConstants *)mapped, hp);
+                hor_plus_widen((NV2AVSConstants *)mapped, hp, g_bound_proj_reg);
                 if (want) {
-                    int reg = d3d8_vsh_hor_plus_reg(), k;
+                    int reg = g_bound_proj_reg, k;
                     float (*c)[4] = ((NV2AVSConstants *)mapped)->c;
 
-                    if (reg + 1 < NV2A_VS_MAX_CONSTANTS)
+                    if (reg >= 0 && reg + 1 < NV2A_VS_MAX_CONSTANTS)
                         for (k = 0; k < 4; k++) {
                             c[reg][k] *= zoom;
                             c[reg + 1][k] *= zoom;
@@ -2082,6 +2126,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
             g_vsh_constants_dirty = FALSE;
             zoomed = want;
             widened = widen;
+            widened_reg = g_bound_proj_reg;
         }
     }
 

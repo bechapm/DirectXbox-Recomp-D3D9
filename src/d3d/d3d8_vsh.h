@@ -153,6 +153,9 @@ void d3d8_vsh_set_constant(int start_reg, const float *data, int count);
  * as 3D. The setting, else the title's own, else 60
  * (recomp_widescreen_resolve). */
 int  d3d8_vsh_hor_plus_reg(void);
+/* Whether reg is one of the title's projection registers: the one above, or
+ * another its project names (recomp_title_widescreen ... REGISTER a b). */
+int  d3d8_vsh_is_projection_reg(int reg);
 /* The registers frame interpolation blends (xbox_D3D8SetInterpRegisters):
  * the projection's first register or -1, and a run of 4-register affine
  * matrices (count a multiple of 4; first -1 and count 0 for none). */
@@ -172,11 +175,12 @@ const float *d3d8_vsh_constants(void);
 
 /**
  * The constants as a draw uploads them: d3d8_vsh_constants with Hor+ applied
- * to the projection register, which only a draw to the screen gets
- * (to_screen != 0) -- a title's shadow map or other render-to-texture pass is
- * projected unwidened. A copy, valid until the next call.
+ * to proj_reg, the projection register the draw's program reads (-1 for one
+ * that reads none, which is widened nowhere), and only for a draw to the
+ * screen (to_screen != 0) -- a title's shadow map or other render-to-texture
+ * pass is projected unwidened. A copy, valid until the next call.
  */
-const float *d3d8_vsh_constants_for_draw(int to_screen);
+const float *d3d8_vsh_constants_for_draw(int to_screen, int proj_reg);
 
 /**
  * Check if a shader handle refers to a programmable vertex shader

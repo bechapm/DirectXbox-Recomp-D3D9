@@ -117,6 +117,12 @@ typedef enum RecompWideMode {
  * renderer tells a 3D draw from a screen-space one in widescreen. */
 void           recomp_widescreen_title(RecompWideMode mode, int projection_register);
 RecompWideMode recomp_widescreen_title_mode(void);
+/* The projection registers the title's project names after the first
+ * (recomp_title_widescreen ... REGISTER 96 187), for a title whose vertex
+ * programs keep their projection in more than one place. Up to `max` of
+ * them into `out`; the count. The first is the projection_register of the
+ * resolution below, which the settings can override; these they cannot. */
+int            recomp_widescreen_title_extra_registers(int *out, int max);
 /* Whether the title's project asked for the centre 2D policy by default
  * (recomp_title_widescreen ... CENTRE_2D); widescreen_2d overrides it. */
 int            recomp_widescreen_title_centre_2d(void);

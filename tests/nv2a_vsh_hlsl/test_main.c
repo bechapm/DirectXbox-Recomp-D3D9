@@ -284,14 +284,22 @@ static void set_env(const char *name, const char *value)
 #endif
 }
 
-/* Upload (1, 2, 3, 4) to a register and say what it now holds, as a
- * multiple of that: 1 when left alone, 0.75 when Hor+ scaled it. */
-static float upload_and_measure(int reg)
+/* Upload (1, 2, 3, 4) to a register and say what it now holds for a draw
+ * to the screen by a program that projects through prog_reg (-1: one that
+ * reads no projection register), as a multiple of that: 1 when left alone,
+ * 0.75 when Hor+ scaled it. */
+static float upload_and_measure_for(int reg, int prog_reg)
 {
     static const float row[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
 
     d3d8_vsh_set_constant(reg, row, 1);
-    return d3d8_vsh_constants_for_draw(1)[reg * 4 + 1] / row[1];
+    return d3d8_vsh_constants_for_draw(1, prog_reg)[reg * 4 + 1] / row[1];
+}
+
+/* By a program that projects through the title's own register. */
+static float upload_and_measure(int reg)
+{
+    return upload_and_measure_for(reg, d3d8_vsh_hor_plus_reg());
 }
 
 /* The same for a draw into a texture rather than the screen. */
@@ -300,7 +308,7 @@ static float upload_and_measure_offscreen(int reg)
     static const float row[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
 
     d3d8_vsh_set_constant(reg, row, 1);
-    return d3d8_vsh_constants_for_draw(0)[reg * 4 + 1] / row[1];
+    return d3d8_vsh_constants_for_draw(0, d3d8_vsh_hor_plus_reg())[reg * 4 + 1] / row[1];
 }
 
 /* The one widescreen switch, as the renderer acts on it. What it resolves
@@ -336,6 +344,18 @@ static void test_hor_plus(void)
           "a draw into a texture (a shadow map) is not widened");
     check(d3d8_vsh_constants()[96 * 4 + 1] == 2.0f, t,
           "the stored constant is left as the title set it");
+
+    /* Per program: only the register the drawing program projects through.
+     * Turok: Evolution's skinned programs keep a bone palette at c[96] and
+     * project through c[187]; c[96] widened for them squashed a bone. */
+    check(upload_and_measure_for(96, -1) == 1.0f, t,
+          "a program that reads no projection register has nothing scaled");
+    check(upload_and_measure_for(96, 187) == 1.0f, t,
+          "a program projecting through another register leaves c[96] alone");
+    check(upload_and_measure_for(187, 187) == 0.75f, t,
+          "and has its own register scaled");
+    check(d3d8_vsh_is_projection_reg(96) && !d3d8_vsh_is_projection_reg(97), t,
+          "the title's register is a projection register, its neighbour is not");
 
     /* Settings set by hand still decide. */
     set_env("RECOMP_HOR_PLUS", "0");

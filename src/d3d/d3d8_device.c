@@ -2501,7 +2501,7 @@ static void two_d_tag_note(const void *vertices, UINT stride, UINT count)
 
 static void two_d_tag_frame(void)
 {
-    static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side" };
+    static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side", "edge" };
     UINT guest_w = d3d8_GetGuestWidth();
     int i;
 
@@ -2510,7 +2510,7 @@ static void two_d_tag_frame(void)
     fprintf(stderr, "[2D-TAGS] frame %lu: %d tag(s)\n", g_tag_frames, g_tag_count);
     for (i = 0; i < g_tag_count; i++) {
         const TwoDTagStat *t = &g_tag_stats[i];
-        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_SIDE ? t->placement : 0;
+        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_EDGE ? t->placement : 0;
 
         fprintf(stderr, "[2D-TAGS]   tag %08X %-7s draws %6lu  x %7.1f..%7.1f (%5.1f%%) "
                 "widest %5.1f%%\n", t->tag, names[pl], t->draws, t->lo, t->hi,
@@ -2525,7 +2525,7 @@ void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag)
 {
     int anchor;
 
-    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_SIDE)
+    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_EDGE)
         placement = XBOX_D3D8_2D_AUTO;
     g_2d_tag = tag;
     if (placement == g_2d_placement)
@@ -2618,6 +2618,18 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
             g_2d_anchor = anchor;
             apply_host_viewport();
         }
+        break;
+    }
+    case XBOX_D3D8_2D_EDGE: {
+        /* Touching counts as reaching: a quad past the edge measures as
+         * touching it under a scissor the size of the screen. */
+        UINT guest_w = d3d8_GetGuestWidth();
+        float lo, hi;
+
+        if ((guest_w && draw_extent(vertices, stride, count, &lo, &hi) &&
+             (lo <= 0.5f || hi >= (float)guest_w - 0.5f)) ||
+            d3d8_draw_escapes_squeeze(vertices, stride, count))
+            set_squeeze(FALSE);
         break;
     }
     default:

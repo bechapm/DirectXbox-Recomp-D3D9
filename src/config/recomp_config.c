@@ -794,6 +794,23 @@ int recomp_widescreen_title_centre_2d(void)
     return RECOMP_TITLE_CENTRE_2D;
 }
 
+int recomp_widescreen_title_extra_registers(int *out, int max)
+{
+#ifdef RECOMP_TITLE_EXTRA_PROJECTION_REGISTERS
+    static const int regs[] = { RECOMP_TITLE_EXTRA_PROJECTION_REGISTERS };
+    int i, n = 0;
+
+    for (i = 0; i < (int)(sizeof regs / sizeof regs[0]) && n < max; i++)
+        if (regs[i] >= 0 && regs[i] < VS_CONSTANTS && out)
+            out[n++] = regs[i];
+    return n;
+#else
+    (void)out;
+    (void)max;
+    return 0;
+#endif
+}
+
 /* recomp_title_timing(DELTA), the same way. */
 #ifndef RECOMP_TITLE_KEEPS_TIME
 #define RECOMP_TITLE_KEEPS_TIME 0
