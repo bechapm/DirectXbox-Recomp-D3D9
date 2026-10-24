@@ -83,4 +83,8 @@ void theme_tab_underline(ThemeRect from, ThemeRect to, double t);
  * the end of its range and there is nowhere further to go. */
 void theme_arrows(ThemeRect r, int can_left, int can_right, double lit);
 
+/* A progress bar: a dark rounded track, green across the first `fraction`
+ * (0..1) of it. The self-building release's build screen. */
+void theme_bar(ThemeRect r, double fraction);
+
 #endif /* XBOXRECOMP_LAUNCHER_THEME_H */

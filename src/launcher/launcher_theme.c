@@ -203,6 +203,43 @@ void theme_panel(ThemeRect r, double lit)
     }
 }
 
+void theme_bar(ThemeRect r, double fraction)
+{
+    const double s = theme_scale, radius = r.h / 2.0;
+    double fill_to = r.x + r.w * clamp01(fraction);
+    int x0, y0, x1, y1, x, y;
+
+    if (!theme_px)
+        return;
+    x0 = (int)floor(r.x * s);
+    y0 = (int)floor(r.y * s);
+    x1 = (int)ceil((r.x + r.w) * s);
+    y1 = (int)ceil((r.y + r.h) * s);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > theme_w) x1 = theme_w;
+    if (y1 > theme_h) y1 = theme_h;
+    for (y = y0; y < y1; y++) {
+        for (x = x0; x < x1; x++) {
+            double px = (x + 0.5) / s, py = (y + 0.5) / s;
+            double d = rrect_distance(px, py, r, radius);
+            double edge = clamp01(-d * s);
+
+            if (edge <= 0)
+                continue;
+            if (px < fill_to) {
+                /* Brighter along the top, as the panels' rims are. */
+                double t = (py - r.y) / (double)r.h;
+
+                blend(x, y, (int)(0x9B - 0x30 * t), (int)(0xCE - 0x30 * t),
+                            (int)(0x1E - 0x0A * t), edge);
+            } else {
+                blend(x, y, 0x10, 0x1A, 0x0C, 0.85 * edge);
+            }
+        }
+    }
+}
+
 /* One window-unit row of the underline, `row` below its top: every pixel
  * row in it, faded at the ends. */
 static void underline_row(int x0, int x1, int y, int row, double alpha)

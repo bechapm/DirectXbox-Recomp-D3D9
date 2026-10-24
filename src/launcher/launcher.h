@@ -53,6 +53,9 @@ void launcher_wheel(int rows, int x, int y);
 void launcher_tick(void);               /* sixty times a second: pad, glow */
 void launcher_resize(int w, int h);     /* the client area, in window units */
 void launcher_draw(void);               /* into the theme's back buffer */
+/* What the player picked in lhost_pick's dialog: a path, or NULL when they
+ * cancelled. Called on the front end's own thread, from its loop. */
+void launcher_picked(const char *path);
 
 /* ---- the front end, for launcher.c ---- */
 
@@ -74,5 +77,22 @@ void     lhost_publish(volatile long *flag, long value);
 long     lhost_read(volatile long *flag);
 /* `path` made absolute, or copied as it is. */
 void     lhost_full_path(const char *path, char *out, size_t n);
+
+/* One child process at a time whose standard output is read a line at a
+ * time without waiting: a self-building release's builder. argv ends with
+ * NULL; argv[0] is a path. 0 when it cannot be started (or the front end
+ * cannot run one; the Windows one cannot yet). */
+int      lhost_job_start(const char *const *argv);
+/* The next whole line it printed, without the newline: 1, or 0 when there
+ * is none yet. Never blocks. */
+int      lhost_job_line(char *out, size_t n);
+/* -1 while it runs (or has lines left to read), else its exit code; after
+ * that the job is over and another may start. */
+int      lhost_job_status(void);
+void     lhost_job_cancel(void);
+/* Ask for a file (folder 0) or a folder (1) with the desktop's own dialog;
+ * the answer arrives through launcher_picked. 0 when there is no dialog --
+ * a desktop without one, or Game Mode -- and the path must be typed. */
+int      lhost_pick(int folder);
 
 #endif /* XBOXRECOMP_LAUNCHER_H */

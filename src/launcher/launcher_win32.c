@@ -149,6 +149,36 @@ void lhost_full_path(const char *path, char *out, size_t n)
         snprintf(out, n, "%s", path);
 }
 
+/* A self-building release's builder and its file dialog are not on Windows
+ * yet: the release is Linux first. Saying so with 0 leaves the launcher's
+ * first-run screen to ask for a typed path, and its Build to explain. */
+int lhost_job_start(const char *const *argv)
+{
+    (void)argv;
+    return 0;
+}
+
+int lhost_job_line(char *out, size_t n)
+{
+    (void)out; (void)n;
+    return 0;
+}
+
+int lhost_job_status(void)
+{
+    return 0;
+}
+
+void lhost_job_cancel(void)
+{
+}
+
+int lhost_pick(int folder)
+{
+    (void)folder;
+    return 0;
+}
+
 /* ---------------------------------------------------------------- window */
 
 static int key_of(WPARAM vk)

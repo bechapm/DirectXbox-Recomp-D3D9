@@ -25,7 +25,6 @@ OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
 #   X11 and Wayland headers, PulseAudio and ALSA headers, libudev:
 #           SDL3 (third_party/SDL, built static) will not configure without
 #           a video backend, and opens its audio and pads through these
-#   OpenSSL - crypto, replaces bcrypt
 #   FreeType + fontconfig - the launcher's text (src/launcher)
 #   Python 3 with venv - the pipeline (capstone goes in a venv)
 # Not here: the Vulkan loader and DXC, which the renderer loads at run time
@@ -56,7 +55,7 @@ detect_family() {
 family=$(detect_family) || {
     echo "Could not identify the distro from $OS_RELEASE." >&2
     echo "Install these by hand, with headers: a C and C++ toolchain, cmake, ninja," >&2
-    echo "pkg-config, X11 and Wayland, PulseAudio, ALSA, libudev, OpenSSL, FreeType," >&2
+    echo "pkg-config, X11 and Wayland, PulseAudio, ALSA, libudev, FreeType," >&2
     echo "fontconfig, and Python 3 with venv." >&2
     exit 1
 }
@@ -96,7 +95,7 @@ MSG
               libxss-dev libxfixes-dev libxtst-dev libxkbcommon-dev
               libwayland-dev wayland-protocols libegl-dev libdrm-dev libgbm-dev
               libpulse-dev libasound2-dev libudev-dev
-              libssl-dev libfreetype-dev libfontconfig-dev)
+              libfreetype-dev libfontconfig-dev)
         echo "Detected Debian/Ubuntu. Installing ${#PKGS[@]} packages..."
         sudo apt-get update
         sudo apt-get install -y "${PKGS[@]}"
@@ -108,7 +107,7 @@ MSG
               libx11 libxext libxrandr libxcursor libxi libxss libxfixes libxtst
               libxkbcommon wayland wayland-protocols libdecor mesa libdrm
               libpulse alsa-lib systemd-libs
-              openssl freetype2 fontconfig)
+              freetype2 fontconfig)
         echo "Detected Arch. Installing ${#PKGS[@]} packages..."
         sudo pacman -S --needed "${PKGS[@]}"
         ;;
@@ -118,7 +117,7 @@ MSG
               libXScrnSaver-devel libXfixes-devel libXtst-devel libxkbcommon-devel
               wayland-devel wayland-protocols-devel mesa-libEGL-devel libdrm-devel
               mesa-libgbm-devel pulseaudio-libs-devel alsa-lib-devel systemd-devel
-              openssl-devel freetype-devel fontconfig-devel)
+              freetype-devel fontconfig-devel)
         echo "Detected Fedora/RHEL. Installing ${#PKGS[@]} packages..."
         sudo dnf install -y "${PKGS[@]}"
         ;;

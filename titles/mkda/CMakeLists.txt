@@ -112,7 +112,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Host libraries needed at link time. Off Windows the runtime libraries
-# bring their own (pthreads, dl, SDL3 and its frameworks, OpenSSL).
+# bring their own (pthreads, dl, SDL3 and its frameworks).
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         d3d11

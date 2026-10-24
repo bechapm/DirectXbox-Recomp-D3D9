@@ -42,18 +42,27 @@ function(_xboxrecomp_engine_libs out)
     set(${out} ${_libs} PARENT_SCOPE)
 endfunction()
 
-# What the import compares against the title's own configure.
-function(_xboxrecomp_engine_settings out)
+# What the import compares against the title's own configure. The identity
+# leaves out where the compiler is, which a relocated package cannot keep
+# (a release's compiler is wherever the player unpacked it); a build tree is
+# held to the same compiler binary as well.
+function(_xboxrecomp_engine_identity out)
     if(RECOMP_ABI_CHECK)
         set(_abi ON)
     else()
         set(_abi OFF)
     endif()
     set(${out}
-        "compiler ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} (${CMAKE_C_COMPILER}) | "
+        "compiler ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION} | "
         "c++ ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} | "
         "build type ${CMAKE_BUILD_TYPE} | RECOMP_ABI_CHECK ${_abi}"
         PARENT_SCOPE)
+endfunction()
+
+function(_xboxrecomp_engine_settings out)
+    _xboxrecomp_engine_identity(_id)
+    string(JOIN "" _id ${_id})
+    set(${out} "${_id} | ${CMAKE_C_COMPILER}" PARENT_SCOPE)
 endfunction()
 
 # The targets built here that `libs` link, directly or through others:
@@ -111,7 +120,8 @@ function(xboxrecomp_export_engine)
         list(APPEND _names ${_n})
     endforeach()
     _xboxrecomp_engine_settings(_settings)
-    string(JOIN "" _settings ${_settings})
+    _xboxrecomp_engine_identity(_identity)
+    string(JOIN "" _identity ${_identity})
     # SDL from the submodule leaves a package of its own in the build tree.
     set(_sdl "")
     if(TARGET SDL3-static AND EXISTS "${CMAKE_BINARY_DIR}/third_party/SDL")
@@ -119,6 +129,7 @@ function(xboxrecomp_export_engine)
     endif()
     file(WRITE "${CMAKE_BINARY_DIR}/xboxrecomp-engine.cmake"
          "set(XBOXRECOMP_ENGINE_SETTINGS \"${_settings}\")\n"
+         "set(XBOXRECOMP_ENGINE_IDENTITY \"${_identity}\")\n"
          "set(XBOXRECOMP_ENGINE_LIBS \"${_names}\")\n"
          "set(XBOXRECOMP_ENGINE_SDL3_DIR \"${_sdl}\")\n"
          "set(XBOXRECOMP_ENGINE_SOURCE_DIR \"${CMAKE_SOURCE_DIR}\")\n")
@@ -134,18 +145,28 @@ function(xboxrecomp_import_engine dir)
                             "--target xboxrecomp_engine (cmake/prebuilt_engine.cmake)")
     endif()
     include("${_info}")
-    get_filename_component(_here "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." REALPATH)
-    get_filename_component(_there "${XBOXRECOMP_ENGINE_SOURCE_DIR}" REALPATH)
-    if(NOT _here STREQUAL _there)
-        message(FATAL_ERROR "XBOXRECOMP_PREBUILT=${dir} was built from ${_there}, "
-                            "not from this toolkit (${_here}). An engine is only "
-                            "valid for the sources it was built from.")
+    # A package (tools/release/make_engine_package.py) is its own source: it
+    # carries the headers the libraries were built with.
+    if(XBOXRECOMP_ENGINE_SOURCE_DIR STREQUAL "PACKAGE")
+        set(_package TRUE)
+        _xboxrecomp_engine_identity(_mine)
+        string(JOIN "" _mine ${_mine})
+        set(_theirs "${XBOXRECOMP_ENGINE_IDENTITY}")
+    else()
+        set(_package FALSE)
+        get_filename_component(_here "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." REALPATH)
+        get_filename_component(_there "${XBOXRECOMP_ENGINE_SOURCE_DIR}" REALPATH)
+        if(NOT _here STREQUAL _there)
+            message(FATAL_ERROR "XBOXRECOMP_PREBUILT=${dir} was built from ${_there}, "
+                                "not from this toolkit (${_here}). An engine is only "
+                                "valid for the sources it was built from.")
+        endif()
+        _xboxrecomp_engine_settings(_mine)
+        set(_theirs "${XBOXRECOMP_ENGINE_SETTINGS}")
     endif()
-    _xboxrecomp_engine_settings(_mine)
-    string(JOIN "" _mine ${_mine})
-    if(NOT _mine STREQUAL XBOXRECOMP_ENGINE_SETTINGS)
+    if(NOT _mine STREQUAL _theirs)
         message(FATAL_ERROR "XBOXRECOMP_PREBUILT=${dir} was built differently:\n"
-                            "  engine: ${XBOXRECOMP_ENGINE_SETTINGS}\n"
+                            "  engine: ${_theirs}\n"
                             "  title:  ${_mine}\n"
                             "Build the engine to match, or leave XBOXRECOMP_PREBUILT "
                             "unset to build the runtime with the title.")
@@ -159,14 +180,16 @@ function(xboxrecomp_import_engine dir)
     # What the libraries link that they do not carry. GLOBAL, because the
     # title's executable, one directory up, links them.
     if(XBOXRECOMP_ENGINE_SDL3_DIR)
-        find_package(SDL3 CONFIG REQUIRED GLOBAL
-                     PATHS "${XBOXRECOMP_ENGINE_SDL3_DIR}" NO_DEFAULT_PATH)
+        set(_sdl "${XBOXRECOMP_ENGINE_SDL3_DIR}")
+        if(NOT IS_ABSOLUTE "${_sdl}")
+            set(_sdl "${dir}/${_sdl}")          # a package's own copy
+        endif()
+        find_package(SDL3 CONFIG REQUIRED GLOBAL PATHS "${_sdl}" NO_DEFAULT_PATH)
     else()
         find_package(SDL3 CONFIG REQUIRED GLOBAL)
     endif()
     if(NOT WIN32)
         find_package(Threads REQUIRED GLOBAL)
-        find_package(OpenSSL REQUIRED GLOBAL)
     endif()
     include("${dir}/xboxrecomp-engine-targets.cmake")
 
@@ -182,11 +205,14 @@ function(xboxrecomp_import_engine dir)
             add_library(${_t} ALIAS xrengine::${_t})
         endif()
     endforeach()
-    # Brought up to date before anything links it: the title's executables
-    # depend on this (xboxrecomp_generated_source_options adds it).
-    add_custom_target(xboxrecomp_engine_refresh
-        COMMAND "${CMAKE_COMMAND}" --build "${dir}" --target xboxrecomp_engine
-        COMMENT "Bringing the prebuilt engine up to date"
-        USES_TERMINAL)
+    # A build tree is brought up to date before anything links it: the title's
+    # executables depend on this (xboxrecomp_generated_source_options adds
+    # it). A package is finished and has nothing to rebuild.
+    if(NOT _package)
+        add_custom_target(xboxrecomp_engine_refresh
+            COMMAND "${CMAKE_COMMAND}" --build "${dir}" --target xboxrecomp_engine
+            COMMENT "Bringing the prebuilt engine up to date"
+            USES_TERMINAL)
+    endif()
     message(STATUS "xboxrecomp: runtime libraries from ${dir} (prebuilt)")
 endfunction()

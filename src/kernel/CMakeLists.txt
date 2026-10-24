@@ -63,9 +63,11 @@ if(WIN32)
     # ws2_32 for the System Link tunnel's UDP socket (xbox_net_udp.c).
     target_link_libraries(xbox_kernel PUBLIC platform kernel32 bcrypt winmm dbghelp psapi ws2_32)
 else()
-    # Linux: platform layer (POSIX host primitives) + OpenSSL for crypto.
-    find_package(OpenSSL REQUIRED)
-    target_link_libraries(xbox_kernel PUBLIC platform OpenSSL::Crypto)
+    # POSIX: the platform layer (host primitives). The Xc* crypto is the
+    # portable software in kernel_crypto.c and xbox_crypto_soft.h, so no
+    # OpenSSL: it was linked here and used by nothing, and a release built
+    # where the player has no OpenSSL headers could not have found it.
+    target_link_libraries(xbox_kernel PUBLIC platform)
 endif()
 
 if(MSVC)

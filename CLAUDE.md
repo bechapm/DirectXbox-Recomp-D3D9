@@ -385,6 +385,20 @@ works. What to know:
 - Not yet: System Link (the network card is not built off Windows), XMV movies (FFmpeg is
   looked for only in `third_party/ffmpeg` on Linux), and Game Mode (gamescope) is untried.
 
+**Self-building releases (Oct 2026, `docs/technical/self-build-release.md`).** A per-game
+Linux release carries no game code: its launcher asks for the player's disc and
+`xboxrecomp-build` (Rust, `tools/builder`) recompiles it with what the release brings --
+zig, CMake, Ninja, CPython with Capstone, the pipeline, a relocatable engine package
+(`tools/release/make_engine_package.py`). `tools/release/make_release.py
+config/releases/<title>.json --out <dir>` makes one. Three things to know: everything is
+built with the release's zig for glibc 2.38 and `-fno-sanitize=all` (zig adds UB traps at
+-O0); the builder mirrors a player's folder with links and gives it its own UDATA/TDATA,
+so saves never land in their copy; and the clean-machine check is `flatpak-spawn --host`,
+because bare SteamOS has no compiler. TimeSplitters 2 and Turok build there in about 70 s
+and play as the GCC and clang builds do. Test the launcher with
+`SDL_VIDEODRIVER=offscreen RECOMP_LAUNCHER_SHOT=...` and `RECOMP_LAUNCHER_BUILD=<disc>`,
+never by opening a window on someone's desktop.
+
 ---
 
 ## Planned changes, in dependency order

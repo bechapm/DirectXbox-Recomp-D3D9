@@ -1,0 +1,26 @@
+[package]
+name = "xboxrecomp-build"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Builds a self-building release's game from the player's own disc"
+
+[[bin]]
+name = "xboxrecomp-build"
+path = "src/main.rs"
+
+[dependencies]
+# The XBE certificate reader from Xbox-Extractor, pinned.
+xbe = { git = "https://github.com/phobos665/Xbox-Extractor", rev = "33bb466" }
+# Reading XISO images: the library Xbox-Extractor builds them with.
+xdvdfs = { version = "0.8.3", default-features = false, features = ["std", "read", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1_smol = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

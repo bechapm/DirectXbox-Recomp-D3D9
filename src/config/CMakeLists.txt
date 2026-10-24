@@ -107,5 +107,8 @@ function(recomp_title_timing KIND)
     endif()
 endfunction()
 
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../tests/config_smoke
-                 ${CMAKE_CURRENT_BINARY_DIR}/config_smoke)
+# Absent from a prebuilt engine package, which carries no tests.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../tests/config_smoke)
+    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../tests/config_smoke
+                     ${CMAKE_CURRENT_BINARY_DIR}/config_smoke)
+endif()

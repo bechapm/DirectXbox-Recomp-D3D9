@@ -447,6 +447,171 @@ static char g_title_name[128] = "Xbox game";
 static uint32_t g_title_id;
 static char g_xbe_found[LAUNCHER_PATH]; /* empty: the game's files were not found */
 
+/* ------------------------------------------------- a self-building release */
+
+/* A release made by tools/release/make_release.py has release.json beside
+ * this launcher and no game: xboxrecomp-build (tools/builder) makes it from
+ * the player's own disc, in their folder for this title. The launcher then
+ * asks for the disc, runs the builder, draws its progress, and only after
+ * that shows the settings and Play -- which start the game the builder put
+ * in that folder. Without release.json nothing here changes anything. */
+static int  g_release;
+static char g_release_dir[LAUNCHER_PATH];
+static char g_release_exe[128];
+static char g_release_version[96];
+static char g_user_dir[LAUNCHER_PATH];   /* where the builder builds it */
+
+typedef enum { REL_READY, REL_SETUP, REL_BUILDING } RelState;
+static RelState g_rel = REL_READY;
+static int    g_rel_stale;              /* built, but by an older release */
+static char   g_source[LAUNCHER_PATH];  /* the disc: typed, picked or remembered */
+static char   g_rel_error[2048];
+static int    g_rel_unsupported;
+static char   g_rel_note[200];
+static double g_build_progress;
+static char   g_build_label[96], g_build_detail[200];
+static int    g_build_cancelled;
+static int    g_setup_sel;              /* 0 the path, 1 image, 2 folder, 3 build */
+
+static int read_small_file(const char *path, char *buf, size_t n)
+{
+    FILE *f = fopen(path, "rb");
+    size_t got;
+
+    if (!f)
+        return 0;
+    got = fread(buf, 1, n - 1, f);
+    fclose(f);
+    buf[got] = '\0';
+    return 1;
+}
+
+/* A string field of a flat JSON object, unescaped: enough for release.json,
+ * the builder's own files and its progress lines, which this program and
+ * xboxrecomp-build write. 0 if the key is missing or not a string. */
+static int json_str(const char *text, const char *key, char *out, size_t n)
+{
+    char pat[96];
+    const char *p;
+    size_t k = 0;
+
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    p = strstr(text, pat);
+    if (!p || !n)
+        return 0;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':' || *p == '\t')
+        p++;
+    if (*p++ != '"')
+        return 0;
+    while (*p && *p != '"' && k + 1 < n) {
+        char c = *p++;
+
+        if (c == '\\' && *p) {
+            c = *p++;
+            if (c == 'n') c = '\n';
+            else if (c == 't') c = ' ';
+            else if (c == 'u') {            /* \uXXXX: kept only if ASCII */
+                unsigned v = 0;
+                int i;
+                for (i = 0; i < 4 && *p; i++, p++)
+                    v = v * 16 + (unsigned)(*p <= '9' ? *p - '0' : (*p | 32) - 'a' + 10);
+                c = v < 0x80 ? (char)v : '?';
+            }
+        }
+        out[k++] = c;
+    }
+    out[k] = '\0';
+    return 1;
+}
+
+static double json_num(const char *text, const char *key)
+{
+    char pat[96];
+    const char *p;
+
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    p = strstr(text, pat);
+    if (!p)
+        return 0.0;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':')
+        p++;
+    return atof(p);
+}
+
+/* Where xboxrecomp-build builds this title: the same rule as its
+ * user_dir(), which owns it. */
+static int release_user_dir(uint32_t id, char *out, size_t n)
+{
+    const char *dir = getenv("XBOXRECOMP_BUILD_DIR");
+    const char *data = getenv("XDG_DATA_HOME");
+    const char *home = getenv("HOME");
+
+    if (dir && *dir)
+        snprintf(out, n, "%s/%08X", dir, id);
+    else if (data && *data)
+        snprintf(out, n, "%s/xboxrecomp/builds/%08X", data, id);
+    else if (home && *home)
+        snprintf(out, n, "%s/.local/share/xboxrecomp/builds/%08X", home, id);
+    else
+        return 0;
+    return 1;
+}
+
+/* What the builder has left: ready, built by another release, or not yet. */
+static void release_status(void)
+{
+    char path[LAUNCHER_PATH + 32], text[4096], built[96], exe[LAUNCHER_PATH];
+    FILE *f;
+
+    g_rel_stale = 0;
+    snprintf(path, sizeof path, "%s/source.json", g_user_dir);
+    if (!g_source[0] && read_small_file(path, text, sizeof text))
+        json_str(text, "path", g_source, sizeof g_source);
+    snprintf(path, sizeof path, "%s/build.json", g_user_dir);
+    if (!read_small_file(path, text, sizeof text) ||
+        !json_str(text, "release_version", built, sizeof built)) {
+        g_rel = REL_SETUP;
+        return;
+    }
+    snprintf(exe, sizeof exe, "%s/%s", g_user_dir, g_release_exe);
+    f = fopen(exe, "rb");
+    if (f)
+        fclose(f);
+    if (f && strcmp(built, g_release_version) == 0) {
+        g_rel = REL_READY;
+    } else {
+        g_rel = REL_SETUP;
+        g_rel_stale = 1;
+    }
+}
+
+static void release_init(void)
+{
+    char path[LAUNCHER_PATH + 32], text[8192], id[16];
+
+    if (!host_exe_path(g_release_dir, sizeof g_release_dir))
+        return;
+    host_path_dirname(g_release_dir);
+    snprintf(path, sizeof path, "%s/release.json", g_release_dir);
+    if (!read_small_file(path, text, sizeof text) ||
+        !json_str(text, "title_id", id, sizeof id) ||
+        !json_str(text, "exe", g_release_exe, sizeof g_release_exe))
+        return;
+    g_release = 1;
+    g_title_id = (uint32_t)strtoul(id, NULL, 16);
+    json_str(text, "title_name", g_title_name, sizeof g_title_name);
+    json_str(text, "version", g_release_version, sizeof g_release_version);
+    if (!release_user_dir(g_title_id, g_user_dir, sizeof g_user_dir)) {
+        g_rel = REL_SETUP;
+        snprintf(g_rel_error, sizeof g_rel_error,
+                 "There is no home folder to build the game in (HOME is not set).");
+        return;
+    }
+    release_status();
+}
+
 /* The name and id out of the game's own XBE, so the launcher says what it
  * launches without being told at build time -- and, more to the point, so
  * it writes the settings file the game will read, which is named after the
@@ -500,6 +665,14 @@ static void read_title(void)
 {
     const char *env = getenv("RECOMP_GAME_DIR");
     char dir[LAUNCHER_PATH], xbe[LAUNCHER_PATH + 64], app[LAUNCHER_PATH];
+
+    /* A release's game is the one its builder made; until there is one, the
+     * name and id are release.json's. */
+    if (g_release) {
+        snprintf(xbe, sizeof xbe, "%s/game/" LAUNCHER_GAME_XBE, g_user_dir);
+        read_cert(xbe);
+        return;
+    }
 
     /* Set means only this, as it does for the game: finding the XBE
      * somewhere else would name a settings file for a different copy.
@@ -800,6 +973,12 @@ static int launch_game(void)
 {
     char exe[LAUNCHER_PATH + 64], dir[LAUNCHER_PATH];
 
+    /* A release's game is in the player's folder, beside its game files. */
+    if (g_release) {
+        snprintf(exe, sizeof exe, "%s/%s", g_user_dir, g_release_exe);
+        return lhost_launch(exe, g_user_dir);
+    }
+
     /* Beside this executable, whatever the working directory is: a
      * shortcut on a desktop must work as well as a double-click. */
     if (!host_exe_path(dir, sizeof dir))
@@ -1058,8 +1237,14 @@ static void input_move(int dy)
     g_sel = k - g_bind_top;
 }
 
+static void setup_nav(int dx, int dy, int accept, int cancel);
+
 static void nav(int dx, int dy, int accept, int cancel, int tabdelta)
 {
+    if (g_release && g_rel != REL_READY) {
+        setup_nav(dx, dy, accept, cancel);
+        return;
+    }
     if (g_capturing) {
         /* While waiting for a press, nothing else means anything: the
          * press is the answer. Cancel is handled in capture_tick, which
@@ -1294,6 +1479,291 @@ static void draw_link(void)
     }
 }
 
+/* ------------------------------------------- a release's first-run screens */
+
+static int hit_play(int mx, int my);
+
+/* The path box and the three buttons under it. */
+static ThemeRect setup_rect(int i)
+{
+    ThemeRect r;
+
+    if (i == 0) {
+        r.x = 60; r.y = 270; r.w = g_cw - 120; r.h = 52;
+        return r;
+    }
+    r.w = (g_cw - 120 - 2 * 20) / 3;
+    r.h = 46;
+    r.y = 342;
+    r.x = 60 + (i - 1) * (r.w + 20);
+    return r;
+}
+
+static int in_rect(ThemeRect r, int mx, int my)
+{
+    return mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h;
+}
+
+static void release_start_build(void)
+{
+    char exe[LAUNCHER_PATH + 64];
+    const char *argv[5];
+
+    if (!g_source[0]) {
+        snprintf(g_rel_note, sizeof g_rel_note,
+                 "Choose the disc image or the game's folder first.");
+        return;
+    }
+    snprintf(exe, sizeof exe, "%s/bin/xboxrecomp-build", g_release_dir);
+    argv[0] = exe; argv[1] = "build"; argv[2] = "--source"; argv[3] = g_source;
+    argv[4] = NULL;
+    g_rel_error[0] = g_rel_note[0] = '\0';
+    g_rel_unsupported = g_build_cancelled = 0;
+    g_build_progress = 0.0;
+    snprintf(g_build_label, sizeof g_build_label, "Starting");
+    g_build_detail[0] = '\0';
+    if (!lhost_job_start(argv)) {
+        snprintf(g_rel_error, sizeof g_rel_error,
+                 "The builder could not be started (%s). This launcher can run "
+                 "it on Linux only, so far.", exe);
+        return;
+    }
+    g_rel = REL_BUILDING;
+}
+
+/* One line of the builder's progress (tools/builder: one JSON object a line). */
+static void release_line(const char *line)
+{
+    char ev[24];
+
+    if (!json_str(line, "event", ev, sizeof ev))
+        return;
+    if (strcmp(ev, "progress") == 0) {
+        g_build_progress = json_num(line, "overall");
+        json_str(line, "label", g_build_label, sizeof g_build_label);
+        if (!json_str(line, "detail", g_build_detail, sizeof g_build_detail))
+            g_build_detail[0] = '\0';
+    } else if (strcmp(ev, "error") == 0) {
+        json_str(line, "message", g_rel_error, sizeof g_rel_error);
+        g_rel_unsupported = strstr(line, "\"unsupported\":true") != NULL;
+    }
+}
+
+static void release_tick(void)
+{
+    char line[4096];
+    int n = 0, code;
+
+    while (n++ < 64 && lhost_job_line(line, sizeof line))
+        release_line(line);
+    code = lhost_job_status();
+    if (code < 0)
+        return;
+    if (code == 0 && !g_rel_error[0]) {
+        /* Built: the game's own files now name it, and the settings are
+         * its; then the ordinary launcher, Play and all. */
+        g_rel_stale = 0;
+        read_title();
+        settings_load();
+        build_rows();
+        rows_for_tab();
+        release_status();
+        if (g_rel != REL_READY) {
+            snprintf(g_rel_error, sizeof g_rel_error,
+                     "The build finished but the game is not where it should be (%s).",
+                     g_user_dir);
+            g_rel = REL_SETUP;
+        }
+        return;
+    }
+    g_rel = REL_SETUP;
+    if (g_build_cancelled) {
+        snprintf(g_rel_note, sizeof g_rel_note, "Cancelled. Build again to start over.");
+        g_rel_error[0] = '\0';
+    } else if (!g_rel_error[0]) {
+        snprintf(g_rel_error, sizeof g_rel_error,
+                 "The build stopped (exit %d). Its log is %s/build.log.", code, g_user_dir);
+    }
+}
+
+static void draw_setup(void)
+{
+    ThemeRect p, r;
+    int i;
+
+    p.x = 60; p.y = 104; p.w = g_cw - 120; p.h = 140;
+    theme_panel(p, 0.2);
+    r.x = p.x + 24; r.y = p.y + 18; r.w = p.w - 48; r.h = 26;
+    theme_text(r, g_rel_stale ? "Build the game again" : "Your copy of the game",
+               15, 700, THEME_TEXT, THEME_LEFT);
+    r.y += 36; r.h = 80;
+    theme_text_wrapped(r, g_rel_stale
+        ? "This release is newer than the game it built for you. Build it again "
+          "from the same disc to bring it up to date; your saves and settings stay."
+        : "Choose your disc image (.iso) or the folder the game's files are in. "
+          "The game is built from it once, here on this computer, which takes a "
+          "minute or two. An image is extracted to your home folder; a folder is "
+          "linked, never copied or changed.", 12, THEME_TEXT_DIM);
+
+    r = setup_rect(0);
+    theme_panel(r, g_setup_sel == 0 ? 0.8 : 0.25);
+    r.x += 18; r.w -= 36;
+    if (g_source[0]) {
+        char shown[LAUNCHER_PATH + 4];
+
+        snprintf(shown, sizeof shown, "%s%s", g_source,
+                 g_setup_sel == 0 && ((int)(g_pulse * 4) & 1) ? "_" : "");
+        theme_text(r, shown, 12, 400, THEME_TEXT, THEME_LEFT);
+    } else {
+        theme_text(r, "Type or paste a path, or choose one below", 12, 400,
+                   THEME_TEXT_DIM, THEME_LEFT);
+    }
+    for (i = 1; i <= 3; i++) {
+        static const char *const k_labels[] = { "", "DISC IMAGE...", "FOLDER...", "BUILD" };
+        const char *label = (i == 3 && g_rel_stale) ? "BUILD AGAIN" : k_labels[i];
+
+        r = setup_rect(i);
+        theme_panel(r, g_setup_sel == i ? 0.9 : 0.3);
+        theme_text(r, label, 12, 700,
+                   (i == 3 && !g_source[0]) ? THEME_TEXT_DIM : THEME_TEXT, THEME_CENTRE);
+    }
+
+    r.x = 60; r.y = 416; r.w = g_cw - 120; r.h = 290;
+    if (g_rel_error[0]) {
+        theme_panel(r, 0.15);
+        r.x += 24; r.y += 16; r.w -= 48; r.h = 24;
+        theme_text(r, g_rel_unsupported ? "This disc can't be used" : "The build did not finish",
+                   13, 700, THEME_GREEN, THEME_LEFT);
+        r.y += 30; r.h = 230;
+        theme_text_wrapped(r, g_rel_error, 11, THEME_TEXT);
+    } else if (g_rel_note[0]) {
+        r.h = 40;
+        theme_text_wrapped(r, g_rel_note, 12, THEME_TEXT_DIM);
+    }
+
+    r.x = 60; r.y = g_ch - 44; r.w = g_cw - 120; r.h = 24;
+    theme_text(r, g_pad_seen
+                  ? "A  Choose      B  Quit      D-pad  Move"
+                  : "Enter  Choose      Esc  Quit      Type or paste a path in the box",
+               11, 400, THEME_TEXT_DIM, THEME_LEFT);
+}
+
+static void draw_building(void)
+{
+    ThemeRect p, r, b;
+    char pct[16];
+
+    p.x = 60; p.y = 130; p.w = g_cw - 120; p.h = 300;
+    theme_panel(p, 0.3);
+    r.x = p.x + 30; r.y = p.y + 26; r.w = p.w - 60; r.h = 28;
+    theme_text(r, "Building the game", 16, 700, THEME_TEXT, THEME_LEFT);
+    r.y += 50; r.h = 24;
+    theme_text(r, g_build_label, 13, 700, THEME_GREEN, THEME_LEFT);
+    snprintf(pct, sizeof pct, "%d%%", (int)(g_build_progress * 100.0 + 0.5));
+    theme_text(r, pct, 13, 700, THEME_TEXT, THEME_RIGHT);
+    b.x = r.x; b.y = r.y + 40; b.w = r.w; b.h = 16;
+    theme_bar(b, g_build_progress);
+    r.y = b.y + 34; r.h = 22;
+    theme_text(r, g_build_detail, 11, 400, THEME_TEXT_DIM, THEME_LEFT);
+    r.y += 44; r.h = 70;
+    theme_text_wrapped(r, "This happens once. Later starts go straight to the game. "
+                          "It is building from your own copy, on this computer.",
+                       11, THEME_TEXT_DIM);
+
+    r.x = 60; r.y = g_ch - 44; r.w = g_cw - 260; r.h = 24;
+    theme_text(r, g_pad_seen ? "B  Cancel" : "Esc  Cancel", 11, 400,
+               THEME_TEXT_DIM, THEME_LEFT);
+    b.w = 150; b.h = 42; b.x = g_cw - 60 - b.w; b.y = g_ch - 74;
+    theme_panel(b, 0.5);
+    theme_text(b, "CANCEL", 13, 700, THEME_TEXT, THEME_CENTRE);
+}
+
+static void setup_activate(int i)
+{
+    if (i == 1 || i == 2) {
+        if (!lhost_pick(i == 2))
+            snprintf(g_rel_note, sizeof g_rel_note,
+                     "No file dialog here: type or paste the path in the box.");
+    } else {
+        release_start_build();
+    }
+}
+
+static void setup_nav(int dx, int dy, int accept, int cancel)
+{
+    if (g_rel == REL_BUILDING) {
+        if (cancel && !g_build_cancelled) {
+            g_build_cancelled = 1;
+            lhost_job_cancel();
+        }
+        return;
+    }
+    if (dy < 0) g_setup_sel = 0;
+    if (dy > 0 && g_setup_sel == 0) g_setup_sel = 1;
+    if (dx && g_setup_sel > 0) {
+        g_setup_sel += dx;
+        if (g_setup_sel < 1) g_setup_sel = 1;
+        if (g_setup_sel > 3) g_setup_sel = 3;
+    }
+    if (accept)
+        setup_activate(g_setup_sel);
+    if (cancel)
+        lhost_close();
+}
+
+static void setup_click(int mx, int my)
+{
+    int i;
+
+    if (g_rel == REL_BUILDING) {
+        if (hit_play(mx, my) && !g_build_cancelled) {
+            g_build_cancelled = 1;
+            lhost_job_cancel();
+        }
+        return;
+    }
+    for (i = 0; i <= 3; i++)
+        if (in_rect(setup_rect(i), mx, my)) {
+            g_setup_sel = i;
+            if (i)
+                setup_activate(i);
+        }
+}
+
+static void setup_char(unsigned ch)
+{
+    size_t n = strlen(g_source);
+
+    if (g_rel != REL_SETUP)
+        return;
+    if (ch == 22) {
+        char paste[LAUNCHER_PATH];
+
+        if (lhost_paste(paste, sizeof paste))
+            snprintf(g_source, sizeof g_source, "%s", paste);
+    } else if (ch == 8) {
+        if (n) g_source[n - 1] = '\0';
+    } else if (ch >= 32 && ch < 127 && n + 1 < sizeof g_source) {
+        g_source[n] = (char)ch;
+        g_source[n + 1] = '\0';
+    } else {
+        return;
+    }
+    g_setup_sel = 0;
+    g_rel_note[0] = '\0';
+}
+
+void launcher_picked(const char *path)
+{
+    if (!path) {
+        snprintf(g_rel_note, sizeof g_rel_note,
+                 "Nothing chosen. If no dialog appeared, type or paste the path in the box.");
+        return;
+    }
+    snprintf(g_source, sizeof g_source, "%s", path);
+    release_start_build();
+}
+
 static void draw(void)
 {
     ThemeRect r;
@@ -1304,6 +1774,15 @@ static void draw(void)
     /* Title. The game's own name, from its certificate. */
     r.x = 60; r.y = 30; r.w = g_cw - 120; r.h = 46;
     theme_text(r, g_title_name, 26, 700, THEME_TEXT, THEME_LEFT);
+
+    /* A release without its game yet: the disc, or the build. */
+    if (g_release && g_rel != REL_READY) {
+        if (g_rel == REL_BUILDING)
+            draw_building();
+        else
+            draw_setup();
+        return;
+    }
 
     for (i = 0; i < TAB_COUNT; i++) {
         ThemeRect t = tab_rect(i);
@@ -1499,7 +1978,11 @@ static void draw(void)
         theme_text(p, line, 11, 400, THEME_TEXT_DIM, THEME_LEFT);
 
         p.y += 24;
-        snprintf(line, sizeof line, "Game      %s", LAUNCHER_GAME_EXE);
+        if (g_release)
+            snprintf(line, sizeof line, "Game      %s/%s (built from %s)",
+                     g_user_dir, g_release_exe, g_source[0] ? g_source : "your disc");
+        else
+            snprintf(line, sizeof line, "Game      %s", LAUNCHER_GAME_EXE);
         theme_text(p, line, 11, 400, THEME_TEXT_DIM, THEME_LEFT);
 
         /* Where the title id came from, or that it did not: without it the
@@ -1582,11 +2065,22 @@ static int hit_play(int mx, int my)
 
 void launcher_init(void)
 {
+    const char *build;
+
+    release_init();
     read_title();
     settings_load();
     bindings_load();
     build_rows();
     rows_for_tab();
+    /* RECOMP_LAUNCHER_BUILD=<image or folder>: build from it straight away,
+     * for a front end that already knows where the disc is, and for a
+     * script checking the whole path. */
+    build = getenv("RECOMP_LAUNCHER_BUILD");
+    if (g_release && build && *build && g_rel == REL_SETUP) {
+        snprintf(g_source, sizeof g_source, "%s", build);
+        release_start_build();
+    }
 }
 
 const char *launcher_title(void)
@@ -1620,6 +2114,10 @@ void launcher_key(int key, int shift)
 
 void launcher_char(unsigned ch)
 {
+    if (g_release && g_rel != REL_READY) {
+        setup_char(ch);
+        return;
+    }
     /* Typing goes to the System Link tab's text rows; copy there copies
      * the address a host gives out, paste pastes into a row. */
     if (g_tab == TAB_LINK && g_sel < g_link_count && !g_capturing) {
@@ -1642,6 +2140,10 @@ void launcher_click(int mx, int my)
 {
     int i;
 
+    if (g_release && g_rel != REL_READY) {
+        setup_click(mx, my);
+        return;
+    }
     for (i = 0; i < TAB_COUNT; i++) {
         ThemeRect t = tab_rect(i);
 
@@ -1750,6 +2252,8 @@ void launcher_tick(void)
     }
     if (g_tab == TAB_LINK)
         link_tab_tick();
+    if (g_rel == REL_BUILDING)
+        release_tick();
     g_pad_seen = pad_poll(&dx, &dy, &a, &b, &t);
     if (g_capturing)
         capture_tick();             /* the press is the answer, not a move */

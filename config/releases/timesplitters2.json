@@ -1,0 +1,11 @@
+{
+  "title_name": "TimeSplitters 2",
+  "title_id": "4553000A",
+  "project": "titles/timesplitters2",
+  "exe": "timesplitters2_recomp",
+  "launcher": "timesplitters2_recomp_launcher",
+  "release_name": "timesplitters2",
+  "xbe_sha1": [
+    "2809eb147385723eaa90c425be89ee4db033fc5a"
+  ]
+}

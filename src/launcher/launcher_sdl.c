@@ -12,20 +12,28 @@
  * clock, as the Windows launcher's 16 ms timer does.
  *
  * RECOMP_LAUNCHER_SHOT=<file.bmp> writes the theme's buffer after half a
- * second (thirty frames) and quits, so the drawing can be checked from a
- * script without capturing anyone's screen.
+ * second (thirty frames; RECOMP_LAUNCHER_SHOT_FRAMES=<n> for another) and
+ * quits, so the drawing can be checked from a script without capturing
+ * anyone's screen.
  *
  * The game is started with posix_spawn, beside the launcher, in its own
  * directory, with this environment -- so a RECOMP_* variable set for the
- * launcher reaches the game -- and the launcher then ends.
+ * launcher reaches the game -- and the launcher then ends. A self-building
+ * release's builder is started the same way, as a job whose output is read
+ * through a pipe, in a process group of its own so that cancelling it stops
+ * the compilers it started too.
  */
 #include <SDL3/SDL.h>
 
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "launcher.h"
@@ -183,6 +191,137 @@ void lhost_full_path(const char *path, char *out, size_t n)
         snprintf(out, n, "%s", full);
     else
         snprintf(out, n, "%s", path);
+}
+
+/* ------------------------------------------------------------------ job */
+
+static pid_t g_job = -1;
+static int   g_job_fd = -1;
+static int   g_job_exit = -1;            /* once it has been reaped */
+static char  g_job_buf[16384];
+static size_t g_job_len;
+
+int lhost_job_start(const char *const *argv)
+{
+    posix_spawn_file_actions_t fa;
+    posix_spawnattr_t attr;
+    int fds[2], err;
+
+    if (g_job > 0 || pipe(fds) != 0)
+        return 0;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addclose(&fa, fds[0]);
+    posix_spawn_file_actions_addclose(&fa, fds[1]);
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attr, 0);
+    err = posix_spawn(&g_job, argv[0], &fa, &attr, (char *const *)argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&attr);
+    close(fds[1]);
+    if (err != 0) {
+        close(fds[0]);
+        g_job = -1;
+        return 0;
+    }
+    fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
+    g_job_fd = fds[0];
+    g_job_len = 0;
+    g_job_exit = -1;
+    return 1;
+}
+
+int lhost_job_line(char *out, size_t n)
+{
+    char *nl;
+
+    if (g_job_fd >= 0 && g_job_len < sizeof g_job_buf - 1) {
+        ssize_t got = read(g_job_fd, g_job_buf + g_job_len, sizeof g_job_buf - 1 - g_job_len);
+
+        if (got > 0) {
+            g_job_len += (size_t)got;
+        } else if (got == 0 || (errno != EAGAIN && errno != EINTR)) {
+            close(g_job_fd);        /* it has closed its end: no more lines */
+            g_job_fd = -1;
+        }
+    }
+    nl = memchr(g_job_buf, '\n', g_job_len);
+    if (!nl && g_job_fd < 0 && g_job_len) {
+        nl = g_job_buf + g_job_len;          /* a last line with no newline */
+        g_job_len++;
+    }
+    if (!nl) {
+        if (g_job_len == sizeof g_job_buf - 1)
+            g_job_len = 0;                   /* a line longer than the buffer */
+        return 0;
+    }
+    *nl = '\0';
+    snprintf(out, n, "%s", g_job_buf);
+    g_job_len -= (size_t)(nl - g_job_buf) + 1;
+    memmove(g_job_buf, nl + 1, g_job_len);
+    return 1;
+}
+
+int lhost_job_status(void)
+{
+    int st;
+
+    if (g_job > 0 && waitpid(g_job, &st, WNOHANG) == g_job) {
+        g_job_exit = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
+        g_job = -1;
+    }
+    /* Running until it has exited and every line it printed is read. */
+    if (g_job > 0 || g_job_fd >= 0 || g_job_len)
+        return -1;
+    return g_job_exit;
+}
+
+void lhost_job_cancel(void)
+{
+    if (g_job > 0)
+        kill(-g_job, SIGTERM);              /* the builder and its tools */
+}
+
+/* ---------------------------------------------------------------- picker */
+
+/* SDL may answer on another thread; the main loop hands the answer over. */
+static SDL_AtomicInt g_pick_state;          /* 0 idle, 1 asking, 2 answered */
+static char          g_pick_path[PATH_MAX];
+static int           g_pick_ok;
+
+static void SDLCALL pick_done(void *userdata, const char *const *files, int filter)
+{
+    (void)userdata; (void)filter;
+    g_pick_ok = files && files[0];
+    if (g_pick_ok)
+        snprintf(g_pick_path, sizeof g_pick_path, "%s", files[0]);
+    SDL_SetAtomicInt(&g_pick_state, 2);
+}
+
+int lhost_pick(int folder)
+{
+    static const SDL_DialogFileFilter k_images[] = {
+        { "Xbox disc image", "iso;xiso" },
+        { "All files", "*" },
+    };
+
+    if (SDL_GetAtomicInt(&g_pick_state) != 0)
+        return 1;                           /* one is already open */
+    SDL_SetAtomicInt(&g_pick_state, 1);
+    if (folder)
+        SDL_ShowOpenFolderDialog(pick_done, NULL, g_win, NULL, false);
+    else
+        SDL_ShowOpenFileDialog(pick_done, NULL, g_win, k_images, 2, NULL, false);
+    return 1;
+}
+
+static void pick_poll(void)
+{
+    if (SDL_GetAtomicInt(&g_pick_state) == 2) {
+        SDL_SetAtomicInt(&g_pick_state, 0);
+        launcher_picked(g_pick_ok ? g_pick_path : NULL);
+    }
 }
 
 /* ---------------------------------------------------------------- window */
@@ -361,7 +500,8 @@ static void fit(void)
 int main(int argc, char **argv)
 {
     const char *shot = getenv("RECOMP_LAUNCHER_SHOT");
-    int frames = 0;
+    const char *shot_frames = getenv("RECOMP_LAUNCHER_SHOT_FRAMES");
+    int frames = 0, shot_at = shot_frames && atoi(shot_frames) > 0 ? atoi(shot_frames) : 30;
     uint64_t next_tick;
 
     (void)argc; (void)argv;
@@ -441,6 +581,7 @@ int main(int argc, char **argv)
         }
         if (g_quit)
             break;
+        pick_poll();
 
         /* Sixty a second off the clock; a stall is not made up for all at
          * once, or the glow and a held direction would race. */
@@ -456,7 +597,7 @@ int main(int argc, char **argv)
         if (ticks) {
             launcher_draw();
             present();
-            if (shot && *shot && ++frames == 30) {
+            if (shot && *shot && ++frames == shot_at) {
                 write_shot(shot);
                 g_quit = 1;
             }
@@ -468,6 +609,9 @@ int main(int argc, char **argv)
             SDL_WaitEventTimeout(NULL, (Sint32)(next_tick - now));
     }
 
+    /* A build left running would carry on unseen, and the next launcher
+     * would find it half done. */
+    lhost_job_cancel();
     SDL_StopTextInput(g_win);
     present_close();
     SDL_DestroyWindow(g_win);
