@@ -84,7 +84,10 @@ void theme_tab_underline(ThemeRect from, ThemeRect to, double t);
 void theme_arrows(ThemeRect r, int can_left, int can_right, double lit);
 
 /* A progress bar: a dark rounded track, green across the first `fraction`
- * (0..1) of it. The self-building release's build screen. */
-void theme_bar(ThemeRect r, double fraction);
+ * (0..1) of it. The self-building release's build screen. `phase` (0..1,
+ * advanced by the caller each frame) moves a soft highlight along it, so a
+ * stage that sits on one percentage still shows the build is alive; a
+ * negative phase draws it still. */
+void theme_bar(ThemeRect r, double fraction, double phase);
 
 #endif /* XBOXRECOMP_LAUNCHER_THEME_H */

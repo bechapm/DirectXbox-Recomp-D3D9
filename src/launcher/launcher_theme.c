@@ -203,10 +203,14 @@ void theme_panel(ThemeRect r, double lit)
     }
 }
 
-void theme_bar(ThemeRect r, double fraction)
+void theme_bar(ThemeRect r, double fraction, double phase)
 {
     const double s = theme_scale, radius = r.h / 2.0;
     double fill_to = r.x + r.w * clamp01(fraction);
+    /* The highlight: a soft band a fifth of the bar wide, entering at the
+     * left edge and leaving past the right one. */
+    const double band = r.w * 0.2;
+    double centre = r.x - band + (r.w + 2 * band) * (phase < 0 ? 0 : phase - floor(phase));
     int x0, y0, x1, y1, x, y;
 
     if (!theme_px)
@@ -227,14 +231,19 @@ void theme_bar(ThemeRect r, double fraction)
 
             if (edge <= 0)
                 continue;
+            double u = (px - centre) / band;
+            double glow = phase < 0 ? 0 : exp(-u * u * 4.0);
+
             if (px < fill_to) {
                 /* Brighter along the top, as the panels' rims are. */
                 double t = (py - r.y) / (double)r.h;
 
                 blend(x, y, (int)(0x9B - 0x30 * t), (int)(0xCE - 0x30 * t),
                             (int)(0x1E - 0x0A * t), edge);
+                blend(x, y, 0xE4, 0xF5, 0xB0, 0.45 * glow * edge);
             } else {
                 blend(x, y, 0x10, 0x1A, 0x0C, 0.85 * edge);
+                blend(x, y, 0x9B, 0xCE, 0x1E, 0.12 * glow * edge);
             }
         }
     }

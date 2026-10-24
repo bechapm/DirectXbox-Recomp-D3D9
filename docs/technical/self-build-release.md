@@ -170,7 +170,15 @@ Exit 2 means a disc the release does not support. Linked by zig, it needs glibc
 
 **Launcher** (`src/launcher`): `release.json` beside it switches it into release
 mode. Until the build is ready it shows the first-run or build screen instead
-of the tabs. The front ends gained a job (a child process read a line at a time,
+of the tabs; the build screen's bar carries a moving highlight, so a long stage
+on one percentage still looks alive, and a finished build says so, with how
+long it took, until the player presses OK. At every start it checks that the
+game folder's links still resolve (a picked folder is linked, not copied); if
+the folder was moved or deleted it asks where the files are now and runs
+`xboxrecomp-build relink`, which lays the game folder out again and rebuilds
+nothing, refusing a different copy of the game (a full build is offered
+instead). `status` reports `moved` for the same case. Every launcher's window is titled
+"DirectXRecomp - <game>". The front ends gained a job (a child process read a line at a time,
 in its own process group so Cancel stops the compilers too) and a picker
 (`SDL_ShowOpenFileDialog`/`SDL_ShowOpenFolderDialog`). The SDL front end has
 both; the Windows one returns 0 for now. Closing the window cancels a build.
