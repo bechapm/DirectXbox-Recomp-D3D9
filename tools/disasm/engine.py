@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32, CsInsn
 from capstone import CS_OP_IMM, CS_OP_MEM, CS_OP_REG
 
-from . import config
+from . import config, fast_decode
 from .loader import BinaryImage, SectionInfo
 from .switch_bound import case_count
 
@@ -225,7 +225,7 @@ class DisasmEngine:
             chunk_va = va_start + offset
             last_end_offset = offset
 
-            for cs_insn in self._cs.disasm(chunk, chunk_va):
+            for cs_insn in fast_decode.disasm(self._cs, chunk, chunk_va):
                 insn = self._classify_instruction(cs_insn)
                 self.instructions[insn.address] = insn
                 count += 1
@@ -663,7 +663,8 @@ class DisasmEngine:
         while pos < end:
             stop = min(pos + self._DECODE_WINDOW, end)
             resume = pos
-            for cs_insn in self._cs.disasm(data[pos:stop], addr + (pos - offset)):
+            for cs_insn in fast_decode.disasm(self._cs, data[pos:stop],
+                                              addr + (pos - offset)):
                 resume = cs_insn.address - addr + offset + cs_insn.size
                 yield cs_insn
             if stop == end or resume == pos or resume < stop - self._MAX_INSN:

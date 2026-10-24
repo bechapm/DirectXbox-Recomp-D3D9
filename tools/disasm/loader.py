@@ -65,6 +65,9 @@ class BinaryImage:
     # Lookup tables built after loading
     _section_by_name: Dict[str, SectionInfo] = field(default_factory=dict, repr=False)
     _thunk_to_import: Dict[int, KernelImport] = field(default_factory=dict, repr=False)
+    # Section bytes, sliced once: the passes ask for a section's data about
+    # 15,000 times a title, and each slice of raw_data was a fresh copy.
+    _section_data: Dict[Tuple[int, int], bytes] = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
         self._section_by_name = {s.name: s for s in self.sections}
@@ -119,7 +122,12 @@ class BinaryImage:
 
     def get_section_data(self, section: SectionInfo) -> bytes:
         """Get the raw bytes for a section."""
-        return self.raw_data[section.raw_addr:section.raw_addr + section.raw_size]
+        key = (section.raw_addr, section.raw_size)
+        data = self._section_data.get(key)
+        if data is None:
+            data = self.raw_data[section.raw_addr:section.raw_addr + section.raw_size]
+            self._section_data[key] = data
+        return data
 
     def get_kernel_import_at_thunk(self, thunk_addr: int) -> Optional[KernelImport]:
         """Look up a kernel import by its thunk address."""

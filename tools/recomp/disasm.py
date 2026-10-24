@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32, CS_OP_IMM, CS_OP_MEM
 
+from tools.disasm import fast_decode
+
 
 # LOOP family: ECX is the counter, not a flag. They branch, so they end a
 # block like any other conditional jump, but they need their own lifting.
@@ -253,7 +255,7 @@ class Disassembler:
             return []
 
         decoded = {}
-        for cs_insn in self._cs.disasm(raw_bytes[:size], start_va):
+        for cs_insn in fast_decode.disasm(self._cs, raw_bytes[:size], start_va):
             decoded[cs_insn.address] = self._decode_instruction(cs_insn)
 
         for point in sorted(resync or ()):
@@ -262,8 +264,9 @@ class Disassembler:
             for addr in [a for a, i in decoded.items()
                          if a < point < a + i.size]:
                 del decoded[addr]
-            for cs_insn in self._cs.disasm(raw_bytes[point - start_va:size],
-                                           point):
+            for cs_insn in fast_decode.disasm(self._cs,
+                                              raw_bytes[point - start_va:size],
+                                              point):
                 if cs_insn.address in decoded:
                     break          # rejoined a stream we already have
                 for inside in range(cs_insn.address + 1,
@@ -289,7 +292,7 @@ class Disassembler:
             if not (start_va <= entry < end_va) or entry in decoded:
                 continue
             offset = entry - start_va
-            for cs_insn in self._cs.disasm(raw_bytes[offset:size], entry):
+            for cs_insn in fast_decode.disasm(self._cs, raw_bytes[offset:size], entry):
                 if cs_insn.address != entry and cs_insn.address in stop_addresses:
                     break
                 if cs_insn.address >= end_va or cs_insn.address in decoded:

@@ -15,6 +15,7 @@ import bisect
 import json
 import glob
 import os
+import re
 import struct
 import sys
 
@@ -29,6 +30,16 @@ from .lifter import (Lifter, lift_basic_block, detect_seh_helpers,
                      _RESULT_SNAPSHOT_SETTERS,
                      detect_setjmp_helpers, scan_cxx_eh, _func_ident,
                      _operand_width)
+
+
+# Byte patterns that every instance of an instruction contains, wherever it
+# sits in a function, for skipping the decode of functions that cannot hold
+# one. `call <reg32>` is FF /2 with mod 3 (FF D0-D7); `jmp` through memory is
+# FF /4 with mod 0-2 (a ModRM of 20-27, 60-67 or A0-A7). The search finds
+# those bytes inside immediates and other instructions too, so a hit still
+# goes to the decode-based test: a miss proves absence, a hit proves nothing.
+_MAY_CALL_REG = re.compile(rb"\xff[\xd0-\xd7]")
+_MAY_JMP_MEM = re.compile(rb"\xff[\x20-\x27\x60-\x67\xa0-\xa7]")
 
 
 # Float compares snapshot at the compare as well, and their conditions read
@@ -587,9 +598,10 @@ class FunctionTranslator:
             # full decode. The test is looser than the operand check it
             # stands in for (anything that is neither an immediate nor a
             # memory operand), so it can only send extra functions on.
-            if not any(m == "call" and "[" not in op and not op.startswith("0x")
-                       for _a, _s, m, op in self.disasm.scan_lite(
-                           raw_bytes, caller, end)):
+            if not _MAY_CALL_REG.search(raw_bytes) or not any(
+                    m == "call" and "[" not in op and not op.startswith("0x")
+                    for _a, _s, m, op in self.disasm.scan_lite(
+                        raw_bytes, caller, end)):
                 continue
             instructions = self.disasm.disassemble_function(
                 raw_bytes, caller, end)
@@ -951,7 +963,7 @@ class FunctionTranslator:
             return memo[key]
         raw_bytes = self._read_func_bytes(start, end)
         decoded = None
-        if raw_bytes and any(
+        if raw_bytes and _MAY_JMP_MEM.search(raw_bytes) and any(
                 m == "jmp" and "[" in op
                 for _a, _s, m, op in self.disasm.scan_lite(
                     raw_bytes, start, end)):
