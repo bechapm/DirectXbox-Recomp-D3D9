@@ -21,9 +21,13 @@ it with what the release brings (docs/technical/self-build-release.md):
     dxc/                   the shader compiler the renderer loads
     LICENSE NOTICE.txt README.txt
 
-The recipe (config/releases/<title>.json) names the title, its project, the
-executable and launcher targets, and the SHA-1s of the default.xbe images
-the title is known to work from; the builder refuses any other.
+The recipe (config/releases/<title>.json, or one in the title's own
+repository) names the title, its project (relative to the recipe), the
+executable and launcher targets, and the default.xbe images the title is
+known to work from, each with a name and, when the title keeps one folder of
+addresses per image, that folder; the builder refuses any other image. A
+title whose lift does more than the pipeline names its own script as
+`lift`, which the builder runs instead (docs/technical/self-build-release.md).
 
 Run it where the toolkit builds (the Freedesktop SDK on SteamOS, with the
 rust-stable extension for the builder): the engine and launcher compile
@@ -38,6 +42,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 
@@ -125,13 +130,21 @@ def main():
     ap.add_argument("--work", help="builds kept between runs (default <out>/../release-work)")
     ap.add_argument("--cache", help="downloads (default <out>/../downloads)")
     ap.add_argument("--version", help="this release's version (default: date and commit)")
+    ap.add_argument("--archive", action="store_true",
+                    help="also write <name>-<version>-linux-x86_64.tar.xz beside --out")
     args = ap.parse_args()
 
     recipe_path = Path(args.recipe).resolve()
     recipe = json.loads(recipe_path.read_text())
-    project = Path(recipe["project"])
-    if not project.is_absolute():
-        project = ROOT / project
+    # Relative to the recipe, so a title's own repository can carry its recipe
+    # and say "..".
+    project = (recipe_path.parent / recipe["project"]).resolve()
+    images = recipe.get("images") or [{"sha1": h} for h in recipe.get("xbe_sha1", [])]
+    if not images:
+        sys.exit(f"make_release: {recipe_path} names no default.xbe images")
+    for img in images:
+        if img.get("config") and not (project / img["config"]).is_dir():
+            sys.exit(f"make_release: {img['config']} (for {img['sha1']}) is not in {project}")
     out = Path(args.out).resolve()
     work = Path(args.work).resolve() if args.work else out.parent / "release-work"
     cache = Path(args.cache).resolve() if args.cache else out.parent / "downloads"
@@ -200,10 +213,14 @@ def main():
     # The title's project, without generated code or build output.
     tracked = subprocess.run(["git", "-C", str(project), "ls-files", "-z", "."],
                              capture_output=True, text=True).stdout.split("\0")
+    lift = recipe.get("lift")
+    wanted = set(recipe.get("include", [])) | ({lift[0]} if lift else set())
     for rel in filter(None, tracked):
         # What a title's build reads: its CMakeLists, its sources and its own
-        # config (seeds, XDK symbols). Not scripts, a submodule, or lifted code.
-        if not (rel == "CMakeLists.txt" or rel.startswith(("src/", "config/"))):
+        # config (seeds, XDK symbols), and what the recipe adds (its own lift
+        # script). Not other scripts, a submodule, or lifted code.
+        if not (rel == "CMakeLists.txt" or rel.startswith(("src/", "config/"))
+                or rel in wanted or any(rel.startswith(w.rstrip("/") + "/") for w in wanted)):
             continue
         if "/recomp/gen/" in rel or not (project / rel).is_file():
             continue
@@ -219,6 +236,11 @@ def main():
     (lproj / "src/recomp/gen/placeholder.c").write_text(
         "/* make_release.py: the launcher needs no lifted code. */\n"
         "int xboxrecomp_release_placeholder;\n")
+    # Anything else the title's CMakeLists insists on before it configures,
+    # which its lift writes (split2-recomp: the region header).
+    for rel in recipe.get("placeholders", []):
+        (lproj / rel).parent.mkdir(parents=True, exist_ok=True)
+        (lproj / rel).write_text("/* make_release.py: a placeholder for the launcher's build. */\n")
     lbuild = work / "launcher"
     run([cmake, "-S", lproj, "-B", lbuild, *toolchain_args(tc), *HOST_FLAGS,
          f"-DXBOXRECOMP_DIR={ROOT}", f"-DXBOXRECOMP_PREBUILT={eng}"], env=env)
@@ -232,23 +254,36 @@ def main():
         if src.is_file():
             shutil.copy2(src, out / "dxc" / Path(f).name)
 
-    (out / "release.json").write_text(json.dumps({
+    release = {
         "title_name": recipe["title_name"],
         "title_id": recipe["title_id"],
         "version": version,
         "exe": recipe["exe"],
-        "xbe_sha1": recipe["xbe_sha1"],
-    }, indent=2) + "\n")
+        "images": images,
+    }
+    if lift:
+        release["lift"] = lift
+    (out / "release.json").write_text(json.dumps(release, indent=2) + "\n")
     shutil.copy2(ROOT / "LICENSE", out / "LICENSE")
     (out / "NOTICE.txt").write_text(NOTICE.format(title=recipe["title_name"]))
     (out / "README.txt").write_text(README.format(
         title=recipe["title_name"], line="=" * len(recipe["title_name"]),
         name=recipe["release_name"],
         userdir=f"~/.local/share/xboxrecomp/builds/{recipe['title_id']}",
-        hashes="".join(f"  {h}\n" for h in recipe["xbe_sha1"])))
+        hashes="".join(f"  {i['sha1']}  {i.get('name', '')}\n" for i in images)))
 
     size = sum(f.lstat().st_size for f in out.rglob("*") if f.is_file() and not f.is_symlink())
     log(f"done: {out} ({size / 1e6:.0f} MB)")
+
+    # One file to publish: <name>-<version>-linux-x86_64.tar.xz beside the
+    # folder, unpacking as <name>/.
+    if args.archive:
+        archive = out.parent / f"{recipe['release_name']}-{version}-linux-x86_64.tar.xz"
+        log(f"archiving to {archive}")
+        with tarfile.open(archive, "w:xz", preset=6) as tar:
+            tar.add(out, arcname=recipe["release_name"],
+                    filter=lambda ti: None if ti.name.endswith(marker) else ti)
+        log(f"archive: {archive} ({archive.stat().st_size / 1e6:.0f} MB)")
 
 
 if __name__ == "__main__":

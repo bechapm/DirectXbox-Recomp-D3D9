@@ -72,8 +72,12 @@ extensions), or on a distribution with the toolkit's dependencies and Cargo:
 
 ```bash
 python3 -m tools.release.make_release config/releases/timesplitters2.json \
-    --out ../release/timesplitters2 [--work ../release-work] [--cache ../downloads]
+    --out ../release/timesplitters2 [--work ../release-work] [--cache ../downloads] \
+    [--version v1.0] [--archive]
 ```
+
+`--archive` also writes `<release_name>-<version>-linux-x86_64.tar.xz` beside
+`--out`, which unpacks as `<release_name>/`: the file a release publishes.
 
 The recipe, `config/releases/<title>.json`:
 
@@ -81,18 +85,50 @@ The recipe, `config/releases/<title>.json`:
 {
   "title_name": "TimeSplitters 2",
   "title_id": "4553000A",
-  "project": "titles/timesplitters2",
+  "project": "../../titles/timesplitters2",
   "exe": "timesplitters2_recomp",
   "launcher": "timesplitters2_recomp_launcher",
   "release_name": "timesplitters2",
-  "xbe_sha1": ["2809eb147385723eaa90c425be89ee4db033fc5a"]
+  "images": [{"sha1": "2809eb147385723eaa90c425be89ee4db033fc5a", "name": "PAL"}]
 }
 ```
 
-`project` may be absolute: a title in its own repository (Turok: Evolution's)
-packages the same way. A recipe's `config/seeds.json` and
-`config/xdk_symbols.json` are used if present; otherwise the builder runs
-XbSymbolDatabase on the player's XBE, as `tools.xdk_symbols` does at a desk.
+`project` is relative to the recipe, so a title in its own repository carries
+its recipe and says `".."`. The release copies the project's tracked
+`CMakeLists.txt`, `src/` and `config/`, plus anything the recipe lists in
+`include`. A plain `xbe_sha1` list is still read, as images without names.
+
+Each image may name a `config` folder in the project holding that image's
+`seeds.json`, `xdk_symbols.json` and `xbe_patches.json`; without one the
+builder looks in `config/`. Without `xdk_symbols.json` it runs XbSymbolDatabase
+on the player's XBE, as `tools.xdk_symbols` does at a desk.
+
+A title whose lift does more than the pipeline (split2-recomp writes a region
+header and merges per-region overrides first) names its own script instead:
+
+```json
+"lift": ["scripts/build.py", "--game", "{xbe_dir}", "--no-build", "--relift"]
+```
+
+The builder runs it with the bundled Python, from the copied project, with
+`{xbe_dir}` replaced by a folder holding only the player's `default.xbe`, and
+with `xboxrecomp` in the project linked to the release's toolkit. The script
+must leave the lifted code where the title's CMakeLists expects it; the
+builder then configures and builds as usual.
+A file the title's CMakeLists requires before it configures and the lift
+writes goes in the recipe's `placeholders`, so the launcher, which is built
+without a lift, can configure: `"placeholders": ["src/recomp/ts2_region.h"]`.
+
+## Releasing from a title's repository
+
+A title's repository carries the recipe and a workflow run on version tags
+(split2-recomp's `.github/workflows/release.yml` is the model): check out with
+the toolkit submodule, install the toolkit's Linux build dependencies and
+DXC, run `make_release` from the submodule with `--version <tag> --archive`,
+and attach the archive to a GitHub release. No game files are involved: the
+release carries the tools and the title's project, never lifted code. The
+toolkit's own CI builds the TimeSplitters 2 release on every push as a check,
+and publishes nothing.
 
 ## How the pieces fit
 

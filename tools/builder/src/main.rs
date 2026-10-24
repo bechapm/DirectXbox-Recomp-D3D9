@@ -41,6 +41,19 @@ use std::time::UNIX_EPOCH;
 
 // ── release.json ────────────────────────────────────────────────────────────
 
+/// A default.xbe this release was made for.
+#[derive(Deserialize, Clone)]
+struct Image {
+    sha1: String,
+    /// What the player knows it as: "PAL", "USA".
+    #[serde(default)]
+    name: String,
+    /// Where in the recipe this image's seeds.json, xdk_symbols.json and
+    /// xbe_patches.json are, when it has its own (one folder per region).
+    #[serde(default)]
+    config: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct Release {
     title_id: String,
@@ -48,8 +61,19 @@ struct Release {
     version: String,
     /// The executable the recipe's CMakeLists builds (its target name).
     exe: String,
-    /// SHA-1s of the default.xbe images this release was made for.
+    #[serde(default)]
+    images: Vec<Image>,
+    /// The images as SHA-1s alone (releases made before images had names).
+    #[serde(default)]
     xbe_sha1: Vec<String>,
+    /// A title's own lift, in place of this program's: a script in the
+    /// recipe and its arguments, run with the release's Python from the
+    /// title's project folder ({xbe_dir} is the folder holding the XBE to
+    /// lift). For a title whose lift does more than the pipeline -- one
+    /// folder of addresses per region, a header naming which -- as
+    /// split2-recomp's scripts/build.py does.
+    #[serde(default)]
+    lift: Option<Vec<String>>,
     #[serde(skip)]
     dir: PathBuf,
 }
@@ -63,8 +87,16 @@ impl Release {
             .map_err(|e| format!("{} is not a valid release file: {e}", path.display()))?;
         r.dir = dir.to_path_buf();
         r.title_id = r.title_id.to_uppercase();
-        for s in r.xbe_sha1.iter_mut() {
-            *s = s.to_lowercase();
+        for sha in std::mem::take(&mut r.xbe_sha1) {
+            if !r.images.iter().any(|i| i.sha1.eq_ignore_ascii_case(&sha)) {
+                r.images.push(Image { sha1: sha, name: String::new(), config: None });
+            }
+        }
+        for i in r.images.iter_mut() {
+            i.sha1 = i.sha1.to_lowercase();
+        }
+        if r.images.is_empty() {
+            return Err(format!("{} names no default.xbe images", path.display()));
         }
         Ok(r)
     }
@@ -390,13 +422,13 @@ fn sha1_file(path: &Path) -> Result<String, Failure> {
     Ok(h.digest().to_string())
 }
 
-fn check_disc(release: &Release, user: &Path) -> Result<String, Failure> {
+fn check_disc(release: &Release, user: &Path) -> Result<Image, Failure> {
     progress("check", 0, 1, "");
     let xbe = user.join("game").join("default.xbe");
     let sha1 = sha1_file(&xbe)?;
-    if release.xbe_sha1.iter().any(|s| *s == sha1) {
-        progress("check", 1, 1, "");
-        return Ok(sha1);
+    if let Some(image) = release.images.iter().find(|i| i.sha1 == sha1) {
+        progress("check", 1, 1, &image.name);
+        return Ok(image.clone());
     }
     let what = fs::read(&xbe).ok().and_then(|d| xbe::parse(&d).ok())
         .map(|i| format!("{} ({}, {})", i.title_name, i.title_id_hex(), i.region_label()))
@@ -405,7 +437,10 @@ fn check_disc(release: &Release, user: &Path) -> Result<String, Failure> {
         message: format!(
             "This isn't a copy of {} this release supports. Its default.xbe is {what}, \
              SHA-1 {sha1}. This release was made for: {}.",
-            release.title_name, release.xbe_sha1.join(", ")),
+            release.title_name,
+            release.images.iter().map(|i| if i.name.is_empty() { i.sha1.clone() }
+                                          else { format!("{} ({})", i.name, i.sha1) })
+                .collect::<Vec<_>>().join(", ")),
         code: 2,
     })
 }
@@ -471,13 +506,26 @@ fn sync_tree(from: &Path, to: &Path) -> Result<(), Failure> {
 
 // ── 3-5. lift, build, install ───────────────────────────────────────────────
 
-fn lift(release: &Release, user: &Path, log: &Path) -> Result<(), Failure> {
+/// recompile.py's "  2/4  disasm" as each stage starts, as progress.
+fn lift_progress(line: &str) {
+    let t = line.trim_start();
+    if let Some((n, rest)) = t.split_once('/') {
+        let mut words = rest.split_whitespace();
+        if let (Ok(n), Some("4")) = (n.parse::<u64>(), words.next()) {
+            if (1..=4).contains(&n) {
+                progress("lift", n, 5, words.next().unwrap_or(""));
+            }
+        }
+    }
+}
+
+fn lift(release: &Release, image: &Image, user: &Path, log: &Path) -> Result<(), Failure> {
     let r = &release.dir;
     let project = user.join("project");
     sync_tree(&r.join("recipe"), &project)?;
 
     // The pipeline writes beside the XBE it is given, so it gets its own
-    // copy (a hard link where possible), with the XDK symbols beside it.
+    // copy (a hard link where possible), never the one in the player's folder.
     let xdir = user.join("pipe").join("xbe");
     fs::create_dir_all(&xdir).or_else(|e| fail(format!("cannot create {}: {e}", xdir.display())))?;
     let xbe = xdir.join("default.xbe");
@@ -489,18 +537,49 @@ fn lift(release: &Release, user: &Path, log: &Path) -> Result<(), Failure> {
 
     let tmp = user.join("tmp");
     fs::create_dir_all(&tmp).ok();
-    let python = |c: &mut Command| {
-        c.current_dir(r.join("toolkit"))
+    let python = |c: &mut Command, dir: &Path| {
+        c.current_dir(dir)
             .env("PYTHONDONTWRITEBYTECODE", "1").env("PYTHONUNBUFFERED", "1")
             .env("TMPDIR", &tmp);
     };
+
+    // A title's own lift. It finds the pipeline where its toolkit submodule
+    // would be, xboxrecomp/ beside its sources, and is given the private
+    // copy of the XBE, so whatever it writes beside it stays here.
+    if let Some(hook) = &release.lift {
+        // Re-pointed when the release has moved since the last build.
+        let toolkit_link = project.join("xboxrecomp");
+        let toolkit = r.join("toolkit");
+        if fs::read_link(&toolkit_link).ok().as_deref() != Some(toolkit.as_path()) {
+            let _ = fs::remove_file(&toolkit_link).or_else(|_| fs::remove_dir(&toolkit_link));
+            symlink_dir(&toolkit, &toolkit_link)
+                .or_else(|e| fail(format!("cannot link the pipeline into the project: {e}")))?;
+        }
+        let Some((script, args)) = hook.split_first() else {
+            return fail("release.json's lift names no script");
+        };
+        progress("lift", 0, 5, &image.name);
+        let mut cmd = Command::new(r.join("python/bin/python3"));
+        cmd.arg(project.join(script));
+        for a in args {
+            cmd.arg(a.replace("{xbe_dir}", &xdir.display().to_string()));
+        }
+        python(&mut cmd, &project);
+        run(&mut cmd, log, "the translation to C", lift_progress)?;
+        progress("lift", 5, 5, "");
+        return Ok(());
+    }
+
+    // This image's addresses: its own folder when the recipe has one per
+    // image, else the recipe's config/.
+    let config = project.join(image.config.as_deref().unwrap_or("config"));
 
     // Which XDK functions sit where in this image, for the replacements the
     // lifter links in by name. A recipe may carry them; otherwise they are
     // found here, by signature, as tools.xdk_symbols does at a desk.
     progress("lift", 0, 5, "naming the XDK functions");
     let symbols = xdir.join("default_xdk_symbols.json");
-    let carried = project.join("config").join("xdk_symbols.json");
+    let carried = config.join("xdk_symbols.json");
     if carried.is_file() {
         fs::copy(&carried, &symbols)
             .or_else(|e| fail(format!("cannot copy the XDK symbols: {e}")))?;
@@ -509,7 +588,7 @@ fn lift(release: &Release, user: &Path, log: &Path) -> Result<(), Failure> {
         c.args(["-m", "tools.xdk_symbols"]).arg(&xbe)
             .arg("--cli").arg(r.join("bin/XbSymbolDatabaseCLI"))
             .arg("--out").arg(&symbols);
-        python(&mut c);
+        python(&mut c, &r.join("toolkit"));
         run(&mut c, log, "XbSymbolDatabase", |_| {})?;
     }
 
@@ -517,23 +596,21 @@ fn lift(release: &Release, user: &Path, log: &Path) -> Result<(), Failure> {
     cmd.arg(r.join("toolkit/scripts/recompile.py")).arg(&xbe)
         .arg("--work-dir").arg(user.join("pipe").join("out"))
         .arg("--project").arg(&project);
-    python(&mut cmd);
-    let seeds = project.join("config").join("seeds.json");
+    python(&mut cmd, &r.join("toolkit"));
+    let seeds = config.join("seeds.json");
     if seeds.is_file() {
         cmd.arg("--seeds").arg(&seeds);
     }
-    run(&mut cmd, log, "the translation to C", |line| {
-        // recompile.py prints "  2/4  disasm" as each stage starts.
-        let t = line.trim_start();
-        if let Some((n, rest)) = t.split_once('/') {
-            let mut words = rest.split_whitespace();
-            if let (Ok(n), Some("4")) = (n.parse::<u64>(), words.next()) {
-                if (1..=4).contains(&n) {
-                    progress("lift", n, 5, words.next().unwrap_or(""));
-                }
-            }
-        }
-    })?;
+    // An image with a folder of its own has its patches there or none: the
+    // toolkit's config/xbe_patches/<TITLEID>.json cannot say which image
+    // it is for.
+    let patches = config.join("xbe_patches.json");
+    if patches.is_file() {
+        cmd.arg("--xbe-patches").arg(&patches);
+    } else if image.config.is_some() {
+        cmd.arg("--no-xbe-patches");
+    }
+    run(&mut cmd, log, "the translation to C", lift_progress)?;
     progress("lift", 5, 5, "");
     Ok(())
 }
@@ -690,10 +767,10 @@ fn cmd_build(release: &Release, source: Option<PathBuf>) -> Result<(), Failure> 
                 "source": source, "log": log}));
 
     prepare_game(&source, &user)?;
-    let sha1 = check_disc(release, &user)?;
-    lift(release, &user, &log)?;
+    let image = check_disc(release, &user)?;
+    lift(release, &image, &user, &log)?;
     let built = build(release, &user, &log)?;
-    let exe = install(release, &user, &built, &sha1)?;
+    let exe = install(release, &user, &built, &image.sha1)?;
     emit(json!({"event": "done", "exe": exe, "game_dir": user.join("game")}));
     Ok(())
 }
@@ -783,6 +860,25 @@ mod tests {
         // Removing the mirror removes links, never what they point at.
         remove_owned(&out).unwrap();
         assert!(src.join("Data").is_dir() && src.join("default.xbe").is_file());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_release_names_its_images_old_style_or_new() {
+        let d = scratch("release");
+        fs::write(d.join("release.json"), r#"{"title_id": "4553000a", "title_name": "T",
+            "version": "1", "exe": "t",
+            "images": [{"sha1": "AB", "name": "PAL", "config": "config/pal"}],
+            "xbe_sha1": ["cd", "ab"]}"#).unwrap();
+        let r = Release::load(&d).ok().expect("loads");
+        assert_eq!(r.title_id, "4553000A");
+        assert_eq!(r.images.len(), 2, "the old list adds only what is new");
+        assert_eq!((r.images[0].sha1.as_str(), r.images[0].name.as_str()), ("ab", "PAL"));
+        assert_eq!(r.images[0].config.as_deref(), Some("config/pal"));
+        assert_eq!(r.images[1].sha1, "cd");
+        fs::write(d.join("release.json"), r#"{"title_id": "1", "title_name": "T",
+            "version": "1", "exe": "t"}"#).unwrap();
+        assert!(Release::load(&d).is_err(), "a release must name an image");
         let _ = fs::remove_dir_all(&d);
     }
 

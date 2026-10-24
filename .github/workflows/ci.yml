@@ -83,7 +83,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build pkg-config libssl-dev \
+            ninja-build pkg-config \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxss-dev libxfixes-dev libxtst-dev libxkbcommon-dev \
             libwayland-dev wayland-protocols libegl-dev libdrm-dev libgbm-dev \
@@ -133,14 +133,12 @@ jobs:
           cp "$RUNNER_TEMP"/dxc/include/dxc/*.h third_party/dxc/inc/
 
       - name: Install build dependencies
-        run: brew install ninja openssl@3
+        run: brew install ninja
 
       - name: Configure
         env:
           CFLAGS: -Werror=implicit-function-declaration
-        run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
         run: cmake --build build --parallel
@@ -153,6 +151,58 @@ jobs:
         env:
           RECOMP_MUTE: "1"
         run: ctest --test-dir build --output-on-failure
+
+  # The self-building release (docs/technical/self-build-release.md), made
+  # as a title's repository makes it on a tag: the pinned toolchain, the
+  # engine package, the builder and TimeSplitters 2's launcher. A check
+  # only: nothing is published, and no game is lifted or started.
+  release:
+    name: Self-building release (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch submodules
+        run: |
+          git submodule update --init --depth 1 \
+            third_party/SDL third_party/Vulkan-Headers \
+            third_party/volk third_party/VulkanMemoryAllocator \
+            third_party/libsamplerate third_party/miniupnp
+          git submodule update --init --recursive --depth 1 third_party/XbSymbolDatabase
+
+      # The engine is compiled by the release's zig against its own glibc
+      # headers; these are what SDL loads at run time, searched after them.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxss-dev libxfixes-dev libxtst-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libegl-dev libdrm-dev libgbm-dev \
+            libpulse-dev libasound2-dev libudev-dev \
+            libfreetype-dev libfontconfig-dev
+
+      # The whole of Microsoft's Linux release: the release carries its
+      # libdxcompiler.so.
+      - name: Fetch DXC
+        run: bash tools/linux/fetch_dxc.sh
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/downloads
+          key: release-downloads-${{ hashFiles('tools/release/fetch_toolchain.py') }}
+
+      - name: Builder tests
+        working-directory: tools/builder
+        run: cargo test --locked
+
+      - name: Make the TimeSplitters 2 release
+        run: |
+          python3 -m tools.release.make_release config/releases/timesplitters2.json \
+            --out "$RUNNER_TEMP/release/timesplitters2" --work "$RUNNER_TEMP/work" \
+            --cache "$RUNNER_TEMP/downloads" --version "ci-${GITHUB_SHA::7}" --archive
+          ls -l "$RUNNER_TEMP"/release/*.tar.xz
 
   windows:
     name: Build and test (Windows, MSVC)
