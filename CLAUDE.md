@@ -360,6 +360,12 @@ works. What to know:
   with its renderer on Linux only) and the text is FreeType with fontconfig
   (`launcher_theme_freetype.c`). `RECOMP_LAUNCHER_SHOT=<file.bmp>` writes a frame and quits,
   on macOS too.
+- **File names are case-folded (24 Oct 2026).** ext4 is case-sensitive and the Xbox is not:
+  Rainbow Six 3 opens `D:\SPLASH_int.TGA` for `Splash_INT.tga` and `d:\system\` for
+  `System\`, and stopped drawing five seconds in. `fold_case` in `kernel_path.c` gives each
+  missing component of a translated path the spelling of its case-insensitive match on disk,
+  so RS3 now reaches its training level at 60 fps. An open made relative to an open folder
+  (`RootDirectory`) is not folded yet.
 - Not yet: System Link (the network card is not built off Windows), XMV movies (FFmpeg is
   looked for only in `third_party/ffmpeg` on Linux), and Game Mode (gamescope) is untried.
 

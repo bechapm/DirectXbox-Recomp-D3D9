@@ -927,6 +927,8 @@ static int mods_is_file(const char *path)
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <dirent.h>    /* fold_case */
+#include <strings.h>   /* strcasecmp */
 
 static char s_game_dir[MAX_PATH];
 static char s_save_dir[MAX_PATH];
@@ -1103,6 +1105,68 @@ int xbox_path_game_dir_utf8(char *out, size_t n)
     return 1;
 }
 
+/*
+ * Xbox paths are case-insensitive (FATX and the disc both), and titles do not
+ * spell a name the way the disc does: Rainbow Six 3 opens D:\SPLASH_int.TGA
+ * for Splash_INT.tga and d:\system\ for System\. NTFS and APFS forgive that;
+ * ext4 and btrfs do not, so on Linux each such open failed. From byte `from`
+ * on (the guest's part of the path, never the host's base folder), each
+ * component that does not exist as spelled takes the spelling of the entry in
+ * its folder that matches it case-insensitively. The first component with no
+ * match ends the walk, so a file about to be created keeps the title's name
+ * and lands in the folder that already exists. Only a missing path pays for
+ * it: one stat when the spelling is right.
+ */
+static void fold_case(char *path, size_t from)
+{
+    struct stat st;
+    size_t len = strlen(path);
+    size_t i = from;
+
+    if (from >= len || stat(path, &st) == 0)
+        return;
+    while (i < len) {
+        size_t start, end;
+        char saved;
+        DIR *d;
+        struct dirent *e;
+        int found = 0;
+
+        while (i < len && path[i] == '/')
+            i++;
+        if (i >= len)
+            break;
+        start = i;
+        while (i < len && path[i] != '/')
+            i++;
+        end = i;
+
+        saved = path[end];
+        path[end] = '\0';
+        if (lstat(path, &st) == 0) {
+            path[end] = saved;
+            continue;
+        }
+        path[start - 1] = '\0';   /* path[start - 1] is the '/' before it */
+        d = opendir(start > 1 ? path : "/");
+        path[start - 1] = '/';
+        if (d) {
+            while ((e = readdir(d)) != NULL) {
+                if (strlen(e->d_name) == end - start &&
+                    strcasecmp(e->d_name, path + start) == 0) {
+                    memcpy(path + start, e->d_name, end - start);
+                    found = 1;
+                    break;
+                }
+            }
+            closedir(d);
+        }
+        path[end] = saved;
+        if (!found)
+            return;
+    }
+}
+
 BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
 {
     const char* remainder = NULL;
@@ -1213,6 +1277,7 @@ translate:
         } else {
             snprintf(host_path_buf, buf_size, "%s/%s", base_dir, remainder_posix);
         }
+        fold_case(host_path_buf, strlen(host_path_buf) - strlen(remainder_posix));
 
         if (s_mod_count < 0)
             mods_init();
@@ -1220,6 +1285,7 @@ translate:
             char mod_path[MAX_PATH * 2];
             struct stat st;
             snprintf(mod_path, sizeof mod_path, "%s/%s", s_mod_dirs[m], remainder_posix);
+            fold_case(mod_path, strlen(s_mod_dirs[m]) + 1);
             if (stat(mod_path, &st) == 0 && S_ISREG(st.st_mode)) {
                 fprintf(stderr, "  [MODS] %s from %s\n", xbox_path, mod_path);
                 fflush(stderr);
