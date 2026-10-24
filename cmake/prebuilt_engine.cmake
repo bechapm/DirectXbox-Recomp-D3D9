@@ -14,8 +14,8 @@
 #
 # The title then imports the libraries under their usual names instead of
 # building them, and nothing in its CMakeLists changes. The engine builds in
-# about 9 s, once; a clean TimeSplitters 2 build, with lifted code at -O1 as
-# well, went from 41 s to 27 s on a 6-core machine.
+# about 9 s, once; with clang on a 6-core machine a clean TimeSplitters 2
+# build went from 41 s to 33 s, and Turok: Evolution's from 35 s to 27 s.
 #
 # Two things are not shared. xbox_config carries the title's own widescreen
 # and timing settings (recomp_title_widescreen, recomp_title_timing), so it

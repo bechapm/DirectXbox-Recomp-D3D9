@@ -286,15 +286,18 @@ endif()
 option(XBOXRECOMP_GENERATED_WARNINGS
        "Report compiler warnings in lifted code (src/recomp/gen)" OFF)
 
-# Lifted code is optimised at -O1 off MSVC, in every configuration but Debug.
-# Most of a title's build is optimising it, and -O2/-O3 buy little there:
-# every guest memory access is volatile and every register a global, so the
-# extra passes find almost nothing to do. Measured on TimeSplitters 2 and
-# Turok with clang (see the commit that made this the default). The rest of
-# the title and the runtime keep their own flags. MSVC is left alone, being
-# unmeasured. 2 or 3 restores the old optimisation, s optimises for size.
-set(XBOXRECOMP_GENERATED_OPT "1" CACHE STRING
-    "Optimisation level for lifted code off MSVC (0, 1, 2, 3 or s)")
+# Lifted code takes the build type's optimisation (-O3 in Release) unless
+# XBOXRECOMP_LIFTED_OPT names another, off MSVC and outside Debug. -O1 builds
+# it faster at a cost in speed that depends on the title. Measured with clang
+# on a 6-core machine, lifted code only, against -O3: TimeSplitters 2 26.5 s
+# against 32.1 s to compile, but 10% slower uncapped in Siberia (344 against
+# 383 fps); Turok: Evolution no slower. -O2 compiles no faster than -O3 here.
+# So the default is the full optimisation, and -O1 is there for iteration.
+# (It was the default in #84 as XBOXRECOMP_GENERATED_OPT, renamed so build
+# folders configured then pick up this default.)
+unset(XBOXRECOMP_GENERATED_OPT CACHE)
+set(XBOXRECOMP_LIFTED_OPT "" CACHE STRING
+    "Optimisation level for lifted code off MSVC: empty for the build type's own, or 0, 1, 2, 3, s")
 
 function(xboxrecomp_generated_source_options)
     if(MSVC)
@@ -303,7 +306,10 @@ function(xboxrecomp_generated_source_options)
             list(APPEND _opts /w /we4013)
         endif()
     else()
-        set(_opts -fwrapv "$<$<NOT:$<CONFIG:Debug>>:-O${XBOXRECOMP_GENERATED_OPT}>")
+        set(_opts -fwrapv)
+        if(NOT XBOXRECOMP_LIFTED_OPT STREQUAL "")
+            list(APPEND _opts "$<$<NOT:$<CONFIG:Debug>>:-O${XBOXRECOMP_LIFTED_OPT}>")
+        endif()
         if(NOT XBOXRECOMP_GENERATED_WARNINGS)
             list(APPEND _opts -w -Werror=implicit-function-declaration)
         endif()

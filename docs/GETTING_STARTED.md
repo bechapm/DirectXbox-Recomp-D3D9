@@ -317,9 +317,13 @@ cmake -S . -B build/Release -G Ninja -DCMAKE_BUILD_TYPE=Release \
 The engine has to come from the same toolkit tree as the title, with the same
 compiler, build type and `RECOMP_ABI_CHECK`; the configure says so if not. The
 title's own widescreen and timing settings still apply: `xbox_config` is always
-built per title. On a 6-core Linux machine, with lifted code at `-O1` (the
-default off MSVC, `XBOXRECOMP_GENERATED_OPT` to change it), a clean
-TimeSplitters 2 build takes 27 s instead of 41 s, and the engine 9 s, once.
+built per title. On a 6-core Linux machine with clang, a clean TimeSplitters 2
+build takes 33 s instead of 41 s, and the engine 9 s, once.
+
+Lifted code is optimised as the build type says (`-O3` in Release). For quicker
+iteration, `-DXBOXRECOMP_LIFTED_OPT=1` (off MSVC) builds it at `-O1`: TimeSplitters
+2 then takes 27 s, but runs 10% slower uncapped; Turok runs no slower. `-O2`
+compiles no faster than `-O3`.
 Not yet with `XBOXRECOMP_MACOS_APP`.
 
 ### Running it: never from a build step

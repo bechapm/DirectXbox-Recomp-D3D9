@@ -364,10 +364,11 @@ works. What to know:
   /usr/lib/sdk/llvm22/enable.sh`. Lifted code is built with `-fwrapv` off MSVC, so signed
   overflow wraps as MSVC compiles it. A new compiler picks new instructions at MMIO sites
   as GCC did: read `undecoded access ... host insn` lines first after switching.
-  **Lifted code builds at `-O1`** off MSVC (`XBOXRECOMP_GENERATED_OPT`), and **a title can
-  import a prebuilt runtime** (`-DXBOXRECOMP_PREBUILT=<toolkit build>`,
+  **A title can import a prebuilt runtime** (`-DXBOXRECOMP_PREBUILT=<toolkit build>`,
   `cmake/prebuilt_engine.cmake`) instead of compiling its ~450 files: a clean TS2 build went
-  from 41 s to 27 s. The engine must come from the same toolkit tree, compiler, build type
+  from 41 s to 33 s. `XBOXRECOMP_LIFTED_OPT=1` builds lifted code at `-O1` (TS2 27 s) but
+  costs TS2 10% uncapped, so the default stays the build type's `-O3`; `-O2` compiles no
+  faster than `-O3`. The engine must come from the same toolkit tree, compiler, build type
   and `RECOMP_ABI_CHECK` (checked); `xbox_config` is still built per title, since it carries
   the title's widescreen and timing settings. regress.py does not use it: its two worktrees
   are two sources.
