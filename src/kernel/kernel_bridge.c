@@ -795,6 +795,7 @@ static void bridge_PsCreateSystemThreadEx(void)
  * referenced by tagged 32-bit tokens. */
 static void   bridge_write_handle(uint32_t handle_va, HANDLE h);
 static HANDLE bridge_take_handle(uint32_t token);
+static int    bridge_handle_held(HANDLE h);
 
 static void bridge_NtClose(void)
 {
@@ -814,8 +815,11 @@ static void bridge_NtClose(void)
              * layer's per-handle state is released here too: an abandoned
              * directory search, and on Windows the volume record, would
              * otherwise outlive the handle and answer for the next one
-             * opened at the same value. */
-            xbox_file_handle_closing(h);
+             * opened at the same value. Not while another token still holds
+             * the same HANDLE, which a duplicate does off Windows (see
+             * bridge_NtDuplicateObject): that state is still the duplicate's. */
+            if (!bridge_handle_held(h))
+                xbox_file_handle_closing(h);
             CloseHandle(h);
         }
     }
@@ -3959,6 +3963,45 @@ static uint32_t bridge_handle_token(HANDLE h)
     return 0;
 }
 
+/* A token of its own for h, even when h already has one: a duplicate.
+ *
+ * bridge_handle_token hands back the existing token for a HANDLE it has seen,
+ * which is right for a HANDLE published twice and wrong for a duplicate when
+ * the duplicate is the same HANDLE. Off Windows it is: win32_compat's
+ * DuplicateHandle returns the source object with its reference count raised.
+ * So the guest's "duplicate" was the source's own token, and closing the
+ * source freed the slot both of them named. Turok: Evolution duplicates each
+ * archive handle and closes the original; every archive then answered
+ * STATUS_INVALID_HANDLE, no level file was ever found, and the game sat on
+ * its loading screen asking for the first one once a frame. Two slots on one
+ * object are what the reference count is for: each close releases one. */
+static uint32_t bridge_handle_token_new(HANDLE h)
+{
+    int i;
+    if (!h || h == INVALID_HANDLE_VALUE) return 0;
+    handle_lock();
+    for (i = 1; i < BRIDGE_HANDLE_MAX; i++)
+        if (s_handle_table[i] == NULL) {
+            s_handle_table[i] = h;
+            handle_unlock();
+            return BRIDGE_HANDLE_TAG | (uint32_t)i;
+        }
+    handle_unlock();
+    fprintf(stderr, "  [BRIDGE] handle table full\n");
+    return 0;
+}
+
+/* Whether any token still holds h. */
+static int bridge_handle_held(HANDLE h)
+{
+    int i, held = 0;
+    handle_lock();
+    for (i = 1; i < BRIDGE_HANDLE_MAX && !held; i++)
+        held = s_handle_table[i] == h;
+    handle_unlock();
+    return held;
+}
+
 /* Record what kind of object a native HANDLE is, for the token that holds it.
  * Allocates the token if it does not have one yet, so callers can do this at
  * creation time without caring whether the handle has been published. */
@@ -7100,7 +7143,23 @@ static void bridge_NtDuplicateObject(void)
         g_eax = 0xC0000001u;   /* STATUS_UNSUCCESSFUL */
         return;
     }
-    bridge_write_handle(target_va, dup);
+    /* A token of its own (bridge_handle_token_new), which takes the
+     * source's file attributes with it: a duplicate of an asynchronous file is
+     * read the way the original was. */
+    {
+        uint32_t src_tok = STACK_ARG(0);
+        uint32_t tok = bridge_handle_token_new(dup);
+        uint32_t s = src_tok & BRIDGE_HANDLE_MASK, d = tok & BRIDGE_HANDLE_MASK;
+        if (tok) {
+            int tagged = (src_tok & 0xFF000000u) == BRIDGE_HANDLE_TAG &&
+                         s > 0 && s < BRIDGE_HANDLE_MAX;
+            s_handle_async[d] = tagged ? s_handle_async[s] : 0;
+            s_handle_nobuf[d] = tagged ? s_handle_nobuf[s] : 0;
+            s_handle_kind[d]  = tagged ? s_handle_kind[s] : BRIDGE_OBJ_UNKNOWN;
+            s_handle_dispatcher[d] = 0;
+        }
+        BRIDGE_MEM32(target_va) = tok;
+    }
     g_eax = 0;
 }
 

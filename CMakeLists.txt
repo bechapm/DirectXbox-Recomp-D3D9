@@ -178,6 +178,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory(tests/title_update)        # portable: title updates, the launch defaults
     add_subdirectory(tests/mmio_decode)         # x86-64 decoder; skips on other CPUs
     add_subdirectory(tests/kernel_file_rename)  # FileRenameInformation, either file backend
+    add_subdirectory(tests/kernel_handle_dup)   # NtDuplicateObject's token, either file backend
     add_subdirectory(tests/audio_dsp)           # portable: speaker fold-down, I3DL2 reverb
     add_subdirectory(tests/input_mouse)         # portable: mouse: bindings and mouse look
     if(NOT WIN32)

@@ -85,7 +85,14 @@ typedef struct Row {
     int         digits;                 /* ROW_TEXT: only 0-9 may be typed */
 } Row;
 
-static const char *const k_frame_caps[] = { "adaptive", "60", "30", "0", NULL };
+static const char *const k_frame_caps_console[] = { "adaptive", "60", "30", "0", NULL };
+/* A title whose logic keeps time (recomp_title_keeps_time) runs at the
+ * right speed above 60 too, so it is offered the common display rates.
+ * Adaptive 60 stays first, and the default. */
+static const char *const k_frame_caps_time[] = {
+    "adaptive", "60", "30", "90", "120", "144", "165", "240", "0", NULL
+};
+static const char *const *k_frame_caps = k_frame_caps_console;
 
 static RecompSettings g_settings;
 static int            g_frame_cap_index;   /* into k_frame_caps */
@@ -145,12 +152,15 @@ static int        g_sel;
 
 static const char *frame_cap_label(int i)
 {
-    switch (i) {
-    case 0: return "Adaptive (as the console)";
-    case 1: return "60 frames a second";
-    case 2: return "30 frames a second";
-    default: return "Uncapped";
-    }
+    static char label[32];
+    const char *cap = k_frame_caps[i];
+
+    if (strcmp(cap, "adaptive") == 0)
+        return "Adaptive (as the console)";
+    if (strcmp(cap, "0") == 0)
+        return "Uncapped";
+    snprintf(label, sizeof label, "%s frames a second", cap);
+    return label;
 }
 
 static void build_rows(void)
@@ -197,7 +207,10 @@ static void build_rows(void)
     r++;
 
     r->label = "Frame rate";
-    r->help  = "Adaptive paces the game the way the console did. F10 changes it"
+    r->help  = recomp_title_keeps_time()
+             ? "Adaptive paces the game at 60, as the console did. This game keeps"
+               " time, so it plays right faster too. F10 changes it while playing."
+             : "Adaptive paces the game the way the console did. F10 changes it"
                " while playing.";
     r->kind  = ROW_CHOICE; r->choices = k_frame_caps; r->ival = &g_frame_cap_index;
     r++;
@@ -706,6 +719,7 @@ static void settings_load(void)
         recomp_settings_read(path, &g_settings);
 
     g_widescreen = g_settings.widescreen;
+    k_frame_caps = recomp_title_keeps_time() ? k_frame_caps_time : k_frame_caps_console;
     g_frame_cap_index = 0;
     {
         int i;

@@ -688,17 +688,27 @@ static int           g_flip_gate_divisor = -1;      /* -1: not configured */
 static int           g_flip_gate_strict;            /* RECOMP_FPS_CAP given */
 static int           g_flip_gate_user;              /* a cap other than adaptive */
 static int           g_flip_gate_title = 1;         /* vblanks per Swap the title asked */
+/* RECOMP_FPS_CAP above the vblank rate: Swaps paced by the host clock at
+ * this many a second instead of by the vblank (flip_gate_host_paced). */
+static int           g_flip_gate_host_hz;
 
 /* What the on-screen toggle cycles through: the settings a player picks
  * between, in that order. A RECOMP_FPS_CAP outside this list still works --
  * it is simply not one of the stops, and the first press moves to the
- * first one. */
-static const struct { int divisor, strict; const char *name; } g_gate_modes[] = {
-    { 1, 0, "adaptive" },
-    { 1, 1, "60" },
-    { 2, 1, "30" },
-    { 0, 0, "off" },
+ * first one. The stops above 60 are offered only for a title whose logic
+ * keeps time (recomp_title_keeps_time); any other would run fast. */
+static const struct {
+    int divisor, strict, host_hz, keeps_time_only;
+    const char *name;
+} g_gate_modes[] = {
+    { 1, 0,   0, 0, "adaptive" },
+    { 1, 1,   0, 0, "60" },
+    { 2, 1,   0, 0, "30" },
+    { 1, 0, 120, 1, "120" },
+    { 1, 0, 144, 1, "144" },
+    { 0, 0,   0, 0, "off" },
 };
+#define GATE_MODE_COUNT ((int)(sizeof g_gate_modes / sizeof g_gate_modes[0]))
 
 /* A switch that is on unless it is turned off, or off unless turned on.
  *
@@ -2056,18 +2066,37 @@ static int flip_gate_divisor(void)
                 d = g_flip_gate_title;
             else if (strcmp(cap, "0") == 0 || strcmp(cap, "off") == 0)
                 d = 0;
-            else if (fps > 0) {
+            else if (fps > vblank) {
+                /* More Swaps than vblanks: not a divisor of the vblank but a
+                 * host clock (flip_gate_host_paced). The guest's vblank stays
+                 * at its rate, so this is right only for a title whose logic
+                 * keeps time rather than counting frames -- Turok: Evolution
+                 * steps by a QueryPerformanceCounter delta -- and runs a
+                 * frame-stepped one fast, exactly as uncapped does. It is
+                 * uncapped with a ceiling: as fast as the display can show. */
+                d = 1;
+                g_flip_gate_host_hz = fps;
+            } else if (fps > 0) {
                 d = (vblank + fps / 2) / fps;
                 if (d < 1) d = 1;
                 g_flip_gate_strict = 1;
             }
         }
         g_flip_gate_divisor = d;
-        fprintf(stderr, "  [NV2A] flip gate: %s\n",
-                d == 0 ? "off, Swap never waits (RECOMP_FPS_CAP=adaptive or 60 to pace)"
-                       : !g_flip_gate_strict && d > 1 ? "adaptive, at most one Swap per N vblanks, as the title asks"
-                       : !g_flip_gate_strict ? "adaptive, at most one Swap per vblank (RECOMP_FPS_CAP=0 to switch off)"
-                       : d == 1 ? "strict, one Swap per vblank" : "strict, one Swap per N vblanks");
+        if (g_flip_gate_host_hz)
+            fprintf(stderr, "  [NV2A] flip gate: at most %d Swaps a second by the host clock "
+                    "(RECOMP_FPS_CAP=%s, above the %d Hz vblank)%s\n",
+                    g_flip_gate_host_hz, cap, vblank,
+                    recomp_title_keeps_time()
+                        ? "; this title keeps time"
+                        : ": for a title whose logic keeps time; this one has not said it "
+                          "does (recomp_title_timing), and one that counts frames runs fast");
+        else
+            fprintf(stderr, "  [NV2A] flip gate: %s\n",
+                    d == 0 ? "off, Swap never waits (RECOMP_FPS_CAP=adaptive or 60 to pace)"
+                           : !g_flip_gate_strict && d > 1 ? "adaptive, at most one Swap per N vblanks, as the title asks"
+                           : !g_flip_gate_strict ? "adaptive, at most one Swap per vblank (RECOMP_FPS_CAP=0 to switch off)"
+                           : d == 1 ? "strict, one Swap per vblank" : "strict, one Swap per N vblanks");
         if (d > 1)
             fprintf(stderr, "  [NV2A] flip gate divisor %d (RECOMP_FPS_CAP=%s at %d Hz)\n",
                     d, cap, vblank);
@@ -2138,8 +2167,9 @@ static int flip_gate_mode_index(void)
 {
     int d = flip_gate_divisor(), i;
 
-    for (i = 0; i < (int)(sizeof g_gate_modes / sizeof g_gate_modes[0]); i++)
+    for (i = 0; i < GATE_MODE_COUNT; i++)
         if (g_gate_modes[i].divisor == d &&
+            g_gate_modes[i].host_hz == g_flip_gate_host_hz &&
             (d == 0 || g_gate_modes[i].strict == g_flip_gate_strict))
             return i;
     return -1;
@@ -2147,7 +2177,13 @@ static int flip_gate_mode_index(void)
 
 const char *xbox_Nv2aFlipGateModeName(void)
 {
+    static char host[16];
     int i = flip_gate_mode_index();
+
+    if (i < 0 && g_flip_gate_host_hz) {
+        snprintf(host, sizeof host, "%d", g_flip_gate_host_hz);
+        return host;
+    }
     return i < 0 ? "custom" : g_gate_modes[i].name;
 }
 
@@ -2155,9 +2191,15 @@ void xbox_Nv2aFlipGateCycle(void)
 {
     int i = flip_gate_mode_index();
 
-    i = i < 0 ? 0 : (i + 1) % (int)(sizeof g_gate_modes / sizeof g_gate_modes[0]);
+    if (i < 0)
+        i = 0;
+    else
+        do {
+            i = (i + 1) % GATE_MODE_COUNT;
+        } while (g_gate_modes[i].keeps_time_only && !recomp_title_keeps_time());
     g_flip_gate_divisor = g_gate_modes[i].divisor;
     g_flip_gate_strict = g_gate_modes[i].strict;
+    g_flip_gate_host_hz = g_gate_modes[i].host_hz;
     fprintf(stderr, "  [NV2A] flip gate: %s\n", g_gate_modes[i].name);
     fflush(stderr);
 }
@@ -2215,12 +2257,39 @@ static BOOL flip_gate_lend(void)
     }
 }
 
+/* The gate when RECOMP_FPS_CAP is above the vblank rate: each Swap waits
+ * until a period of the host clock has passed since the last. Adaptive, as
+ * at 60: a frame that is already late goes at once and leaves no debt for
+ * the next ones to repay. */
+static void flip_gate_host_paced(void)
+{
+    static host_timer *timer;
+    static int64_t next;
+    int64_t period = 1000000000LL / g_flip_gate_host_hz;
+    int64_t now = host_time_ns();
+
+    if (!timer)
+        timer = host_timer_create(HOST_TIMER_ANY);
+    if (next && now < next && timer) {
+        /* Dropped for the wait, as below. */
+        int guest_held = xbox_GuestLockDrop();
+        host_timer_wait_until(timer, next, 250);
+        xbox_GuestLockRestore(guest_held);
+        now = host_time_ns();
+    }
+    next = next && now - next < period ? next + period : now + period;
+}
+
 void xbox_Nv2aFlipGateArm(void)
 {
     static int said;
 
     if (flip_gate_divisor() == 0)
         return;
+    if (g_flip_gate_host_hz) {
+        flip_gate_host_paced();
+        return;
+    }
     if (!InterlockedCompareExchange(&g_flip_gate_vblanks, 0, 0))
         return;                                         /* no vblank has ever come */
     if (!g_flip_gate_event)

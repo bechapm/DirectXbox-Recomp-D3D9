@@ -324,6 +324,19 @@ recur; that is cheap and should be part of the stage.
   cadence and buys nothing. Someone who wants 144 Hz smoothness wants
   `RECOMP_VBLANK_HZ=144` and the knowledge that the title's logic speeds up with
   it. Offer it; do not pretend it is a cap.
+- **Except for a title whose logic keeps time** (Oct 2026). Turok: Evolution
+  steps its game by a `QueryPerformanceCounter` delta, and a capped and an
+  uncapped run of the same scripted walk turn and travel the same distance by
+  the same wall-clock moment (`RECOMP_HLE_D3D8_DUMP_EVERY_MS` dumps frames by
+  time, so two runs at different rates can be compared). For such a title a
+  cap above the vblank rate is meaningful: `RECOMP_FPS_CAP=120` (any value
+  above `RECOMP_VBLANK_HZ`) paces Swaps by the host clock instead of the
+  vblank, adaptively, and leaves the guest's vblank at 60. On a frame-stepped
+  title it runs the game fast, exactly as `RECOMP_FPS_CAP=0` does, and the log
+  says so. A title's project says its logic keeps time with
+  `recomp_title_timing(DELTA)` in its CMakeLists; only then does its launcher
+  offer 90 to 240 and uncapped, and F10 add 120 and 144 to its stops.
+  Adaptive 60 stays the default either way.
 - **"Match display refresh"** should *not* drive the guest vblank. Reading the
   output's refresh (`IDXGIOutput::GetDisplayModeList`, or `EnumDisplaySettings`)
   and adopting, say, 144 Hz as the console's rate speeds the game up. Adopt it

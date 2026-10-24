@@ -501,6 +501,8 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "anisotropy = %d\n"
         "\n"
         "# Frame pacing: adaptive, 60, 30, or 0 for uncapped.  [RECOMP_FPS_CAP]\n"
+        "# A game whose logic keeps time can also take more than 60, e.g. 120\n"
+        "# or 144; any other game runs fast above 60, as it does uncapped.\n"
         "frame_cap = %s\n"
         "\n"
         "# Show the frame rate from the moment the game starts. F9 toggles it\n"
@@ -790,6 +792,16 @@ int recomp_config_bool(const char *env_name, const char *key, int fallback)
 int recomp_widescreen_title_centre_2d(void)
 {
     return RECOMP_TITLE_CENTRE_2D;
+}
+
+/* recomp_title_timing(DELTA), the same way. */
+#ifndef RECOMP_TITLE_KEEPS_TIME
+#define RECOMP_TITLE_KEEPS_TIME 0
+#endif
+
+int recomp_title_keeps_time(void)
+{
+    return RECOMP_TITLE_KEEPS_TIME;
 }
 
 static RecompWideMode g_wide_mode = (RecompWideMode)(RECOMP_TITLE_WIDESCREEN);

@@ -2233,6 +2233,8 @@ static void shadow_dump_frame(void)
     static const char *prefix;
     static int configured, every = 300, written, keep_last, max_files = 24;
     static unsigned long min_draws, last_dump, from_swap;
+    static unsigned every_ms;
+    static ULONGLONG next_ms;
     static char ring[24][512];
     static char asked_prefix[1024];
     int asked;
@@ -2269,6 +2271,14 @@ static void shadow_dump_frame(void)
         e = getenv("RECOMP_HLE_D3D8_DUMP_KEEP_LAST");
         if (e && atoi(e) > 0)
             keep_last = atoi(e) > 24 ? 24 : atoi(e);
+        /* RECOMP_HLE_D3D8_DUMP_EVERY_MS=<n>: the first frame at or after
+         * every n milliseconds of wall-clock time, instead of every n swaps.
+         * Two runs at different frame rates (RECOMP_FPS_CAP=0 against 60)
+         * then dump the same moments, which is how to see whether a title's
+         * logic keeps time or counts frames. */
+        e = getenv("RECOMP_HLE_D3D8_DUMP_EVERY_MS");
+        if (e && atoi(e) > 0)
+            every_ms = (unsigned)atoi(e);
     }
     /* Asked for by hand: this frame, wherever the run has got to, whatever
      * the interval and the 24-file cap say, and beside the executable when
@@ -2289,6 +2299,14 @@ static void shadow_dump_frame(void)
                 (last_dump && g_shadow_swaps - last_dump < (unsigned long)every))
                 return;
             last_dump = g_shadow_swaps;
+        } else if (every_ms) {
+            ULONGLONG now = GetTickCount64();
+            if (!next_ms)
+                next_ms = now;
+            if (now < next_ms)
+                return;
+            while (next_ms <= now)
+                next_ms += every_ms;
         } else if ((g_shadow_swaps % (unsigned long)every) != 0) {
             return;
         }

@@ -66,5 +66,28 @@ function(recomp_title_widescreen MODE)
     endif()
 endfunction()
 
+# How the title's logic keeps time, said once in its CMakeLists:
+#
+#     recomp_title_timing(DELTA)    # steps by a measured clock delta
+#     recomp_title_timing(FRAME)    # steps once a frame or a vblank (the default)
+#
+# DELTA is a promise that the game runs at the right speed at any frame
+# rate. Check it before making it: run the same scripted input capped and
+# uncapped with RECOMP_HLE_D3D8_DUMP_EVERY_MS and compare the frames at the
+# same moments (docs/technical/resolution-and-framerate.md). A DELTA title's
+# launcher and F10 offer frame caps above 60 and uncapped; adaptive 60
+# stays the default. Turok: Evolution is one.
+function(recomp_title_timing KIND)
+    if(KIND STREQUAL "DELTA")
+        target_compile_definitions(xbox_config PRIVATE RECOMP_TITLE_KEEPS_TIME=1)
+    elseif(NOT KIND STREQUAL "FRAME")
+        message(FATAL_ERROR
+            "recomp_title_timing: \"${KIND}\" is neither DELTA nor FRAME")
+    endif()
+    if(ARGN)
+        message(FATAL_ERROR "recomp_title_timing: unexpected \"${ARGN}\"")
+    endif()
+endfunction()
+
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../tests/config_smoke
                  ${CMAKE_CURRENT_BINARY_DIR}/config_smoke)

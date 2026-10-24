@@ -124,6 +124,14 @@ int            recomp_widescreen_title_centre_2d(void);
  * resolution below knows to ask again. */
 unsigned       recomp_widescreen_title_serial(void);
 
+/* Whether the title's logic keeps time: it steps by a measured clock delta,
+ * not once per frame or per vblank, so it runs at the right speed at any
+ * frame rate. Said by recomp_title_timing(DELTA) in its CMakeLists
+ * (src/config/CMakeLists.txt). Such a title is offered frame caps above the
+ * console's 60, and uncapped, without being sped up by them; any other is
+ * offered only 60, 30 and adaptive in the launcher and on F10. */
+int            recomp_title_keeps_time(void);
+
 /* The 4:3-to-16:9 Hor+ factor, (4/3)/(16/9): the projection's x scale is
  * multiplied by it, which widens the horizontal field of view and leaves
  * the vertical alone. */
@@ -217,7 +225,7 @@ typedef struct RecompSettings {
     int  hor_plus_register;     /* RECOMP_REGISTER_AUTO, or an override: 0..191 */
     char widescreen_2d[16];     /* "auto" or "centre": where 2D goes in widescreen */
     int  anisotropy;            /* 1..16 */
-    char frame_cap[16];         /* "adaptive", "60", "30", "0" */
+    char frame_cap[16];         /* "adaptive", "60", "30", "0", or above 60 */
     int  fps_overlay;           /* 0 or 1 */
     int  fullscreen;            /* 0 or 1: borderless, on the window's monitor */
     int  vrr;                   /* 0 or 1: present for variable refresh when fullscreen */
