@@ -59,108 +59,128 @@ endif()
 
 # Option to build examples
 
-# ── SDL3 ───────────────────────────────────────────────────────
-# The host platform layer: pads (every platform, all controllers, with
-# XInput kept behind RECOMP_PAD_API=xinput on Windows), and on POSIX the
-# window and audio. Built statically from third_party/SDL (release-3.4.16,
-# `git submodule update --init third_party/SDL`) so nothing ships beside
-# the executable; a system SDL3 is the fallback when the submodule is not
-# checked out. Everything below links SDL3::SDL3.
-if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/third_party/SDL/CMakeLists.txt)
-    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-    set(SDL_STATIC ON CACHE BOOL "" FORCE)
-    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-    set(SDL_TESTS OFF CACHE BOOL "" FORCE)
-    set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
-    # Not used by the runtime; leaving them out keeps the build short.
-    set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
-    set(SDL_GPU OFF CACHE BOOL "" FORCE)
-    # Except the renderer on Linux, which is how the launcher shows its
-    # frames there (src/launcher/launcher_sdl.c): Wayland gives a window no
-    # way to show a buffer but a GPU API, and SDL's window surface falls back
-    # to the renderer for it. macOS draws through Core Animation instead.
-    if(UNIX AND NOT APPLE)
-        set(SDL_RENDER ON CACHE BOOL "" FORCE)
-    else()
-        set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+# ── The runtime, built here or imported ───────────────────────
+#
+# XBOXRECOMP_PREBUILT names a toolkit build made with --target
+# xboxrecomp_engine; a title configured with it imports those libraries
+# instead of building them (cmake/prebuilt_engine.cmake). Only xbox_config,
+# which carries the title's own settings, and the launcher function are taken
+# from here as usual.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/prebuilt_engine.cmake)
+set(XBOXRECOMP_PREBUILT "" CACHE PATH
+    "A toolkit build to take the runtime libraries from (cmake/prebuilt_engine.cmake)")
+if(XBOXRECOMP_PREBUILT AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    if(APPLE AND XBOXRECOMP_MACOS_APP)
+        message(FATAL_ERROR "XBOXRECOMP_MACOS_APP is not supported with "
+                            "XBOXRECOMP_PREBUILT yet: leave one of them off")
     endif()
-    add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
-    if(NOT TARGET SDL3::SDL3)
-        add_library(SDL3::SDL3 ALIAS SDL3-static)
-    endif()
+    xboxrecomp_import_engine("${XBOXRECOMP_PREBUILT}")
+    add_subdirectory(src/config)
+    add_subdirectory(src/launcher)
 else()
-    find_package(SDL3 CONFIG REQUIRED)
+    # ── SDL3 ───────────────────────────────────────────────────────
+    # The host platform layer: pads (every platform, all controllers, with
+    # XInput kept behind RECOMP_PAD_API=xinput on Windows), and on POSIX the
+    # window and audio. Built statically from third_party/SDL (release-3.4.16,
+    # `git submodule update --init third_party/SDL`) so nothing ships beside
+    # the executable; a system SDL3 is the fallback when the submodule is not
+    # checked out. Everything below links SDL3::SDL3.
+    if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/third_party/SDL/CMakeLists.txt)
+        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+        set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+        set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+        # Not used by the runtime; leaving them out keeps the build short.
+        set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+        set(SDL_GPU OFF CACHE BOOL "" FORCE)
+        # Except the renderer on Linux, which is how the launcher shows its
+        # frames there (src/launcher/launcher_sdl.c): Wayland gives a window no
+        # way to show a buffer but a GPU API, and SDL's window surface falls back
+        # to the renderer for it. macOS draws through Core Animation instead.
+        if(UNIX AND NOT APPLE)
+            set(SDL_RENDER ON CACHE BOOL "" FORCE)
+        else()
+            set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+        endif()
+        add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
+        if(NOT TARGET SDL3::SDL3)
+            add_library(SDL3::SDL3 ALIAS SDL3-static)
+        endif()
+    else()
+        find_package(SDL3 CONFIG REQUIRED)
+    endif()
+
+    # ── miniupnpc ─────────────────────────────────────────────────
+    # So a System Link host can ask its router to forward the port friends join
+    # on (src/net). Static, from third_party/miniupnp (miniupnpc 2.3.3, BSD-3,
+    # `git submodule update --init third_party/miniupnp`). Without it the build
+    # still works and the host says it cannot open the router.
+    if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/third_party/miniupnp/miniupnpc/CMakeLists.txt)
+        set(UPNPC_BUILD_STATIC ON CACHE BOOL "" FORCE)
+        set(UPNPC_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+        set(UPNPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(UPNPC_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
+        set(UPNPC_NO_INSTALL ON CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/miniupnp/miniupnpc EXCLUDE_FROM_ALL)
+    endif()
+
+    # ── Runtime Libraries ─────────────────────────────────────────
+
+    # Platform: Win32/NT type vocabulary + POSIX implementation of generic
+    # Win32 host primitives. Carries no Xbox semantics; provides the foundation
+    # the kernel HLE and the graphics/audio/input layers build on.
+    add_subdirectory(src/platform)
+
+    # Player settings, read by the d3d backend, the kernel and the HLE, so it
+    # comes before all three and depends on none of them.
+    add_subdirectory(src/config)
+
+    # System Link's router and address helpers, for the kernel and the launcher.
+    add_subdirectory(src/net)
+
+    # The launcher a title ships beside its game. Defines recomp_add_launcher
+    # for a title's CMakeLists to call; builds nothing on its own.
+    add_subdirectory(src/launcher)
+
+    # Core: Xbox kernel replacement (memory layout, file I/O, threading, sync)
+    add_subdirectory(src/kernel)
+
+    # Graphics: D3D8 → D3D11 compatibility layer
+    add_subdirectory(src/d3d)
+
+    # Audio: DirectSound → software mixer compatibility
+    add_subdirectory(src/audio)
+
+    # Audio: MCPX APU hardware emulation (voice processor, DSP)
+    add_subdirectory(src/apu)
+
+    # GPU: NV2A hardware emulation (register handlers, MMIO, push buffer)
+    add_subdirectory(src/nv2a)
+
+    # USB: MCPX OHCI host controllers. A title's XAPI is statically linked and
+    # drives these registers directly, so a pad only exists if they do.
+    add_subdirectory(src/usb)
+
+    # Input: Xbox gamepad → XInput
+    add_subdirectory(src/input)
+
+    # Shared FMV player (Media Foundation -> D3D8 texture)
+    add_subdirectory(src/video)
+
+    # The host shell off Windows: the main-thread loop and the game window (SDL3).
+    if(NOT WIN32)
+        add_subdirectory(src/host)
+    endif()
+
+    # XDK functions replaced by name (tools/recomp/hle.py)
+    add_subdirectory(src/hle)
+
+    # Frame replay tool: replays a D3D8 capture into the host renderer with no
+    # game running (src/hle/d3d8_capture.h). Windowless off Windows.
+    add_subdirectory(src/replay)
 endif()
-
-# ── miniupnpc ─────────────────────────────────────────────────
-# So a System Link host can ask its router to forward the port friends join
-# on (src/net). Static, from third_party/miniupnp (miniupnpc 2.3.3, BSD-3,
-# `git submodule update --init third_party/miniupnp`). Without it the build
-# still works and the host says it cannot open the router.
-if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/third_party/miniupnp/miniupnpc/CMakeLists.txt)
-    set(UPNPC_BUILD_STATIC ON CACHE BOOL "" FORCE)
-    set(UPNPC_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(UPNPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(UPNPC_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-    set(UPNPC_NO_INSTALL ON CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/miniupnp/miniupnpc EXCLUDE_FROM_ALL)
-endif()
-
-# ── Runtime Libraries ─────────────────────────────────────────
-
-# Platform: Win32/NT type vocabulary + POSIX implementation of generic
-# Win32 host primitives. Carries no Xbox semantics; provides the foundation
-# the kernel HLE and the graphics/audio/input layers build on.
-add_subdirectory(src/platform)
-
-# Player settings, read by the d3d backend, the kernel and the HLE, so it
-# comes before all three and depends on none of them.
-add_subdirectory(src/config)
-
-# System Link's router and address helpers, for the kernel and the launcher.
-add_subdirectory(src/net)
-
-# The launcher a title ships beside its game. Defines recomp_add_launcher
-# for a title's CMakeLists to call; builds nothing on its own.
-add_subdirectory(src/launcher)
-
-# Core: Xbox kernel replacement (memory layout, file I/O, threading, sync)
-add_subdirectory(src/kernel)
-
-# Graphics: D3D8 → D3D11 compatibility layer
-add_subdirectory(src/d3d)
-
-# Audio: DirectSound → software mixer compatibility
-add_subdirectory(src/audio)
-
-# Audio: MCPX APU hardware emulation (voice processor, DSP)
-add_subdirectory(src/apu)
-
-# GPU: NV2A hardware emulation (register handlers, MMIO, push buffer)
-add_subdirectory(src/nv2a)
-
-# USB: MCPX OHCI host controllers. A title's XAPI is statically linked and
-# drives these registers directly, so a pad only exists if they do.
-add_subdirectory(src/usb)
-
-# Input: Xbox gamepad → XInput
-add_subdirectory(src/input)
-
-# Shared FMV player (Media Foundation -> D3D8 texture)
-add_subdirectory(src/video)
-
-# The host shell off Windows: the main-thread loop and the game window (SDL3).
-if(NOT WIN32)
-    add_subdirectory(src/host)
-endif()
-
-# XDK functions replaced by name (tools/recomp/hle.py)
-add_subdirectory(src/hle)
-
-# Frame replay tool: replays a D3D8 capture into the host renderer with no
-# game running (src/hle/d3d8_capture.h). Windowless off Windows.
-add_subdirectory(src/replay)
 
 # ── Tests ─────────────────────────────────────────────────────
 
@@ -227,6 +247,11 @@ target_link_libraries(xboxrecomp INTERFACE
     xbox_hle
 )
 
+# The toolkit built on its own is an engine a title can import.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    xboxrecomp_export_engine()
+endif()
+
 # ── Lifted code compiles without warnings ─────────────────────
 #
 # A title's lifted code (src/recomp/gen/*.c) is machine output, tens of MB
@@ -249,21 +274,46 @@ target_link_libraries(xboxrecomp INTERFACE
 # when its targets exist. A source counts as generated when it sits in a
 # src/recomp/gen/ directory, which is where tools/recomp writes it.
 # -DXBOXRECOMP_GENERATED_WARNINGS=ON shows them again, for lifter work.
+#
+# Lifted code also gets -fwrapv off MSVC, with warnings on or off. The lifter
+# writes x86 arithmetic as C arithmetic on int32_t -- imul is
+# `(uint32_t)((int32_t)a * (int32_t)b)` -- and guest code overflows those all
+# the time. Signed overflow is undefined in C: MSVC compiles it as the
+# wrap-around x86 gives, but GCC and clang may assume it never happens and
+# drop or reorder the arithmetic around it. -fwrapv makes it wrap on every
+# host, so a title computes on Linux and macOS what it computes on Windows.
+# Measured on TimeSplitters 2 with clang, it costs no compile time.
 option(XBOXRECOMP_GENERATED_WARNINGS
        "Report compiler warnings in lifted code (src/recomp/gen)" OFF)
 
-function(xboxrecomp_quiet_generated_sources)
-    if(XBOXRECOMP_GENERATED_WARNINGS)
-        return()
-    endif()
+# Lifted code is optimised at -O1 off MSVC, in every configuration but Debug.
+# Most of a title's build is optimising it, and -O2/-O3 buy little there:
+# every guest memory access is volatile and every register a global, so the
+# extra passes find almost nothing to do. Measured on TimeSplitters 2 and
+# Turok with clang (see the commit that made this the default). The rest of
+# the title and the runtime keep their own flags. MSVC is left alone, being
+# unmeasured. 2 or 3 restores the old optimisation, s optimises for size.
+set(XBOXRECOMP_GENERATED_OPT "1" CACHE STRING
+    "Optimisation level for lifted code off MSVC (0, 1, 2, 3 or s)")
+
+function(xboxrecomp_generated_source_options)
     if(MSVC)
-        set(_opts /w /we4013)
+        set(_opts)
+        if(NOT XBOXRECOMP_GENERATED_WARNINGS)
+            list(APPEND _opts /w /we4013)
+        endif()
     else()
-        set(_opts -w -Werror=implicit-function-declaration)
+        set(_opts -fwrapv "$<$<NOT:$<CONFIG:Debug>>:-O${XBOXRECOMP_GENERATED_OPT}>")
+        if(NOT XBOXRECOMP_GENERATED_WARNINGS)
+            list(APPEND _opts -w -Werror=implicit-function-declaration)
+        endif()
     endif()
     get_property(_targets DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(_t IN LISTS _targets)
         get_target_property(_type ${_t} TYPE)
+        if(_type STREQUAL "EXECUTABLE" AND TARGET xboxrecomp_engine_refresh)
+            add_dependencies(${_t} xboxrecomp_engine_refresh)
+        endif()
         if(_type STREQUAL "INTERFACE_LIBRARY" OR _type STREQUAL "UTILITY")
             continue()
         endif()
@@ -280,19 +330,42 @@ function(xboxrecomp_quiet_generated_sources)
                 list(APPEND _gen "${_abs}")
             endif()
         endforeach()
-        if(_gen)
+        if(_gen AND _opts)
             set_property(SOURCE ${_gen} DIRECTORY "${_dir}"
                          APPEND PROPERTY COMPILE_OPTIONS ${_opts})
             list(LENGTH _gen _n)
-            message(STATUS "xboxrecomp: ${_t}: ${_n} lifted sources build "
-                           "without warnings (XBOXRECOMP_GENERATED_WARNINGS=ON "
-                           "to see them)")
+            string(JOIN " " _shown ${_opts})
+            string(REGEX REPLACE "\\$<\\$<NOT:\\$<CONFIG:Debug>>:([^>]*)>" "\\1 (not in Debug)"
+                   _shown "${_shown}")
+            if(XBOXRECOMP_GENERATED_WARNINGS)
+                set(_hint "")
+            else()
+                set(_hint " (XBOXRECOMP_GENERATED_WARNINGS=ON to see their warnings)")
+            endif()
+            message(STATUS "xboxrecomp: ${_t}: ${_n} lifted sources build with "
+                           "${_shown}${_hint}")
         endif()
     endforeach()
 endfunction()
 
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
-                   CALL xboxrecomp_quiet_generated_sources)
+                   CALL xboxrecomp_generated_source_options)
+endif()
+
+# ── Lifted code compiles about three times faster with clang ──
+#
+# Measured on TimeSplitters 2's 55 lifted files (53 MB of C) on a 6-core
+# Linux machine: GCC 15 -O2 90 s, clang 22 -O2 28 s, with smaller code from
+# clang. The time is optimisation spread over dozens of passes, not parsing
+# or headers, so no flag closes the gap. macOS already builds with clang;
+# on Linux the compiler is whatever CC/CXX named at the first configure, and
+# scripts/compat_matrix.py (regress.py, the matrix) picks clang when it is on
+# PATH. Say so once, at configure time, when a Linux build has GCC instead.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID STREQUAL "GNU"
+   AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    message(NOTICE "xboxrecomp: lifted code builds about 3x faster with clang "
+                   "than with GCC. For a fresh build directory: CC=clang "
+                   "CXX=clang++ (tools/linux/install_deps.sh installs them).")
 endif()
 

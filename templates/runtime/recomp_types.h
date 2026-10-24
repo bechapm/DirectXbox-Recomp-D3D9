@@ -59,7 +59,7 @@
  * Nothing reported it because generated code is compiled with /w (see the game
  * CMakeLists) -- MSVC's C4013 was emitted and discarded. Same failure as the
  * missing stdlib.h in kernel_bridge.c, in a hotter path. Generated code is
- * still built with warnings off (xboxrecomp_quiet_generated_sources in the
+ * still built with warnings off (xboxrecomp_generated_source_options in the
  * top-level CMakeLists), but with implicit declaration kept as an error. */
 #include <math.h>
 #if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)

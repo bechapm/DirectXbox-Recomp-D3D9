@@ -11,7 +11,7 @@ only about building and running the *game*:
 | | Pipeline | Game build | Graphics backend |
 |---|---|---|---|
 | **Windows 10/11** | yes | MSVC | D3D11 (default) or Vulkan, the complete path |
-| **Linux** | yes | GCC/Clang | Vulkan, the same renderer, on X11 or Wayland; TimeSplitters 2 runs (x86-64, SteamOS) |
+| **Linux** | yes | Clang (GCC works, 3x slower) | Vulkan, the same renderer, on X11 or Wayland; TimeSplitters 2 runs (x86-64, SteamOS) |
 | **macOS** | yes (Apple Silicon) | Clang | Vulkan on MoltenVK, the same renderer; TimeSplitters 2 and BLiNX run |
 
 Every platform runs the same renderer (`src/d3d`, through `rhi.h`); only the
@@ -21,11 +21,16 @@ still where titles are proven first.
 - **Python 3.10+** with `capstone` installed (`pip install capstone`)
 - **CMake 3.20+**
 - A C compiler: **Visual Studio 2022** (MSVC, C/C++ desktop workload) on
-  Windows; GCC or Clang elsewhere
+  Windows; Clang elsewhere. GCC builds the same thing on Linux, but lifted
+  code takes it about three times as long (TimeSplitters 2: 90 s against
+  28 s), so give a fresh build directory `CC=clang CXX=clang++`.
+  `scripts/compat_matrix.py` and `scripts/regress.py` do that themselves when
+  clang is on `PATH`
 - **Linux**: `bash tools/linux/install_deps.sh` installs the system libraries
-  (apt/pacman/dnf, needs sudo; on SteamOS it says how to build in the
-  Freedesktop SDK Flatpak instead), and `bash tools/linux/fetch_dxc.sh` puts
-  DXC, the shader compiler no distribution packages, in `third_party/dxc`.
+  and clang (apt/pacman/dnf, needs sudo; on SteamOS it says how to build in
+  the Freedesktop SDK Flatpak instead, with its LLVM extension for clang),
+  and `bash tools/linux/fetch_dxc.sh` puts DXC, the shader compiler no
+  distribution packages, in `third_party/dxc`.
   The Vulkan loader and drivers are the desktop's own (Mesa)
 - **macOS**: the [Vulkan SDK](https://vulkan.lunarg.com/) (MoltenVK, the loader,
   DXC). Installed system-wide it is found on its own; otherwise set `VULKAN_SDK`
@@ -291,6 +296,31 @@ them into your `.exe`. If you get libraries and no `.exe`, you are building the
 toolkit's `CMakeLists.txt` instead of your project's.
 
 **It will crash.** That's expected and normal. The stderr log tells you what happened.
+
+### Building the runtime once (optional)
+
+Every title builds the same runtime libraries, about 450 files. Build them once
+and point titles at that build, and a title compiles only its own code:
+
+```bash
+# Once, and again whenever you like (titles bring it up to date themselves)
+cmake -S <toolkit> -B <toolkit>/build-engine -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build <toolkit>/build-engine --target xboxrecomp_engine
+
+# A title's first configure
+cmake -S . -B build/Release -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+      -DXBOXRECOMP_PREBUILT=<toolkit>/build-engine
+```
+
+The engine has to come from the same toolkit tree as the title, with the same
+compiler, build type and `RECOMP_ABI_CHECK`; the configure says so if not. The
+title's own widescreen and timing settings still apply: `xbox_config` is always
+built per title. On a 6-core Linux machine, with lifted code at `-O1` (the
+default off MSVC, `XBOXRECOMP_GENERATED_OPT` to change it), a clean
+TimeSplitters 2 build takes 27 s instead of 41 s, and the engine 9 s, once.
+Not yet with `XBOXRECOMP_MACOS_APP`.
 
 ### Running it: never from a build step
 

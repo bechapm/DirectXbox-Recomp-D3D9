@@ -124,13 +124,30 @@ def title_exe(project, name):
                                              else f"{name}_recomp")
 
 
+def compiler_args():
+    """clang for a Linux build when it is on PATH and CC/CXX name nothing.
+
+    Lifted code compiles about three times faster with clang than with GCC
+    (TimeSplitters 2: 28 s against 90 s for its 55 files), which is most of a
+    regression pass's build time. Linux only: macOS builds with Apple's clang
+    already, and a Homebrew clang earlier on PATH must not displace it. CMake
+    takes the compiler at a build directory's first configure only."""
+    if not sys.platform.startswith("linux"):
+        return []
+    if os.environ.get("CC") or os.environ.get("CXX"):
+        return []
+    if shutil.which("clang") and shutil.which("clang++"):
+        return ["-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
+    return []
+
+
 def configure_cmd(project):
     """The first configure of a title's build, or None on Windows, whose
     builds are configured by hand (the Visual Studio generator)."""
     if WINDOWS:
         return None
     return [find_cmake(), "-S", str(project), "-B", str(build_dir(project)),
-            "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"]
+            "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", *compiler_args()]
 
 
 def build_cmd(project, name):
