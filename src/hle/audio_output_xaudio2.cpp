@@ -14,6 +14,12 @@
 #include <xaudio2.h>
 #include <xaudio2fx.h>
 #include <xapofx.h>
+#if defined(__MINGW32__)
+#include "xaudio2_mingw.h"      /* what MinGW's two headers above leave out */
+#define XR_FX_MASTERING_LIMITER XR_CLSID_FXMasteringLimiter
+#else
+#define XR_FX_MASTERING_LIMITER __uuidof(FXMasteringLimiter)
+#endif
 
 #include <atomic>
 #include <mutex>
@@ -498,7 +504,7 @@ extern "C" void recomp_audio_output_initialize(void)
             IUnknown *fx = nullptr;
             FXMASTERINGLIMITER_PARAMETERS params{FXMASTERINGLIMITER_DEFAULT_RELEASE,
                                                  FXMASTERINGLIMITER_DEFAULT_LOUDNESS};
-            if (SUCCEEDED(CreateFX(__uuidof(FXMasteringLimiter), &fx, &params, sizeof params))) {
+            if (SUCCEEDED(CreateFX(XR_FX_MASTERING_LIMITER, &fx, &params, sizeof params))) {
                 XAUDIO2_EFFECT_DESCRIPTOR effect{fx, TRUE, master_channels};
                 XAUDIO2_EFFECT_CHAIN chain{1, &effect};
                 const bool on = SUCCEEDED(master->SetEffectChain(&chain));

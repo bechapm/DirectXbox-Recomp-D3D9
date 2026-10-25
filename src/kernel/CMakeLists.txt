@@ -62,6 +62,11 @@ if(WIN32)
     # and psapi for the sampling profiler's symbol and module lookups.
     # ws2_32 for the System Link tunnel's UDP socket (xbox_net_udp.c).
     target_link_libraries(xbox_kernel PUBLIC platform kernel32 bcrypt winmm dbghelp psapi ws2_32)
+    # WaitOnAddress: MSVC takes Synchronization.lib from a #pragma in
+    # kernel_bridge.c, which MinGW ignores; MinGW has it as its API set.
+    if(NOT MSVC)
+        target_link_libraries(xbox_kernel PUBLIC api-ms-win-core-synch-l1-2-0)
+    endif()
 else()
     # POSIX: the platform layer (host primitives). The Xc* crypto is the
     # portable software in kernel_crypto.c and xbox_crypto_soft.h, so no

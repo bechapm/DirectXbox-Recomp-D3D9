@@ -59,7 +59,13 @@ target_link_libraries(xbox_hle PUBLIC xbox_input)
 # shell (src/host) elsewhere.
 target_link_libraries(xbox_hle PRIVATE xbox_d3d8 xbox_video)
 if(WIN32)
-    target_link_libraries(xbox_hle PRIVATE xaudio2 ole32 xinput9_1_0 user32)
+    # MSVC's xaudio2.lib is XAudio2 2.9; MinGW names that one by its DLL.
+    if(MSVC)
+        target_link_libraries(xbox_hle PRIVATE xaudio2)
+    else()
+        target_link_libraries(xbox_hle PRIVATE xaudio2_9)
+    endif()
+    target_link_libraries(xbox_hle PRIVATE ole32 xinput9_1_0 user32)
 else()
     # The host shell: the main-thread loop a title's main.c runs, and the
     # game window. PUBLIC so a title gets it through this library.

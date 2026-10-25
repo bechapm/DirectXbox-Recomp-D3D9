@@ -269,6 +269,9 @@ static int sample_thread(SampleThread *t, uintptr_t *frames, int max_frames)
     ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     if (GetThreadContext(t->handle, &ctx)) {
         frames[n++] = (uintptr_t)ctx.Rip;
+#if defined(_MSC_VER)
+        /* Only where there is SEH to catch a walk that runs off the stack:
+         * a MinGW build (a self-building release) samples the pc alone. */
         __try {
             while (n < max_frames && ctx.Rip) {
                 DWORD64 image_base = 0;
@@ -291,6 +294,7 @@ static int sample_thread(SampleThread *t, uintptr_t *frames, int max_frames)
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             /* the walk ran off the stack; keep what was read */
         }
+#endif
     }
     ResumeThread(t->handle);
     return n;

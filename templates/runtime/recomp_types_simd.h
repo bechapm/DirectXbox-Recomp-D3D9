@@ -24,10 +24,10 @@
  * giving 0x80000000. x86 hosts use the instructions themselves. */
 #if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
 #include <emmintrin.h>
-static __forceinline int32_t recomp_cvtss2si(float v)   { return _mm_cvtss_si32(_mm_set_ss(v)); }
-static __forceinline int32_t recomp_cvttss2si(float v)  { return _mm_cvttss_si32(_mm_set_ss(v)); }
-static __forceinline int32_t recomp_cvtsd2si(double v)  { return _mm_cvtsd_si32(_mm_set_sd(v)); }
-static __forceinline int32_t recomp_cvttsd2si(double v) { return _mm_cvttsd_si32(_mm_set_sd(v)); }
+static RECOMP_FORCEINLINE int32_t recomp_cvtss2si(float v)   { return _mm_cvtss_si32(_mm_set_ss(v)); }
+static RECOMP_FORCEINLINE int32_t recomp_cvttss2si(float v)  { return _mm_cvttss_si32(_mm_set_ss(v)); }
+static RECOMP_FORCEINLINE int32_t recomp_cvtsd2si(double v)  { return _mm_cvtsd_si32(_mm_set_sd(v)); }
+static RECOMP_FORCEINLINE int32_t recomp_cvttsd2si(double v) { return _mm_cvttsd_si32(_mm_set_sd(v)); }
 #else
 static inline int32_t recomp_f2i32_indef(double rounded)
 {

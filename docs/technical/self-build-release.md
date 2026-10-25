@@ -3,8 +3,8 @@
 A per-game download with no game code in it. The player unpacks it and starts
 the launcher, which asks for their own copy of the disc (an image or a folder),
 recompiles the game from it on their machine, and then shows the usual settings
-and Play. Linux and macOS (Apple Silicon) so far; Windows follows. The Mac
-release and what differs on it are in [macOS](#macos).
+and Play. Linux, macOS (Apple Silicon) and Windows. What differs on the Mac
+and on Windows is in [macOS](#macos) and [Windows](#windows).
 
 Lifted C is derived from game code, so it can only be made on the player's
 machine from their own disc. Everything else the build needs travels with the
@@ -294,6 +294,68 @@ Rainbow Six 3's own lift (`scripts/release_lift.py`) undoes a hard-drive
 copy's patches before lifting, as its desk build does, so its release accepts
 both the disc's `default.xbe` and a hard-drive copy's.
 
+## Windows
+
+A Windows release is a folder like Linux's, with `<name>.exe` as the launcher,
+published as `<name>-<version>-windows-x86_64.zip`, for 64-bit Windows 10 or
+11 with nothing installed: not Visual Studio, not a redistributable. The
+player's folder is `%LOCALAPPDATA%\xboxrecomp\builds\<TITLEID>`.
+
+**The compiler.** zig again, for `x86_64-windows-gnu`: MinGW-w64's headers and
+import libraries, and the UCRT every Windows 10 has, so the game imports
+only Windows' own DLLs (Direct3D 11, D3DCompiler_47, XAudio2 2.9, XInput 1.4,
+Media Foundation, the UCRT). The renderer is Direct3D 11, so a Windows release
+carries no DXC. Everything is built with zig -- the engine, the launcher, the
+player's game -- except the builder, which Cargo links with Visual Studio's
+linker on CI, with the C runtime linked in (`+crt-static`).
+
+The engine needed little for MinGW:
+
+- `xbox_winnt.h` defined `__debugbreak` for every compiler but MSVC, and
+  MinGW declares it itself; `kernel_path.c` keeps `kernel.h`'s `KernelMode`
+  macro out of `shlobj.h`, which reaches a member of that name in MinGW.
+- MinGW's `xaudio2fx.h` and `xapofx.h` (from Wine) have no parameter blocks,
+  SDK creators or I3DL2 conversion: `src/hle/xaudio2_mingw.h` declares them
+  (XAudio2 2.9's layouts) and carries FAudio's `ReverbConvertI3DL2ToNative`
+  (zlib). XAudio2_9.dll exports the rest.
+- MinGW names import libraries after their DLLs: `cmake/mingw_libs.cmake`
+  makes `xinput` and `d3dcompiler` targets for `xinput1_4` and
+  `d3dcompiler_47`, so the titles' own CMakeLists (which say `xinput`) are
+  unchanged; `xaudio2_9` and the WaitOnAddress API set are named outright.
+- MinGW defines `__forceinline` as `extern inline`, which a static function
+  cannot be: the lifted code's runtime headers use `RECOMP_FORCEINLINE`.
+- `RECOMP_SAMPLE`'s stack walk needs SEH, which MinGW does not have: there
+  it samples the pc alone.
+
+**The wrappers.** CMake's compiler can be no shell script on Windows, so the
+toolchain's `zcc.exe`, `zc++.exe`, `zar.exe`, `zranlib.exe` and `zrc.exe` are
+one small program (`tools/release/zigwrap.c`, built by the release's zig) that
+runs `zig.exe` with its name's arguments and the caller's, unchanged but for
+`-mwindows`, which zig ignores and becomes `-Wl,--subsystem,windows` (or the
+game would open with a console). `zrc` is `zig rc`, CMake's resource compiler
+for the executables' icon.
+
+**The builder** links a folder's directories with junctions (a symbolic link
+needs Developer Mode or an administrator) and hard-links its files, copying
+one on another drive; strips `\\?\` from the paths it hands the tools, and
+gives CMake forward slashes; starts every tool with no console window; and
+checks a stale lock with `OpenProcess`.
+
+**The launcher** (`launcher_win32.c`) runs the builder in a job object that
+kills everything in it when closed, so Cancel, or closing the window, stops
+the compilers too, and reads its output through a pipe it peeks at; it asks
+for the disc with the shell's own open dialog (`IFileOpenDialog`).
+
+**Not signed.** Windows may say it protected the PC the first time the
+launcher starts (SmartScreen): More info, Run anyway. The tools it starts are
+not asked about.
+
+**Tested** only as far as a Mac can: the engine, the launcher and a whole
+TimeSplitters 2 build cross-compiled with the release's zig, importing only
+system DLLs, and the builder type-checked for Windows. CI builds the release
+on `windows-2022` and runs the builder's tests there (the junction mirror
+included). A player-side build and a run need a Windows machine.
+
 ## Testing without anyone's screen
 
 - `SDL_VIDEODRIVER=offscreen RECOMP_LAUNCHER_SHOT=<file.bmp>
@@ -315,7 +377,9 @@ both the disc's `default.xbe` and a hard-drive copy's.
 
 ## Not done yet
 
-- Windows releases; the Win32 launcher's job and picker.
+- Windows: a player-side build and a run on a real machine (above); the
+  launcher passes paths in the system's ANSI code page, so a path with
+  characters outside it is not reachable.
 - macOS: no Developer ID signing or notarisation, and the Open Anyway path
   untested (above). Intel Macs are not built for.
 - The desktop file dialogs are built but not exercised here (offscreen has

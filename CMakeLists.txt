@@ -66,6 +66,7 @@ endif()
 # instead of building them (cmake/prebuilt_engine.cmake). Only xbox_config,
 # which carries the title's own settings, and the launcher function are taken
 # from here as usual.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/mingw_libs.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/prebuilt_engine.cmake)
 set(XBOXRECOMP_PREBUILT "" CACHE PATH
     "A toolkit build to take the runtime libraries from (cmake/prebuilt_engine.cmake)")

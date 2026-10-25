@@ -509,8 +509,16 @@ int xbox_path_is_volume_root(const char *xbox_path)
 #if defined(_WIN32)
 /* ======================================================================== */
 
+/* kernel.h's processor modes are macros, and MinGW's shlobj.h reaches
+ * rpcasync.h, which has a member called KernelMode. */
+#pragma push_macro("KernelMode")
+#pragma push_macro("UserMode")
+#undef KernelMode
+#undef UserMode
 #include <shlobj.h>
 #include <winioctl.h>
+#pragma pop_macro("UserMode")
+#pragma pop_macro("KernelMode")
 
 static WCHAR s_game_dir[MAX_PATH];
 static WCHAR s_save_dir[MAX_PATH];

@@ -247,6 +247,50 @@ jobs:
             --cache "$RUNNER_TEMP/downloads" --version "ci-${GITHUB_SHA::7}" --archive
           ls -l "$RUNNER_TEMP"/release/*.tar.xz
 
+  # And on Windows: zig builds everything for MinGW (the player needs no
+  # Visual Studio), against the UCRT and Direct3D 11 every Windows 10 has.
+  # The builder is the one thing built with Visual Studio here.
+  release-windows:
+    name: Self-building release (Windows)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch submodules
+        run: |
+          git submodule update --init --depth 1 \
+            third_party/SDL third_party/Vulkan-Headers \
+            third_party/volk third_party/VulkanMemoryAllocator \
+            third_party/libsamplerate third_party/miniupnp
+          git submodule update --init --recursive --depth 1 third_party/XbSymbolDatabase
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/downloads
+          key: release-downloads-windows-${{ hashFiles('tools/release/fetch_toolchain.py', 'tools/release/zigwrap.c') }}
+
+      - name: Builder tests
+        working-directory: tools/builder
+        run: cargo test --locked
+
+      - name: Make the TimeSplitters 2 release
+        run: |
+          python -m tools.release.make_release config/releases/timesplitters2.json \
+            --out "$RUNNER_TEMP/release/timesplitters2" --work "$RUNNER_TEMP/work" \
+            --cache "$RUNNER_TEMP/downloads" --version "ci-${GITHUB_SHA::7}" --archive
+          ls -l "$RUNNER_TEMP"/release/*.zip
+
+      # Kept for a few days, to try on a Windows machine: it holds no game
+      # code, only the tools and TimeSplitters 2's project.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timesplitters2-windows-x86_64
+          path: ${{ runner.temp }}/release/*.zip
+          retention-days: 3
+
   windows:
     name: Build and test (Windows, MSVC)
     runs-on: windows-2022

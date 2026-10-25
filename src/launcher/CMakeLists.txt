@@ -124,7 +124,8 @@ function(recomp_add_launcher TARGET GAME_EXE)
     target_link_libraries(${TARGET} PRIVATE xbox_config xbox_input xbox_net)
     if(WIN32)
         # The rest is in every Windows.
-        target_link_libraries(${TARGET} PRIVATE user32 gdi32)
+        # ole32 for the open dialog a self-building release asks with.
+        target_link_libraries(${TARGET} PRIVATE user32 gdi32 ole32)
     elseif(APPLE)
         target_link_libraries(${TARGET} PRIVATE SDL3::SDL3
             "-framework CoreText" "-framework CoreGraphics"

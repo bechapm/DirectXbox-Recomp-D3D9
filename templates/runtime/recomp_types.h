@@ -70,6 +70,13 @@
 #if !defined(_MSC_VER) && !defined(__forceinline)
 #define __forceinline inline __attribute__((always_inline))
 #endif
+/* What these headers use: not __forceinline itself, which MinGW's headers
+ * define as extern inline, and so not something a static function can be. */
+#if defined(_MSC_VER)
+#define RECOMP_FORCEINLINE __forceinline
+#else
+#define RECOMP_FORCEINLINE inline __attribute__((always_inline))
+#endif
 
 /* Guest debug output: INT 2D, the Xbox kernel debug trap.
  *
@@ -256,21 +263,21 @@ extern uint32_t g_xbox_code_hi;
  * A guest locked op that straddles one faults as SIGBUS at the lifted
  * instruction. x86 has no such limit (a split lock). None has been seen. */
 #if defined(_MSC_VER)
-static __forceinline int RECOMP_ATOMIC_CASV32(volatile uint32_t *p, uint32_t *e, uint32_t d)
+static RECOMP_FORCEINLINE int RECOMP_ATOMIC_CASV32(volatile uint32_t *p, uint32_t *e, uint32_t d)
 {
     uint32_t o = (uint32_t)_InterlockedCompareExchange((volatile long *)p, (long)d, (long)*e);
     if (o == *e) return 1;
     *e = o;
     return 0;
 }
-static __forceinline int RECOMP_ATOMIC_CASV16(volatile uint16_t *p, uint16_t *e, uint16_t d)
+static RECOMP_FORCEINLINE int RECOMP_ATOMIC_CASV16(volatile uint16_t *p, uint16_t *e, uint16_t d)
 {
     uint16_t o = (uint16_t)_InterlockedCompareExchange16((volatile short *)p, (short)d, (short)*e);
     if (o == *e) return 1;
     *e = o;
     return 0;
 }
-static __forceinline int RECOMP_ATOMIC_CASV8(volatile uint8_t *p, uint8_t *e, uint8_t d)
+static RECOMP_FORCEINLINE int RECOMP_ATOMIC_CASV8(volatile uint8_t *p, uint8_t *e, uint8_t d)
 {
     uint8_t o = (uint8_t)_InterlockedCompareExchange8((volatile char *)p, (char)d, (char)*e);
     if (o == *e) return 1;

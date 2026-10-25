@@ -21,6 +21,10 @@
 #include <string.h>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>        /* game_intact: a release's junctions */
 #define strcasecmp _stricmp
 #else
 #include <dirent.h>
@@ -558,6 +562,18 @@ static int release_user_dir(uint32_t id, char *out, size_t n)
     const char *data = getenv("XDG_DATA_HOME");
     const char *home = getenv("HOME");
 
+#if defined(_WIN32)
+    const char *local = getenv("LOCALAPPDATA");
+
+    (void)data; (void)home;
+    if (dir && *dir)
+        snprintf(out, n, "%s\\%08X", dir, id);
+    else if (local && *local)
+        snprintf(out, n, "%s\\xboxrecomp\\builds\\%08X", local, id);
+    else
+        return 0;
+    return 1;
+#endif
     if (dir && *dir)
         snprintf(out, n, "%s/%08X", dir, id);
 #if defined(__APPLE__)
@@ -576,13 +592,16 @@ static int release_user_dir(uint32_t id, char *out, size_t n)
 /* Whether the game folder still reaches every file. A folder the player
  * picked is linked, not copied (tools/builder, mirror_folder), so moving or
  * deleting it leaves links to nothing; the builder's game_intact is the same
- * test. Windows has no release yet, so there only default.xbe is looked
- * for. */
+ * test. On Windows the folders are junctions, and opening one follows it. */
 static int game_intact(void)
 {
     char path[LAUNCHER_PATH + 300];
     FILE *f;
-#ifndef _WIN32
+#ifdef _WIN32
+    WIN32_FIND_DATAA fd;
+    HANDLE find, h;
+    int ok = 1;
+#else
     DIR *dir;
     struct dirent *e;
     struct stat st;
@@ -608,7 +627,24 @@ static int game_intact(void)
     closedir(dir);
     return ok;
 #else
-    return 1;
+    snprintf(path, sizeof path, "%s/game/*", g_user_dir);
+    find = FindFirstFileA(path, &fd);
+    if (find == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+        snprintf(path, sizeof path, "%s/game/%s", g_user_dir, fd.cFileName);
+        /* Backup semantics opens a folder; without OPEN_REPARSE_POINT the
+         * junction is followed, and fails when what it named is gone. */
+        h = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        ok = h != INVALID_HANDLE_VALUE;
+        if (ok)
+            CloseHandle(h);
+    } while (ok && FindNextFileA(find, &fd));
+    FindClose(find);
+    return ok;
 #endif
 }
 
@@ -720,6 +756,11 @@ static void release_init(void)
         !json_str(text, "exe", g_release_exe, sizeof g_release_exe))
         return;
     g_release = 1;
+#ifdef _WIN32
+    /* release.json names the target; Windows names its file .exe. */
+    if (strlen(g_release_exe) + 5 <= sizeof g_release_exe)
+        strcat(g_release_exe, ".exe");
+#endif
     g_title_id = (uint32_t)strtoul(id, NULL, 16);
     json_str(text, "title_name", g_title_name, sizeof g_title_name);
     json_str(text, "version", g_release_version, sizeof g_release_version);
@@ -1643,7 +1684,11 @@ static void release_start_build(void)
     if (release_translocated_error())
         return;
 #endif
+#ifdef _WIN32
+    snprintf(exe, sizeof exe, "%s\\bin\\xboxrecomp-build.exe", g_release_dir);
+#else
     snprintf(exe, sizeof exe, "%s/bin/xboxrecomp-build", g_release_dir);
+#endif
     g_rel_relinking = g_rel_moved;
     argv[0] = exe; argv[1] = g_rel_relinking ? "relink" : "build";
     argv[2] = "--source"; argv[3] = g_source;

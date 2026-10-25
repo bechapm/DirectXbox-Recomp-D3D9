@@ -36,6 +36,7 @@ import hashlib
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import urllib.request
@@ -95,6 +96,22 @@ DOWNLOADS = {
                            "43c0a37e6a0fa7ff3c843b3ec5a4fac84b712558ddac103fbd4c1649662a9ece",
                            "LICENSE-Vulkan-Loader.txt"),
     },
+    "windows-x86_64": {
+        # PyPI has no Windows wheel of zig 0.17: ziglang.org's own archive.
+        "zig": ("https://ziglang.org/download/0.17.0/zig-x86_64-windows-0.17.0.zip",
+                "b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428"),
+        "cmake": (f"{PYPI}/87/9c/a7918eeeed09b34aa5dc1b767367fb1a2dcbb56171be00be0fd1280fe752/"
+                  "cmake-4.4.4-py3-none-win_amd64.whl",
+                  "ad8e0a38b5707e27882701146bdfffecacd80e7703fa0fc36c77528518d545af"),
+        "ninja": (f"{PYPI}/3f/dd/3766b5f4d32e8a9b97d195496b0b01fbbe2e1a41669dab0cd6492a6ce199/"
+                  "ninja-1.13.2-py3-none-win_amd64.whl",
+                  "1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118"),
+        "python": (f"{PBS}x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+                   "56cde3b1a1dcc36576753cb408ee0c3568d211baafa0eee40423adc147c480f2"),
+        "capstone": (f"{PYPI}/70/39/2138d890a8e827636b9de9924fbc8527fe83e38b6d26605b30ac55e30ebe/"
+                     "capstone-5.0.7-py3-none-win_amd64.whl",
+                     "4ab8bcb7da8f221ff45926ca168ca33e76f7237d06fbf3c10780002faa2670e1"),
+    },
 }
 
 # What zig is told to build for: glibc 2.38 on Linux, macOS 13 on a Mac.
@@ -103,17 +120,23 @@ DOWNLOADS = {
 TARGETS = {
     "linux-x86_64": "x86_64-linux-gnu.2.38",
     "macos-arm64": "aarch64-macos.13.0",
+    # MinGW, with the UCRT every Windows 10 has: nothing to install beside
+    # the game (zigwrap.c carries the same target).
+    "windows-x86_64": "x86_64-windows-gnu",
 }
 
 
 def host_platform():
-    """The release being made is for this machine: linux-x86_64 or macos-arm64."""
+    """The release being made is for this machine: linux-x86_64, macos-arm64 or
+    windows-x86_64."""
     import platform
     machine = platform.machine().lower()
     if sys.platform.startswith("linux") and machine in ("x86_64", "amd64"):
         return "linux-x86_64"
     if sys.platform == "darwin" and machine == "arm64":
         return "macos-arm64"
+    if sys.platform == "win32" and machine in ("amd64", "x86_64"):
+        return "windows-x86_64"
     fail(f"no release toolchain for {sys.platform} {machine} yet")
 
 
@@ -169,6 +192,8 @@ def main():
     ap.add_argument("--cache", help="where downloads are kept (default <out>/../downloads)")
     args = ap.parse_args()
     plat = host_platform()
+    windows = plat.startswith("windows")
+    exe = ".exe" if windows else ""
     out = Path(args.out).resolve()
     cache = Path(args.cache).resolve() if args.cache else out.parent / "downloads"
     cache.mkdir(parents=True, exist_ok=True)
@@ -177,23 +202,45 @@ def main():
         shutil.rmtree(tc / d, ignore_errors=True)
     shutil.rmtree(out / "python", ignore_errors=True)
 
-    unzip_prefix(fetch("zig", cache, plat), "ziglang/", tc / "zig")
-    for f in ("__init__.py", "__main__.py"):
-        (tc / "zig" / f).unlink(missing_ok=True)
+    if windows:
+        unzip_prefix(fetch("zig", cache, plat), "zig-x86_64-windows-0.17.0/", tc / "zig")
+    else:
+        unzip_prefix(fetch("zig", cache, plat), "ziglang/", tc / "zig")
+        for f in ("__init__.py", "__main__.py"):
+            (tc / "zig" / f).unlink(missing_ok=True)
     unzip_prefix(fetch("cmake", cache, plat), "cmake/data/", tc / "cmake")
+    # Not needed to build anything, and 34 MB.
+    (tc / "cmake" / "bin" / "cmake-gui.exe").unlink(missing_ok=True)
     unzip_prefix(fetch("ninja", cache, plat), "ninja-1.13.2.data/scripts/", tc / "ninja" / "bin")
-    for f in [tc / "zig" / "zig", tc / "ninja" / "bin" / "ninja",
+    for f in [tc / "zig" / f"zig{exe}", tc / "ninja" / "bin" / f"ninja{exe}",
               *(tc / "cmake" / "bin").iterdir()]:
         f.chmod(f.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     (tc / "bin").mkdir(parents=True)
-    for name, args_ in wrappers(TARGETS[plat]).items():
-        w = tc / "bin" / name
-        w.write_text('#!/bin/sh\n'
-                     '# The release toolchain (tools/release/fetch_toolchain.py).\n'
-                     'd=$(dirname "$(readlink -f "$0")")\n'
-                     f'exec "$d/../zig/zig" {args_} "$@"\n')
-        w.chmod(0o755)
+    if windows:
+        # No shell to run a script: one small program, by the release's own
+        # zig, under each name (zigwrap.c).
+        wrap = tc / "bin" / "zigwrap.exe"
+        r = subprocess.run([str(tc / "zig" / "zig.exe"), "cc", "-target", TARGETS[plat],
+                            "-O2", "-municode", str(Path(__file__).with_name("zigwrap.c")),
+                            "-o", str(wrap)],
+                           env=dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(cache / "zig-cache"),
+                                    ZIG_LOCAL_CACHE_DIR=str(cache / "zig-cache")))
+        if r.returncode:
+            fail("cannot build the compiler wrapper (zigwrap.c)")
+        for name in (*wrappers(TARGETS[plat]), "zrc"):
+            shutil.copy2(wrap, tc / "bin" / f"{name}.exe")
+        wrap.unlink()
+        for leftover in tc.glob("bin/*.pdb"):
+            leftover.unlink()
+    else:
+        for name, args_ in wrappers(TARGETS[plat]).items():
+            w = tc / "bin" / name
+            w.write_text('#!/bin/sh\n'
+                         '# The release toolchain (tools/release/fetch_toolchain.py).\n'
+                         'd=$(dirname "$(readlink -f "$0")")\n'
+                         f'exec "$d/../zig/zig" {args_} "$@"\n')
+            w.chmod(0o755)
     if plat.startswith("macos"):
         # CMake asks xcrun for an SDK when none is given. On a Mac without
         # the command line tools, /usr/bin/xcrun is a stub that offers to
@@ -210,11 +257,18 @@ def main():
     # What the pipeline never loads: Tk and IDLE, pip's bootstrap, the C
     # headers and the man pages. About 20 MB of the 130.
     py = out / "python"
-    stdlib = next((py / "lib").glob("python3.*"))
-    for p in [*(py / "lib").glob("tcl*"), *(py / "lib").glob("tk*"),
-              *(py / "lib").glob("itcl*"), *(py / "lib").glob("libtcl*"),
-              stdlib / "tkinter", stdlib / "idlelib", stdlib / "turtledemo",
-              stdlib / "ensurepip", py / "include", py / "share"]:
+    if windows:
+        stdlib = py / "Lib"
+        dropped = [py / "tcl", py / "include", py / "libs", py / "Scripts",
+                   *(py / "DLLs").glob("_tkinter*"), *(py / "DLLs").glob("tcl*"),
+                   *(py / "DLLs").glob("tk*")]
+    else:
+        stdlib = next((py / "lib").glob("python3.*"))
+        dropped = [*(py / "lib").glob("tcl*"), *(py / "lib").glob("tk*"),
+                   *(py / "lib").glob("itcl*"), *(py / "lib").glob("libtcl*"),
+                   py / "include", py / "share"]
+    for p in [*dropped, stdlib / "tkinter", stdlib / "idlelib", stdlib / "turtledemo",
+              stdlib / "ensurepip"]:
         if p.is_dir():
             shutil.rmtree(p)
         elif p.exists():

@@ -31,8 +31,8 @@
 //!
 //! Everything happens in the player's folder for this title
 //! ($XDG_DATA_HOME/xboxrecomp/builds/<TITLEID>; on a Mac
-//! ~/Library/Application Support/xboxrecomp/builds/<TITLEID>; or
-//! XBOXRECOMP_BUILD_DIR), so
+//! ~/Library/Application Support/xboxrecomp/builds/<TITLEID>; on Windows
+//! %LOCALAPPDATA%\xboxrecomp\builds\<TITLEID>; or XBOXRECOMP_BUILD_DIR), so
 //! the release itself can be read-only. Progress goes to stdout as one JSON
 //! object a line, for the launcher to draw; everything the tools print goes
 //! to build.log there.
@@ -181,6 +181,14 @@ fn user_dir(title_id: &str) -> Result<PathBuf, Failure> {
     if let Some(d) = std::env::var_os("XBOXRECOMP_BUILD_DIR") {
         return Ok(PathBuf::from(d).join(title_id));
     }
+    // Where the runtime keeps its saves on Windows (src/config/recomp_config.h).
+    if cfg!(windows) {
+        return match std::env::var_os("LOCALAPPDATA") {
+            Some(d) if !d.is_empty() => Ok(PathBuf::from(d).join("xboxrecomp").join("builds")
+                .join(title_id)),
+            _ => fail("no folder to build in (LOCALAPPDATA is not set)"),
+        };
+    }
     // Where the runtime keeps a Mac's settings and saves (src/config/recomp_config.h).
     if cfg!(target_os = "macos") {
         return match std::env::var_os("HOME") {
@@ -197,6 +205,41 @@ fn user_dir(title_id: &str) -> Result<PathBuf, Failure> {
         },
     };
     Ok(data.join("xboxrecomp").join("builds").join(title_id))
+}
+
+/// The executable a target name builds: name.exe on Windows.
+fn exe_name(name: &str) -> String {
+    if cfg!(windows) { format!("{name}.exe") } else { name.to_string() }
+}
+
+/// A tool in the release, by its name without the extension.
+fn tool(dir: &Path, rel: &str) -> PathBuf {
+    dir.join(exe_name(rel))
+}
+
+/// The release's Python: python/bin/python3, or python\python.exe on Windows.
+fn python_exe(release_dir: &Path) -> PathBuf {
+    if cfg!(windows) { release_dir.join("python").join("python.exe") }
+    else { release_dir.join("python/bin/python3") }
+}
+
+/// A path as the tools want it. Windows: canonicalize's \\?\ prefix off
+/// (CMake and Python's tools do not all take it), and for CMake forward
+/// slashes, which it never reads as escapes.
+fn plain(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    p
+}
+
+fn cmake_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    if cfg!(windows) { s.replace('\\', "/") } else { s }
 }
 
 fn mtime_secs(m: &fs::Metadata) -> u64 {
@@ -219,6 +262,8 @@ fn write_json<T: Serialize>(path: &Path, v: &T) -> Result<(), Failure> {
 /// in a mirror are removed as links, never followed.
 fn remove_owned(path: &Path) -> Result<(), Failure> {
     match fs::symlink_metadata(path) {
+        // A junction or directory link (Windows) is removed as a directory.
+        Ok(m) if m.file_type().is_symlink() && is_dir_link(&m) => fs::remove_dir(path),
         Ok(m) if m.file_type().is_symlink() || m.is_file() => fs::remove_file(path),
         Ok(_) => fs::remove_dir_all(path),
         Err(_) => Ok(()),
@@ -312,7 +357,7 @@ fn mirror_folder(src: &Path, out: &Path) -> Result<(), Failure> {
         if upper == "UDATA" || upper == "TDATA" {
             continue;
         }
-        let from = fs::canonicalize(entry.path())
+        let from = fs::canonicalize(entry.path()).map(plain)
             .or_else(|e| fail(format!("cannot resolve {}: {e}", entry.path().display())))?;
         let to = out.join(&name);
         let linked = if from.is_dir() {
@@ -333,13 +378,109 @@ fn symlink_dir(from: &Path, to: &Path) -> io::Result<()> {
 fn symlink_file(from: &Path, to: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(from, to)
 }
+#[cfg(unix)]
+fn is_dir_link(_m: &fs::Metadata) -> bool {
+    false
+}
+
+/// On Windows a folder is linked with a junction, which needs no privilege
+/// (a symbolic link needs Developer Mode or an administrator); a file that
+/// cannot be hard-linked (another drive) is copied.
 #[cfg(windows)]
 fn symlink_dir(from: &Path, to: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_dir(from, to)
+    junction::create(from, to)
 }
 #[cfg(windows)]
 fn symlink_file(from: &Path, to: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_file(from, to)
+    fs::copy(from, to).map(|_| ())
+}
+#[cfg(windows)]
+fn is_dir_link(m: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    m.file_attributes() & 0x10 != 0         // FILE_ATTRIBUTE_DIRECTORY
+}
+
+/// A directory junction (a mount point reparse point), through the API
+/// mklink /J uses, so no shell is involved.
+#[cfg(windows)]
+mod junction {
+    use std::ffi::c_void;
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *mut c_void,
+                       disposition: u32, flags: u32, template: *mut c_void) -> *mut c_void;
+        fn DeviceIoControl(dev: *mut c_void, code: u32, inbuf: *const c_void, insize: u32,
+                           outbuf: *mut c_void, outsize: u32, returned: *mut u32,
+                           overlapped: *mut c_void) -> i32;
+        fn CloseHandle(h: *mut c_void) -> i32;
+    }
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+    const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+
+    fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+        s.encode_wide().collect()
+    }
+
+    pub fn create(target: &Path, link: &Path) -> io::Result<()> {
+        std::fs::create_dir(link)?;
+        let made = set(target, link);
+        if made.is_err() {
+            let _ = std::fs::remove_dir(link);
+        }
+        made
+    }
+
+    fn set(target: &Path, link: &Path) -> io::Result<()> {
+        // \??\C:\the\target as the substitute name, C:\the\target as the
+        // name Explorer shows.
+        let print = wide(target.as_os_str());
+        let mut subst = wide(std::ffi::OsStr::new(r"\??\"));
+        subst.extend_from_slice(&print);
+        let (sb, pb) = (subst.len() * 2, print.len() * 2);
+        // ReparseTag, ReparseDataLength, Reserved; then the mount point's
+        // four offsets and lengths, and both names, each ending in a NUL.
+        let path_buf = sb + 2 + pb + 2;
+        let data_len = 8 + path_buf;
+        let mut buf: Vec<u8> = Vec::with_capacity(8 + data_len);
+        buf.extend_from_slice(&IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+        buf.extend_from_slice(&(data_len as u16).to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        for v in [0u16, sb as u16, (sb + 2) as u16, pb as u16] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        for w in subst.iter().chain([0u16].iter()).chain(print.iter()).chain([0u16].iter()) {
+            buf.extend_from_slice(&w.to_le_bytes());
+        }
+        let mut name = wide(link.as_os_str());
+        name.push(0);
+        unsafe {
+            let h = CreateFileW(name.as_ptr(), GENERIC_WRITE, 0, std::ptr::null_mut(),
+                                OPEN_EXISTING,
+                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                std::ptr::null_mut());
+            if h as isize == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut got = 0u32;
+            let ok = DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.as_ptr() as *const c_void,
+                                     buf.len() as u32, std::ptr::null_mut(), 0, &mut got,
+                                     std::ptr::null_mut());
+            let err = io::Error::last_os_error();
+            CloseHandle(h);
+            if ok == 0 {
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A save folder in the game folder: UDATA or TDATA, or one kept beside them
@@ -507,6 +648,12 @@ fn run(cmd: &mut Command, log: &Path, what: &str, mut on_line: impl FnMut(&str))
         .or_else(|e| fail(format!("cannot write {}: {e}", log.display())))?;
     let _ = writeln!(logf, "\n$ {cmd:?}");
     let logf = Arc::new(Mutex::new(logf));
+    // No console window for each tool: the launcher has none to share.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);        // CREATE_NO_WINDOW
+    }
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null())
         .spawn().or_else(|e| fail(format!("cannot start {what}: {e}")))?;
     let tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
@@ -581,7 +728,7 @@ fn lift(release: &Release, image: &Image, user: &Path, log: &Path) -> Result<(),
     fs::create_dir_all(&xdir).or_else(|e| fail(format!("cannot create {}: {e}", xdir.display())))?;
     let xbe = xdir.join("default.xbe");
     let _ = fs::remove_file(&xbe);
-    let game_xbe = fs::canonicalize(user.join("game").join("default.xbe"))
+    let game_xbe = fs::canonicalize(user.join("game").join("default.xbe")).map(plain)
         .or_else(|e| fail(format!("cannot find default.xbe: {e}")))?;
     fs::hard_link(&game_xbe, &xbe).or_else(|_| fs::copy(&game_xbe, &xbe).map(|_| ()))
         .or_else(|e| fail(format!("cannot copy default.xbe: {e}")))?;
@@ -610,7 +757,7 @@ fn lift(release: &Release, image: &Image, user: &Path, log: &Path) -> Result<(),
             return fail("release.json's lift names no script");
         };
         progress("lift", 0, 5, &image.name);
-        let mut cmd = Command::new(r.join("python/bin/python3"));
+        let mut cmd = Command::new(python_exe(r));
         cmd.arg(project.join(script));
         for a in args {
             cmd.arg(a.replace("{xbe_dir}", &xdir.display().to_string()));
@@ -635,15 +782,15 @@ fn lift(release: &Release, image: &Image, user: &Path, log: &Path) -> Result<(),
         fs::copy(&carried, &symbols)
             .or_else(|e| fail(format!("cannot copy the XDK symbols: {e}")))?;
     } else {
-        let mut c = Command::new(r.join("python/bin/python3"));
+        let mut c = Command::new(python_exe(r));
         c.args(["-m", "tools.xdk_symbols"]).arg(&xbe)
-            .arg("--cli").arg(r.join("bin/XbSymbolDatabaseCLI"))
+            .arg("--cli").arg(tool(r, "bin/XbSymbolDatabaseCLI"))
             .arg("--out").arg(&symbols);
         python(&mut c, &r.join("toolkit"));
         run(&mut c, log, "XbSymbolDatabase", |_| {})?;
     }
 
-    let mut cmd = Command::new(r.join("python/bin/python3"));
+    let mut cmd = Command::new(python_exe(r));
     cmd.arg(r.join("toolkit/scripts/recompile.py")).arg(&xbe)
         .arg("--work-dir").arg(user.join("pipe").join("out"))
         .arg("--project").arg(&project);
@@ -670,7 +817,7 @@ fn build(release: &Release, user: &Path, log: &Path) -> Result<PathBuf, Failure>
     let r = &release.dir;
     let tc = r.join("toolchain");
     let bdir = user.join("build");
-    let cmake = tc.join("cmake/bin/cmake");
+    let cmake = tool(&tc, "cmake/bin/cmake");
     let zig_cache = user.join("zig-cache");
     // On a Mac the toolchain's own xcrun comes first (fetch_toolchain.py):
     // the system's offers to install Xcode's tools, which zig does not need.
@@ -702,13 +849,17 @@ fn build(release: &Release, user: &Path, log: &Path) -> Result<PathBuf, Failure>
         let mut c = Command::new(&cmake);
         c.arg("-S").arg(user.join("project")).arg("-B").arg(&bdir)
             .arg("-G").arg("Ninja")
-            .arg(format!("-DCMAKE_MAKE_PROGRAM={}", tc.join("ninja/bin/ninja").display()))
+            .arg(format!("-DCMAKE_MAKE_PROGRAM={}", cmake_path(&tool(&tc, "ninja/bin/ninja"))))
             .arg("-DCMAKE_BUILD_TYPE=Release")
-            .arg(format!("-DCMAKE_C_COMPILER={}", tc.join("bin/zcc").display()))
-            .arg(format!("-DCMAKE_CXX_COMPILER={}", tc.join("bin/zc++").display()))
-            .arg(format!("-DCMAKE_AR={}", tc.join("bin/zar").display()))
-            .arg(format!("-DCMAKE_RANLIB={}", tc.join("bin/zranlib").display()))
-            .arg(format!("-DXBOXRECOMP_DIR={}", r.join("engine").display()));
+            .arg(format!("-DCMAKE_C_COMPILER={}", cmake_path(&tool(&tc, "bin/zcc"))))
+            .arg(format!("-DCMAKE_CXX_COMPILER={}", cmake_path(&tool(&tc, "bin/zc++"))))
+            .arg(format!("-DCMAKE_AR={}", cmake_path(&tool(&tc, "bin/zar"))))
+            .arg(format!("-DCMAKE_RANLIB={}", cmake_path(&tool(&tc, "bin/zranlib"))))
+            .arg(format!("-DXBOXRECOMP_DIR={}", cmake_path(&r.join("engine"))));
+        // zig rc, for the game's icon (cmake/title_icon.cmake).
+        if cfg!(windows) {
+            c.arg(format!("-DCMAKE_RC_COMPILER={}", cmake_path(&tool(&tc, "bin/zrc"))));
+        }
         with_env(&mut c);
         run(&mut c, log, "CMake", |_| {})?;
         fs::write(&marker, &want).ok();
@@ -726,13 +877,14 @@ fn build(release: &Release, user: &Path, log: &Path) -> Result<PathBuf, Failure>
                 if let Some((d, t)) = counts.split_once('/') {
                     if let (Ok(d), Ok(t)) = (d.trim().parse::<u64>(), t.trim().parse::<u64>()) {
                         let file = what.rsplit('/').next().unwrap_or("").trim();
-                        progress("compile", d, t, file.trim_end_matches(".o"));
+                        progress("compile", d, t,
+                                 file.trim_end_matches(".obj").trim_end_matches(".o"));
                     }
                 }
             }
         }
     })?;
-    let exe = bdir.join(&release.exe);
+    let exe = bdir.join(exe_name(&release.exe));
     if !exe.is_file() {
         return fail(format!("the compile finished but made no {}", exe.display()));
     }
@@ -742,8 +894,8 @@ fn build(release: &Release, user: &Path, log: &Path) -> Result<PathBuf, Failure>
 fn install(release: &Release, user: &Path, built: &Path, sha1: &str) -> Result<PathBuf, Failure> {
     progress("install", 0, 1, "");
     // Beside the game folder, which is where the game looks for it.
-    let dest = user.join(&release.exe);
-    let tmp = user.join(format!("{}.part", release.exe));
+    let dest = user.join(exe_name(&release.exe));
+    let tmp = user.join(format!("{}.part", exe_name(&release.exe)));
     fs::copy(built, &tmp).and_then(|_| fs::rename(&tmp, &dest))
         .or_else(|e| fail(format!("cannot install {}: {e}", dest.display())))?;
     // What the release keeps for beside the game (on a Mac: the SDL dylib the
@@ -824,9 +976,28 @@ fn process_alive(pid: u32) -> bool {
     let alive = unsafe { kill(pid, 0) } == 0;
     alive || io::Error::last_os_error().raw_os_error() == Some(1)
 }
-#[cfg(not(unix))]
-fn process_alive(_pid: u32) -> bool {
-    true        // no cheap check here: a stale lock is removed by hand
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetExitCodeProcess(h: *mut c_void, code: *mut u32) -> i32;
+        fn CloseHandle(h: *mut c_void) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            // Access denied is a process that exists but is not ours.
+            return std::io::Error::last_os_error().raw_os_error() == Some(5);
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut code);
+        CloseHandle(h);
+        ok != 0 && code == STILL_ACTIVE
+    }
 }
 
 // ── commands ────────────────────────────────────────────────────────────────
@@ -842,7 +1013,7 @@ fn cmd_build(release: &Release, source: Option<PathBuf>) -> Result<(), Failure> 
             None => return fail("no disc chosen yet: pass --source <iso or folder>"),
         },
     };
-    let source = fs::canonicalize(&source)
+    let source = fs::canonicalize(&source).map(plain)
         .or_else(|e| fail(format!("{}: {e}", source.display())))?;
     let log = user.join("build.log");
     let _ = fs::write(&log, format!("xboxrecomp-build {} for {} {}\n",
@@ -886,7 +1057,7 @@ fn cmd_relink(release: &Release, source: Option<PathBuf>) -> Result<(), Failure>
     let Some(source) = source else {
         return fail("relink needs --source <iso or folder>");
     };
-    let source = fs::canonicalize(&source)
+    let source = fs::canonicalize(&source).map(plain)
         .or_else(|e| fail(format!("{}: {e}", source.display())))?;
     let log = user.join("build.log");
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log) {
@@ -1108,9 +1279,7 @@ mod tests {
         assert!(!d.join("build.lock").exists());
         // A pid no process has: what a build killed by Cancel leaves.
         fs::write(d.join("build.lock"), "4000000000").unwrap();
-        if cfg!(unix) {
-            assert!(BuildLock::take(&d).is_ok(), "a dead build's lock is taken over");
-        }
+        assert!(BuildLock::take(&d).is_ok(), "a dead build's lock is taken over");
         let _ = fs::remove_dir_all(&d);
     }
 

@@ -5,10 +5,15 @@
  * put on screen at WM_PAINT, a 16 ms timer runs the pad and the glow, and
  * the keyboard and mouse messages become launcher.c's calls.
  */
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#define COBJMACROS
 #include <windows.h>
+#include <shobjidl.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "launcher.h"
@@ -149,34 +154,241 @@ void lhost_full_path(const char *path, char *out, size_t n)
         snprintf(out, n, "%s", path);
 }
 
-/* A self-building release's builder and its file dialog are not on Windows
- * yet: the release is Linux first. Saying so with 0 leaves the launcher's
- * first-run screen to ask for a typed path, and its Build to explain. */
+/* ------------------------------------------------------------------ job */
+
+/* A self-building release's builder: one child at a time, its standard
+ * output read a line at a time without waiting (launcher.h). It runs in a
+ * job object that kills everything in it when closed, so Cancel -- or the
+ * launcher going away -- stops the compilers it started too, as the POSIX
+ * front end's process group does. No console window: the builder and every
+ * tool under it are console programs. */
+static HANDLE g_job = NULL, g_job_proc = NULL, g_job_out = NULL;
+static int    g_job_exit = -1;
+static char   g_job_buf[16384];
+static size_t g_job_len;
+
+/* One argument for CreateProcess's command line, quoted the way the C
+ * runtime splits it again. */
+static void append_arg(wchar_t *out, size_t cap, size_t *at, const wchar_t *arg)
+{
+    size_t i, slashes = 0;
+    int quote = !*arg || wcspbrk(arg, L" \t\"") != NULL;
+
+#define PUT(c) do { if (*at + 1 < cap) out[(*at)++] = (c); } while (0)
+    if (*at)
+        PUT(L' ');
+    if (quote)
+        PUT(L'"');
+    for (i = 0; arg[i]; i++) {
+        if (arg[i] == L'\\') {
+            slashes++;
+            continue;
+        }
+        if (arg[i] == L'"') {
+            slashes = slashes * 2 + 1;           /* each backslash, then \" */
+        }
+        while (slashes) {
+            PUT(L'\\');
+            slashes--;
+        }
+        PUT(arg[i]);
+    }
+    if (quote)
+        slashes *= 2;                            /* before the closing quote */
+    while (slashes) {
+        PUT(L'\\');
+        slashes--;
+    }
+    if (quote)
+        PUT(L'"');
+    out[*at] = 0;
+#undef PUT
+}
+
 int lhost_job_start(const char *const *argv)
 {
-    (void)argv;
-    return 0;
+    static wchar_t line[32768];
+    wchar_t arg[4096], exe[MAX_PATH * 2];
+    SECURITY_ATTRIBUTES sa;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim;
+    HANDLE rd = NULL, wr = NULL, nul;
+    size_t at = 0;
+    int i;
+
+    if (g_job_proc || g_job_out)
+        return 0;
+    line[0] = 0;
+    for (i = 0; argv[i]; i++) {
+        if (!MultiByteToWideChar(CP_ACP, 0, argv[i], -1, arg, (int)(sizeof arg / sizeof arg[0])))
+            return 0;
+        append_arg(line, sizeof line / sizeof line[0], &at, arg);
+    }
+    if (!MultiByteToWideChar(CP_ACP, 0, argv[0], -1, exe, (int)(sizeof exe / sizeof exe[0])))
+        return 0;
+
+    memset(&sa, 0, sizeof sa);
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    if (!CreatePipe(&rd, &wr, &sa, 0))
+        return 0;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    nul = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      &sa, OPEN_EXISTING, 0, NULL);
+
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nul;
+    si.hStdOutput = wr;
+    si.hStdError = nul;                 /* the builder logs to build.log */
+    if (!CreateProcessW(exe, line, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                        NULL, NULL, &si, &pi)) {
+        CloseHandle(rd);
+        CloseHandle(wr);
+        if (nul != INVALID_HANDLE_VALUE)
+            CloseHandle(nul);
+        return 0;
+    }
+    CloseHandle(wr);                    /* the child's now: its exit ends the pipe */
+    if (nul != INVALID_HANDLE_VALUE)
+        CloseHandle(nul);
+
+    g_job = CreateJobObjectW(NULL, NULL);
+    if (g_job) {
+        memset(&lim, 0, sizeof lim);
+        lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(g_job, JobObjectExtendedLimitInformation, &lim, sizeof lim);
+        AssignProcessToJobObject(g_job, pi.hProcess);
+    }
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    g_job_proc = pi.hProcess;
+    g_job_out = rd;
+    g_job_len = 0;
+    g_job_exit = -1;
+    return 1;
 }
 
 int lhost_job_line(char *out, size_t n)
 {
-    (void)out; (void)n;
-    return 0;
+    char *nl;
+    DWORD avail = 0, got = 0;
+
+    if (g_job_out && g_job_len < sizeof g_job_buf - 1) {
+        if (!PeekNamedPipe(g_job_out, NULL, 0, NULL, &avail, NULL)) {
+            CloseHandle(g_job_out);      /* it has closed its end: no more lines */
+            g_job_out = NULL;
+        } else if (avail) {
+            DWORD room = (DWORD)(sizeof g_job_buf - 1 - g_job_len);
+            if (ReadFile(g_job_out, g_job_buf + g_job_len, avail < room ? avail : room, &got, NULL))
+                g_job_len += got;
+        }
+    }
+    nl = memchr(g_job_buf, '\n', g_job_len);
+    if (!nl && !g_job_out && g_job_len) {
+        nl = g_job_buf + g_job_len;          /* a last line with no newline */
+        g_job_len++;
+    }
+    if (!nl) {
+        if (g_job_len == sizeof g_job_buf - 1)
+            g_job_len = 0;                   /* a line longer than the buffer */
+        return 0;
+    }
+    *nl = 0;
+    if (nl > g_job_buf && nl[-1] == '\r')
+        nl[-1] = 0;
+    snprintf(out, n, "%s", g_job_buf);
+    g_job_len -= (size_t)(nl - g_job_buf) + 1;
+    memmove(g_job_buf, nl + 1, g_job_len);
+    return 1;
 }
 
 int lhost_job_status(void)
 {
-    return 0;
+    DWORD code;
+
+    if (g_job_proc && WaitForSingleObject(g_job_proc, 0) == WAIT_OBJECT_0) {
+        g_job_exit = GetExitCodeProcess(g_job_proc, &code) ? (int)code : 1;
+        CloseHandle(g_job_proc);
+        g_job_proc = NULL;
+        if (g_job) {
+            CloseHandle(g_job);
+            g_job = NULL;
+        }
+    }
+    if (g_job_proc || g_job_out || g_job_len)
+        return -1;
+    return g_job_exit;
 }
 
 void lhost_job_cancel(void)
 {
+    if (g_job)
+        TerminateJobObject(g_job, 1);       /* the builder and its tools */
+    else if (g_job_proc)
+        TerminateProcess(g_job_proc, 1);
 }
+
+/* --------------------------------------------------------------- picker */
+
+/* The shell's own open dialog (IFileOpenDialog), for an image or a folder.
+ * Modal, so it runs here; its answer is posted to the window, so the
+ * launcher hears it from the message loop as launcher.h asks. The GUIDs are
+ * spelled out: not every SDK's uuid library carries the dialog's. */
+#define WM_PICKED (WM_APP + 1)
+
+static const CLSID k_clsid_file_open = {0xdc1c5a9c, 0xe88a, 0x4dde,
+                                        {0xa5, 0xa1, 0x60, 0xf8, 0x2a, 0x20, 0xae, 0xf7}};
+static const IID k_iid_file_open = {0xd57c7288, 0xd4ad, 0x4768,
+                                    {0xbe, 0x02, 0x9d, 0x96, 0x95, 0x32, 0xd9, 0x60}};
 
 int lhost_pick(int folder)
 {
-    (void)folder;
-    return 0;
+    static const COMDLG_FILTERSPEC k_images[] = {
+        { L"Xbox disc images (*.iso, *.xiso)", L"*.iso;*.xiso" },
+        { L"All files", L"*.*" },
+    };
+    IFileOpenDialog *dlg = NULL;
+    IShellItem *item = NULL;
+    wchar_t *wpath = NULL;
+    char *path = NULL;
+    DWORD opts = 0;
+    HRESULT hr;
+
+    hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)
+        return 0;
+    if (FAILED(CoCreateInstance(&k_clsid_file_open, NULL, CLSCTX_INPROC_SERVER,
+                                &k_iid_file_open, (void **)&dlg)))
+        return 0;
+    IFileOpenDialog_GetOptions(dlg, &opts);
+    opts |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
+    if (folder) {
+        opts |= FOS_PICKFOLDERS;
+        IFileOpenDialog_SetTitle(dlg, L"The folder the game's files are in");
+    } else {
+        opts |= FOS_FILEMUSTEXIST;
+        IFileOpenDialog_SetFileTypes(dlg, 2, k_images);
+        IFileOpenDialog_SetTitle(dlg, L"The game's disc image");
+    }
+    IFileOpenDialog_SetOptions(dlg, opts);
+    if (SUCCEEDED(IFileOpenDialog_Show(dlg, g_hwnd)) &&
+        SUCCEEDED(IFileOpenDialog_GetResult(dlg, &item)) &&
+        SUCCEEDED(IShellItem_GetDisplayName(item, SIGDN_FILESYSPATH, &wpath))) {
+        int n = WideCharToMultiByte(CP_ACP, 0, wpath, -1, NULL, 0, NULL, NULL);
+        path = n > 0 ? (char *)malloc((size_t)n) : NULL;
+        if (path)
+            WideCharToMultiByte(CP_ACP, 0, wpath, -1, path, n, NULL, NULL);
+        CoTaskMemFree(wpath);
+    }
+    if (item)
+        IShellItem_Release(item);
+    IFileOpenDialog_Release(dlg);
+    /* NULL is a cancel, which the launcher hears too. */
+    PostMessageA(g_hwnd, WM_PICKED, 0, (LPARAM)path);
+    return 1;
 }
 
 /* ---------------------------------------------------------------- window */
@@ -265,7 +477,14 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         launcher_resize(LOWORD(lp), HIWORD(lp));
         InvalidateRect(h, NULL, FALSE);
         return 0;
+    case WM_PICKED:
+        launcher_picked((const char *)lp);
+        free((void *)lp);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
     case WM_DESTROY:
+        /* Closing the window cancels a build, as on the other front ends. */
+        lhost_job_cancel();
         PostQuitMessage(0);
         return 0;
     default:

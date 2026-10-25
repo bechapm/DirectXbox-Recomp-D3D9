@@ -141,7 +141,8 @@ def main():
     # What the package's CMakeLists uses: the import, the lifted-code flags,
     # xbox_config's source and the toolkit's public headers.
     (out / "cmake").mkdir(exist_ok=True)
-    for f in ("prebuilt_engine.cmake", "lifted_code.cmake", "title_icon.cmake"):
+    for f in ("prebuilt_engine.cmake", "lifted_code.cmake", "title_icon.cmake",
+              "mingw_libs.cmake"):
         shutil.copy2(source / "cmake" / f, out / "cmake" / f)
     # The icon title_icon.cmake names (the SDL windows' copy is a header).
     (out / "assets" / "icon").mkdir(parents=True, exist_ok=True)

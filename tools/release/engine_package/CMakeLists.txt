@@ -26,6 +26,7 @@ else()
     add_compile_options(-Werror=implicit-function-declaration)
 endif()
 
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/mingw_libs.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/prebuilt_engine.cmake)
 xboxrecomp_import_engine("${CMAKE_CURRENT_LIST_DIR}")
 

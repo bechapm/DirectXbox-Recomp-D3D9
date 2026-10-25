@@ -63,6 +63,8 @@ from tools.release.fetch_toolchain import fetch, host_platform  # noqa: E402
 
 PLATFORM = host_platform()
 MACOS = PLATFORM.startswith("macos")
+WINDOWS = PLATFORM.startswith("windows")
+EXE = ".exe" if WINDOWS else ""
 # The oldest macOS a release runs on (fetch_toolchain.py's target says the same).
 MACOS_MIN = "13.0"
 
@@ -75,7 +77,7 @@ TOOLS_SKIP = {"builder", "linux", "macos", "vk_spike", "release", "__pycache__"}
 # The build machine's headers for what SDL loads at run time, after zig's own
 # libc headers, and its libraries for the names SDL records. Linux only: on a
 # Mac, SDL is built apart, with Xcode (build_sdl_macos).
-HOST_FLAGS = [] if MACOS else ["-DCMAKE_C_FLAGS=-idirafter /usr/include",
+HOST_FLAGS = [] if MACOS or WINDOWS else ["-DCMAKE_C_FLAGS=-idirafter /usr/include",
                                "-DCMAKE_CXX_FLAGS=-idirafter /usr/include",
                                "-DCMAKE_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu"]
 
@@ -160,6 +162,13 @@ README_LINUX_SHORTCUT = """\
 icon.png is the icon to give a desktop shortcut, or a Steam shortcut
 (Add a Non-Steam Game, then Properties)."""
 
+README_WINDOWS_START = """\
+Start {name}.exe. This release is not signed, so the first time Windows may
+say it protected your PC: choose More info, then Run anyway."""
+README_WINDOWS_SHORTCUT = """\
+It needs 64-bit Windows 10 or 11, and nothing else installed: everything it
+builds the game with is in this folder."""
+
 README_MACOS_START = """\
 Move {app} to Applications (or any folder you like). This release is not
 signed with an Apple Developer ID, so before you open it the first time,
@@ -180,12 +189,22 @@ It needs macOS {macos_min} or later on Apple Silicon. Nothing else is
 installed: not Xcode, not its command line tools."""
 
 
+def cm(path):
+    """A path for a CMake -D: forward slashes, which it never reads as escapes."""
+    return Path(path).as_posix()
+
+
 def toolchain_args(tc):
-    return [f"-DCMAKE_MAKE_PROGRAM={tc / 'ninja/bin/ninja'}",
-            f"-DCMAKE_C_COMPILER={tc / 'bin/zcc'}",
-            f"-DCMAKE_CXX_COMPILER={tc / 'bin/zc++'}",
-            f"-DCMAKE_AR={tc / 'bin/zar'}", f"-DCMAKE_RANLIB={tc / 'bin/zranlib'}",
+    args = [f"-DCMAKE_MAKE_PROGRAM={cm(tc / f'ninja/bin/ninja{EXE}')}",
+            f"-DCMAKE_C_COMPILER={cm(tc / f'bin/zcc{EXE}')}",
+            f"-DCMAKE_CXX_COMPILER={cm(tc / f'bin/zc++{EXE}')}",
+            f"-DCMAKE_AR={cm(tc / f'bin/zar{EXE}')}",
+            f"-DCMAKE_RANLIB={cm(tc / f'bin/zranlib{EXE}')}",
             "-DCMAKE_BUILD_TYPE=Release", "-G", "Ninja"]
+    if WINDOWS:
+        # zig rc, for the executables' icon (cmake/title_icon.cmake).
+        args.append(f"-DCMAKE_RC_COMPILER={cm(tc / 'bin/zrc.exe')}")
+    return args
 
 
 def build_sdl_macos(work, tc, env):
@@ -273,7 +292,8 @@ def main():
     ap.add_argument("--cache", help="downloads (default <out>/../downloads)")
     ap.add_argument("--version", help="this release's version (default: date and commit)")
     ap.add_argument("--archive", action="store_true",
-                    help=f"also write <name>-<version>-{PLATFORM}.tar.xz beside --out")
+                    help=f"also write <name>-<version>-{PLATFORM}.tar.xz (.zip on Windows) "
+                         "beside --out")
     ap.add_argument("--vulkan-sdk", help="macOS: the Vulkan SDK to take the loader, "
                     "MoltenVK and DXC from (default VULKAN_SDK)")
     args = ap.parse_args()
@@ -331,7 +351,7 @@ def main():
     run([sys.executable, "-m", "tools.release.fetch_toolchain", "--out", rel,
          "--cache", cache], cwd=ROOT)
     tc = rel / "toolchain"
-    cmake = tc / "cmake/bin/cmake"
+    cmake = tc / f"cmake/bin/cmake{EXE}"
 
     # The engine, built with that compiler, then packaged. On a Mac, SDL first,
     # apart (build_sdl_macos), and the engine pointed at it.
@@ -351,17 +371,21 @@ def main():
          *toolchain_args(tc)], env=env)
     run([cmake, "--build", xbsdb, "--target", "XbSymbolDatabaseCLI"], env=env)
     (rel / "bin").mkdir()
-    shutil.copy2(xbsdb / "projects/cli/XbSymbolDatabaseCLI", rel / "bin")
+    shutil.copy2(xbsdb / f"projects/cli/XbSymbolDatabaseCLI{EXE}", rel / "bin")
 
     # The builder: linked by zig for glibc 2.38 like everything else on
-    # Linux; by Xcode's linker on a Mac, for the same macOS as the rest.
+    # Linux; by Xcode's linker on a Mac, for the same macOS as the rest; on
+    # Windows by Visual Studio's, with the C runtime linked in, so it needs no
+    # redistributable.
     cargo_env = dict(env, CARGO_TARGET_DIR=str(work / "cargo"))
     if MACOS:
         cargo_env["MACOSX_DEPLOYMENT_TARGET"] = MACOS_MIN
+    elif WINDOWS:
+        cargo_env["RUSTFLAGS"] = (cargo_env.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()
     else:
         cargo_env["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"] = str(tc / "bin/zcc")
     run(["cargo", "build", "--release", "--locked"], cwd=ROOT / "tools/builder", env=cargo_env)
-    shutil.copy2(work / "cargo/release/xboxrecomp-build", rel / "bin")
+    shutil.copy2(work / f"cargo/release/xboxrecomp-build{EXE}", rel / "bin")
 
     # The pipeline, as much of the toolkit as lifting a title reads. Only
     # what git tracks: a desk checkout also holds pipeline output, regression
@@ -419,19 +443,21 @@ def main():
                          "-DCMAKE_OSX_ARCHITECTURES=arm64", f"-DXBOXRECOMP_DIR={ROOT}"]
     else:
         # Against the engine above.
-        launcher_args = [*toolchain_args(tc), *HOST_FLAGS, f"-DXBOXRECOMP_DIR={ROOT}",
-                         f"-DXBOXRECOMP_PREBUILT={eng}"]
+        launcher_args = [*toolchain_args(tc), *HOST_FLAGS, f"-DXBOXRECOMP_DIR={cm(ROOT)}",
+                         f"-DXBOXRECOMP_PREBUILT={cm(eng)}"]
     run([cmake, "-S", lproj, "-B", lbuild, *launcher_args], env=env)
     run([cmake, "--build", lbuild, "--target", recipe["launcher"]], env=env)
     if MACOS:
         (app / "Contents/MacOS").mkdir(parents=True)
         shutil.copy2(lbuild / recipe["launcher"], app / "Contents/MacOS" / recipe["release_name"])
     else:
-        shutil.copy2(lbuild / recipe["launcher"], out / recipe["release_name"])
+        shutil.copy2(lbuild / f"{recipe['launcher']}{EXE}", out / f"{recipe['release_name']}{EXE}")
 
     # The shader compiler the renderer loads, with its licences. On a Mac,
-    # with the Vulkan loader and MoltenVK in runtime/.
-    (rel / "dxc").mkdir()
+    # with the Vulkan loader and MoltenVK in runtime/. Windows draws with
+    # Direct3D 11 and the system's own D3DCompiler_47, so carries none.
+    if not WINDOWS:
+        (rel / "dxc").mkdir()
     if MACOS:
         macos_runtime(rel, sdk, sdl, cache)
     for f in ("lib/libdxcompiler.so", "lib/libdxil.so", "LICENSE-MS.txt", "LICENSE-LLVM.txt"):
@@ -450,12 +476,21 @@ def main():
         release["lift"] = lift
     (rel / "release.json").write_text(json.dumps(release, indent=2) + "\n")
     shutil.copy2(ROOT / "LICENSE", rel / "LICENSE")
-    (rel / "NOTICE.txt").write_text(NOTICE.format(
-        title=recipe["title_name"], os_name="macOS" if MACOS else "Linux",
+    notice = NOTICE.format(
+        title=recipe["title_name"],
+        os_name="macOS" if MACOS else "Windows" if WINDOWS else "Linux",
         dxc_licenses="dxc/LICENSE-DXC.txt, dxc/ThirdPartyNotices-DXC.txt" if MACOS
         else "dxc/LICENSE-MS.txt, dxc/LICENSE-LLVM.txt",
-        extra=NOTICE_MACOS if MACOS else ""))
-    if MACOS:
+        extra=NOTICE_MACOS if MACOS else "")
+    if WINDOWS:
+        notice = "".join(l for l in notice.splitlines(True) if "DirectX Shader Compiler" not in l)
+        notice = notice.replace("musl and glibc headers and stubs", "MinGW-w64 headers and libraries")
+    (rel / "NOTICE.txt").write_text(notice)
+    if WINDOWS:
+        userdir = f"%LOCALAPPDATA%\\xboxrecomp\\builds\\{recipe['title_id']}"
+        start = README_WINDOWS_START.format(name=recipe["release_name"])
+        shortcut = README_WINDOWS_SHORTCUT
+    elif MACOS:
         userdir = f"~/Library/Application Support/xboxrecomp/builds/{recipe['title_id']}"
         start = README_MACOS_START.format(app=app.name)
         shortcut = README_MACOS_SHORTCUT.format(macos_min=MACOS_MIN)
@@ -497,8 +532,17 @@ def main():
     log(f"done: {out} ({size / 1e6:.0f} MB)")
 
     # One file to publish: <name>-<version>-<platform>.tar.xz beside the
-    # folder, unpacking as <name>/.
-    if args.archive:
+    # folder, unpacking as <name>/; on Windows a .zip, which Explorer opens.
+    if args.archive and WINDOWS:
+        import zipfile
+        archive = out.parent / f"{recipe['release_name']}-{version}-{PLATFORM}.zip"
+        log(f"archiving to {archive}")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+            for f in sorted(out.rglob("*")):
+                if f.is_file() and f.name != marker:
+                    z.write(f, Path(recipe["release_name"]) / f.relative_to(out))
+        log(f"archive: {archive} ({archive.stat().st_size / 1e6:.0f} MB)")
+    elif args.archive:
         archive = out.parent / f"{recipe['release_name']}-{version}-{PLATFORM}.tar.xz"
         log(f"archiving to {archive}")
         with tarfile.open(archive, "w:xz", preset=6) as tar:
