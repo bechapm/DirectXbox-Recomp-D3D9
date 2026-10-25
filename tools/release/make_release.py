@@ -477,6 +477,10 @@ def main():
     }
     if lift:
         release["lift"] = lift
+    # The XBE the game boots, when not default.xbe (a language launcher's
+    # disc); the builder checks and lifts that one.
+    if recipe.get("xbe"):
+        release["xbe"] = recipe["xbe"]
     (rel / "release.json").write_text(json.dumps(release, indent=2) + "\n")
     shutil.copy2(ROOT / "LICENSE", rel / "LICENSE")
     notice = NOTICE.format(

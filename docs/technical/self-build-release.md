@@ -106,6 +106,11 @@ Each image may name a `config` folder in the project holding that image's
 builder looks in `config/`. Without `xdk_symbols.json` it runs XbSymbolDatabase
 on the player's XBE, as `tools.xdk_symbols` does at a desk.
 
+A disc whose `default.xbe` only picks a language names the XBE the game boots
+as `"xbe"` (Gladius: `"xbe": "gladius_eng.xbe"`); the images' SHA-1s are then
+that file's, and it is the one the builder checks, names the XDK functions in
+and lifts.
+
 A title whose lift does more than the pipeline (split2-recomp writes a region
 header and merges per-region overrides first) names its own script instead:
 

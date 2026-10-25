@@ -82,11 +82,20 @@ struct Release {
     /// split2-recomp's scripts/build.py does.
     #[serde(default)]
     lift: Option<Vec<String>>,
+    /// The XBE the game boots, when it is not default.xbe: a disc whose
+    /// default.xbe only picks a language (Gladius: gladius_eng.xbe). It is
+    /// the one checked against `images` and lifted.
+    #[serde(default)]
+    xbe: Option<String>,
     #[serde(skip)]
     dir: PathBuf,
 }
 
 impl Release {
+    fn boot_xbe(&self) -> &str {
+        self.xbe.as_deref().unwrap_or("default.xbe")
+    }
+
     fn load(dir: &Path) -> Result<Release, String> {
         let path = dir.join("release.json");
         let text = fs::read_to_string(&path)
@@ -104,7 +113,10 @@ impl Release {
             i.sha1 = i.sha1.to_lowercase();
         }
         if r.images.is_empty() {
-            return Err(format!("{} names no default.xbe images", path.display()));
+            return Err(format!("{} names no {} images", path.display(), r.boot_xbe()));
+        }
+        if r.boot_xbe().contains(['/', '\\']) || r.boot_xbe().starts_with('.') {
+            return Err(format!("{}: xbe must be a file name in the game folder", path.display()));
         }
         Ok(r)
     }
@@ -616,7 +628,14 @@ fn sha1_file(path: &Path) -> Result<String, Failure> {
 
 fn check_disc(release: &Release, user: &Path) -> Result<Image, Failure> {
     progress("check", 0, 1, "");
-    let xbe = user.join("game").join("default.xbe");
+    let xbe = user.join("game").join(release.boot_xbe());
+    if !xbe.is_file() {
+        return Err(Failure {
+            message: format!("This isn't a copy of {}: it has no {}.", release.title_name,
+                             release.boot_xbe()),
+            code: 2,
+        });
+    }
     let sha1 = sha1_file(&xbe)?;
     if let Some(image) = release.images.iter().find(|i| i.sha1 == sha1) {
         progress("check", 1, 1, &image.name);
@@ -627,9 +646,9 @@ fn check_disc(release: &Release, user: &Path) -> Result<Image, Failure> {
         .unwrap_or_else(|| "an unreadable XBE".into());
     Err(Failure {
         message: format!(
-            "This isn't a copy of {} this release supports. Its default.xbe is {what}, \
+            "This isn't a copy of {} this release supports. Its {} is {what}, \
              SHA-1 {sha1}. This release was made for: {}.",
-            release.title_name,
+            release.title_name, release.boot_xbe(),
             release.images.iter().map(|i| if i.name.is_empty() { i.sha1.clone() }
                                           else { format!("{} ({})", i.name, i.sha1) })
                 .collect::<Vec<_>>().join(", ")),
@@ -726,12 +745,13 @@ fn lift(release: &Release, image: &Image, user: &Path, log: &Path) -> Result<(),
     // copy (a hard link where possible), never the one in the player's folder.
     let xdir = user.join("pipe").join("xbe");
     fs::create_dir_all(&xdir).or_else(|e| fail(format!("cannot create {}: {e}", xdir.display())))?;
-    let xbe = xdir.join("default.xbe");
+    let name = release.boot_xbe();
+    let xbe = xdir.join(name);
     let _ = fs::remove_file(&xbe);
-    let game_xbe = fs::canonicalize(user.join("game").join("default.xbe")).map(plain)
-        .or_else(|e| fail(format!("cannot find default.xbe: {e}")))?;
+    let game_xbe = fs::canonicalize(user.join("game").join(name)).map(plain)
+        .or_else(|e| fail(format!("cannot find {name}: {e}")))?;
     fs::hard_link(&game_xbe, &xbe).or_else(|_| fs::copy(&game_xbe, &xbe).map(|_| ()))
-        .or_else(|e| fail(format!("cannot copy default.xbe: {e}")))?;
+        .or_else(|e| fail(format!("cannot copy {name}: {e}")))?;
 
     let tmp = user.join("tmp");
     fs::create_dir_all(&tmp).ok();
@@ -776,7 +796,10 @@ fn lift(release: &Release, image: &Image, user: &Path, log: &Path) -> Result<(),
     // lifter links in by name. A recipe may carry them; otherwise they are
     // found here, by signature, as tools.xdk_symbols does at a desk.
     progress("lift", 0, 5, "naming the XDK functions");
-    let symbols = xdir.join("default_xdk_symbols.json");
+    // Beside the XBE, named after it, where recompile.py looks.
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "default".into());
+    let symbols = xdir.join(format!("{stem}_xdk_symbols.json"));
     let carried = config.join("xdk_symbols.json");
     if carried.is_file() {
         fs::copy(&carried, &symbols)
@@ -1067,18 +1090,18 @@ fn cmd_relink(release: &Release, source: Option<PathBuf>) -> Result<(), Failure>
                 "source": source, "log": log}));
     let different = |sha1: &str| Failure {
         message: format!("This is a different copy of {} from the one it was built from \
-                          (its default.xbe has SHA-1 {sha1}, not {}). Build again to use it.",
-                         release.title_name, stamp.xbe_sha1),
+                          (its {} has SHA-1 {sha1}, not {}). Build again to use it.",
+                         release.title_name, release.boot_xbe(), stamp.xbe_sha1),
         code: 3,
     };
     if source.is_dir() {
-        let sha1 = sha1_file(&source.join("default.xbe"))?;
+        let sha1 = sha1_file(&source.join(release.boot_xbe()))?;
         if sha1 != stamp.xbe_sha1 {
             return Err(different(&sha1));
         }
     }
     prepare_game(&source, &user)?;
-    let sha1 = sha1_file(&user.join("game").join("default.xbe"))?;
+    let sha1 = sha1_file(&user.join("game").join(release.boot_xbe()))?;
     if sha1 != stamp.xbe_sha1 {
         let _ = fs::remove_file(user.join("build.json"));
         return Err(different(&sha1));
@@ -1238,6 +1261,13 @@ mod tests {
         assert_eq!((r.images[0].sha1.as_str(), r.images[0].name.as_str()), ("ab", "PAL"));
         assert_eq!(r.images[0].config.as_deref(), Some("config/pal"));
         assert_eq!(r.images[1].sha1, "cd");
+        assert_eq!(r.boot_xbe(), "default.xbe", "default.xbe unless the recipe says");
+        fs::write(d.join("release.json"), r#"{"title_id": "1", "title_name": "T",
+            "version": "1", "exe": "t", "xbe": "game_eng.xbe", "xbe_sha1": ["ab"]}"#).unwrap();
+        assert_eq!(Release::load(&d).ok().expect("loads").boot_xbe(), "game_eng.xbe");
+        fs::write(d.join("release.json"), r#"{"title_id": "1", "title_name": "T",
+            "version": "1", "exe": "t", "xbe": "../x.xbe", "xbe_sha1": ["ab"]}"#).unwrap();
+        assert!(Release::load(&d).is_err(), "only a file in the game folder");
         fs::write(d.join("release.json"), r#"{"title_id": "1", "title_name": "T",
             "version": "1", "exe": "t"}"#).unwrap();
         assert!(Release::load(&d).is_err(), "a release must name an image");
