@@ -530,6 +530,16 @@ def main():
             }, f)
         # Beside the application in the archive, where a player sees it first.
         (out / "README.txt").write_text(readme)
+        # An ad-hoc signature over the whole bundle, last, once nothing in it
+        # changes. The linker signs each executable, but alone that leaves
+        # the bundle with no Info.plist bound and no resources sealed, which
+        # a downloaded copy's Gatekeeper check reads as a broken signature:
+        # "is damaged and can't be opened", with no way to open it. Sealed,
+        # it is merely unidentified, which Open Anyway (or the README's
+        # xattr) gets past. Nothing writes inside the bundle afterwards: the
+        # builder works in the player's folder, and Python writes no .pyc.
+        run(["codesign", "--force", "--deep", "--sign", "-", app])
+        run(["codesign", "--verify", "--deep", "--strict", app])
 
     size = sum(f.lstat().st_size for f in out.rglob("*") if f.is_file() and not f.is_symlink())
     log(f"done: {out} ({size / 1e6:.0f} MB)")
