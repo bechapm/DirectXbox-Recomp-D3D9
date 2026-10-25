@@ -200,6 +200,17 @@ jobs:
           path: ${{ runner.temp }}/downloads
           key: release-downloads-${{ hashFiles('tools/release/fetch_toolchain.py') }}
 
+      # zig's own cache: the C runtimes, libc++ and compiler-rt it builds from
+      # source the first time it links for a target and a set of CPU features.
+      # On Windows that is MinGW's runtime, once for the compiler checks and
+      # again for each of SDL's SSE/AVX tests -- about 12 minutes of a cold
+      # run. Content-addressed by zig itself, so a kept entry is never stale;
+      # saved once per toolchain.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/work/zig-cache
+          key: release-zig-cache-linux-${{ hashFiles('tools/release/fetch_toolchain.py', 'tools/release/zigwrap.c') }}
+
       - name: Builder tests
         working-directory: tools/builder
         run: cargo test --locked
@@ -243,6 +254,17 @@ jobs:
           path: ${{ runner.temp }}/downloads
           key: release-downloads-macos-${{ hashFiles('tools/release/fetch_toolchain.py') }}
 
+      # zig's own cache: the C runtimes, libc++ and compiler-rt it builds from
+      # source the first time it links for a target and a set of CPU features.
+      # On Windows that is MinGW's runtime, once for the compiler checks and
+      # again for each of SDL's SSE/AVX tests -- about 12 minutes of a cold
+      # run. Content-addressed by zig itself, so a kept entry is never stale;
+      # saved once per toolchain.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/work/zig-cache
+          key: release-zig-cache-macos-${{ hashFiles('tools/release/fetch_toolchain.py', 'tools/release/zigwrap.c') }}
+
       - name: Builder tests
         working-directory: tools/builder
         run: cargo test --locked
@@ -278,6 +300,24 @@ jobs:
         with:
           path: ${{ runner.temp }}/downloads
           key: release-downloads-windows-${{ hashFiles('tools/release/fetch_toolchain.py', 'tools/release/zigwrap.c') }}
+
+      # zig's own cache: the C runtimes, libc++ and compiler-rt it builds from
+      # source the first time it links for a target and a set of CPU features.
+      # On Windows that is MinGW's runtime, once for the compiler checks and
+      # again for each of SDL's SSE/AVX tests -- about 12 minutes of a cold
+      # run. Content-addressed by zig itself, so a kept entry is never stale;
+      # saved once per toolchain.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/work/zig-cache
+          key: release-zig-cache-windows-${{ hashFiles('tools/release/fetch_toolchain.py', 'tools/release/zigwrap.c') }}
+
+      # Defender scans every file the compilers write and every process they
+      # start, and a release build starts thousands. The runner is thrown
+      # away after the job.
+      - name: Turn off real-time scanning
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
 
       - name: Builder tests
         working-directory: tools/builder
