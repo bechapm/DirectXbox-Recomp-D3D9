@@ -178,7 +178,7 @@ the folder was moved or deleted it asks where the files are now and runs
 `xboxrecomp-build relink`, which lays the game folder out again and rebuilds
 nothing, refusing a different copy of the game (a full build is offered
 instead). `status` reports `moved` for the same case. Every launcher's window is titled
-"DirectXRecomp - <game>". The front ends gained a job (a child process read a line at a time,
+"DirectXboxRecomp - <game>". The front ends gained a job (a child process read a line at a time,
 in its own process group so Cancel stops the compilers too) and a picker
 (`SDL_ShowOpenFileDialog`/`SDL_ShowOpenFolderDialog`). The SDL front end has
 both; the Windows one returns 0 for now. Closing the window cancels a build.

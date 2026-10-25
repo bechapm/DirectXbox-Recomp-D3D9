@@ -2214,7 +2214,7 @@ void launcher_init(void)
 }
 
 /* The window's title: the toolkit's name, then the game's. */
-#define LAUNCHER_BRAND "DirectXRecomp"
+#define LAUNCHER_BRAND "DirectXboxRecomp"
 
 const char *launcher_title(void)
 {
