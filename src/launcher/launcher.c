@@ -2336,14 +2336,20 @@ void launcher_init(void)
     }
 }
 
-/* The window's title: the toolkit's name, then the game's. */
+/* The window's title: the toolkit's name, then the game's, without its
+ * colons ("Turok: Evolution" reads as "Turok Evolution" after the dash). */
 #define LAUNCHER_BRAND "DirectXboxRecomp"
 
 const char *launcher_title(void)
 {
     static char title[sizeof g_title_name + 32];
+    size_t n = (size_t)snprintf(title, sizeof title, LAUNCHER_BRAND " - ");
+    const char *c;
 
-    snprintf(title, sizeof title, LAUNCHER_BRAND " - %s", g_title_name);
+    for (c = g_title_name; *c && n + 1 < sizeof title; c++)
+        if (*c != ':')
+            title[n++] = *c;
+    title[n] = '\0';
     return title;
 }
 

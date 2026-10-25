@@ -324,7 +324,10 @@ def main():
     (out / marker).write_text("tools/release/make_release.py\n")
     # Where release.json and everything beside it goes: the folder itself, or
     # on a Mac the application's Resources.
-    app = out / f"{recipe['title_name']}.app" if MACOS else None
+    # The application's file name: no colon, which Finder shows as a slash
+    # ("Turok: Evolution" -> "Turok Evolution.app").
+    app_name = recipe["title_name"].replace(":", "")
+    app = out / f"{app_name}.app" if MACOS else None
     rel = app / "Contents/Resources" if MACOS else out
     rel.mkdir(parents=True, exist_ok=True)
     # Zig's cache is shared; the builds are per release, because CMake keeps
