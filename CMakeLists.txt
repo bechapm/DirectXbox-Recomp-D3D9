@@ -85,7 +85,13 @@ else()
     # `git submodule update --init third_party/SDL`) so nothing ships beside
     # the executable; a system SDL3 is the fallback when the submodule is not
     # checked out. Everything below links SDL3::SDL3.
-    if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/third_party/SDL/CMakeLists.txt)
+    #
+    # XBOXRECOMP_EXTERNAL_SDL takes the SDL3 package at SDL3_DIR instead. A
+    # self-building release on macOS uses it: SDL is the one part of the
+    # engine that needs Apple's SDK, so it is built apart, as a dylib, and the
+    # rest is built with the release's own compiler (tools/release/make_release.py).
+    option(XBOXRECOMP_EXTERNAL_SDL "Use the SDL3 package at SDL3_DIR, not third_party/SDL" OFF)
+    if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/third_party/SDL/CMakeLists.txt AND NOT XBOXRECOMP_EXTERNAL_SDL)
         set(SDL_SHARED OFF CACHE BOOL "" FORCE)
         set(SDL_STATIC ON CACHE BOOL "" FORCE)
         set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)

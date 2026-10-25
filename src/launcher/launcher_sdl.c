@@ -384,6 +384,10 @@ static int present_open(void)
 {
     g_nswindow = SDL_GetPointerProperty(SDL_GetWindowProperties(g_win),
                                         SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    /* Offscreen (RECOMP_LAUNCHER_SHOT) has no window to show: the buffer is
+     * drawn and written to a file, and nothing is presented. */
+    if (!g_nswindow && SDL_strcmp(SDL_GetCurrentVideoDriver(), "offscreen") == 0)
+        return 1;
     if (!g_nswindow) {
         fprintf(stderr, "launcher: no Cocoa window to draw in\n");
         return 0;
@@ -396,7 +400,8 @@ static void present(void)
     void *image = theme_image();
 
     if (image) {
-        launcher_cocoa_present(g_nswindow, image);
+        if (g_nswindow)
+            launcher_cocoa_present(g_nswindow, image);
         CGImageRelease(image);
     }
 }
@@ -513,6 +518,20 @@ int main(int argc, char **argv)
         fprintf(stderr, "launcher: SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
+#if defined(__APPLE__)
+    /* SDL gives a Mac window OpenGL unless told the program brings its own
+     * graphics, and offscreen has no OpenGL here. Nothing draws with it:
+     * the Cocoa window is drawn through Core Animation. */
+    if (SDL_strcmp(SDL_GetCurrentVideoDriver(), "offscreen") == 0) {
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, launcher_title());
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, LAUNCHER_WINDOW_W);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, LAUNCHER_WINDOW_H);
+        SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
+        g_win = SDL_CreateWindowWithProperties(props);
+        SDL_DestroyProperties(props);
+    } else
+#endif
     g_win = SDL_CreateWindow(launcher_title(), LAUNCHER_WINDOW_W, LAUNCHER_WINDOW_H,
                              SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!g_win) {

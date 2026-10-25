@@ -27,6 +27,10 @@
 #include <strings.h>
 #include <sys/stat.h>
 #endif
+#if defined(__APPLE__)
+#include <ftw.h>
+#include <sys/xattr.h>
+#endif
 
 #include "launcher.h"
 #include "launcher_theme.h"
@@ -556,6 +560,10 @@ static int release_user_dir(uint32_t id, char *out, size_t n)
 
     if (dir && *dir)
         snprintf(out, n, "%s/%08X", dir, id);
+#if defined(__APPLE__)
+    else if (home && *home)
+        snprintf(out, n, "%s/Library/Application Support/xboxrecomp/builds/%08X", home, id);
+#endif
     else if (data && *data)
         snprintf(out, n, "%s/xboxrecomp/builds/%08X", data, id);
     else if (home && *home)
@@ -568,8 +576,8 @@ static int release_user_dir(uint32_t id, char *out, size_t n)
 /* Whether the game folder still reaches every file. A folder the player
  * picked is linked, not copied (tools/builder, mirror_folder), so moving or
  * deleting it leaves links to nothing; the builder's game_intact is the same
- * test. Only the release builds on Linux so far, so elsewhere only
- * default.xbe is looked for. */
+ * test. Windows has no release yet, so there only default.xbe is looked
+ * for. */
 static int game_intact(void)
 {
     char path[LAUNCHER_PATH + 300];
@@ -637,6 +645,57 @@ static void release_status(void)
     }
 }
 
+#if defined(__APPLE__)
+static int g_rel_translocated;      /* run from a read-only copy: see below */
+
+static int unquarantine_one(const char *path, const struct stat *st, int type, struct FTW *ftw)
+{
+    (void)st; (void)type; (void)ftw;
+    removexattr(path, "com.apple.quarantine", XATTR_NOFOLLOW);
+    return 0;
+}
+
+/* A Mac release is not signed with a Developer ID, so a downloaded one is
+ * quarantined, every file of it, and macOS would refuse each tool the
+ * build starts (the builder, zig, CMake, Python) as it started them. The
+ * player has already chosen to open this application, so its own files
+ * lose the flag here, as the xattr command in its README.txt would do.
+ *
+ * Opened where it was unpacked, before it has been moved, macOS runs it
+ * from a translocated, read-only copy instead, which cannot be changed and
+ * would not keep the change: the player is asked to move it first. */
+static void release_unquarantine(void)
+{
+    static const char tail[] = "/Contents/Resources";
+    char app[LAUNCHER_PATH], builder[LAUNCHER_PATH + 64];
+    size_t n = strlen(g_release_dir);
+
+    snprintf(builder, sizeof builder, "%s/bin/xboxrecomp-build", g_release_dir);
+    if (getxattr(builder, "com.apple.quarantine", NULL, 0, 0, XATTR_NOFOLLOW) < 0)
+        return;                                 /* nothing to do */
+    if (n < sizeof tail || strcmp(g_release_dir + n - (sizeof tail - 1), tail) != 0)
+        return;
+    snprintf(app, sizeof app, "%.*s", (int)(n - (sizeof tail - 1)), g_release_dir);
+    if (strstr(app, "/AppTranslocation/")) {
+        g_rel_translocated = 1;
+        return;
+    }
+    nftw(app, unquarantine_one, 32, FTW_PHYS);
+}
+
+/* What the player is told while it is translocated, instead of building. */
+static int release_translocated_error(void)
+{
+    if (!g_rel_translocated)
+        return 0;
+    snprintf(g_rel_error, sizeof g_rel_error,
+             "macOS is running this copy of %s from a temporary, read-only place, "
+             "so it cannot build the game. Quit, move it to Applications (or any "
+             "folder) in Finder, and open it again.", g_title_name);
+    return 1;
+}
+#endif
+
 static void release_init(void)
 {
     char path[LAUNCHER_PATH + 32], text[8192], id[16];
@@ -645,6 +704,17 @@ static void release_init(void)
         return;
     host_path_dirname(g_release_dir);
     snprintf(path, sizeof path, "%s/release.json", g_release_dir);
+#if defined(__APPLE__)
+    /* A Mac release is an application: this is Contents/MacOS, and the
+     * release is in Contents/Resources (tools/release/make_release.py). */
+    if (!read_small_file(path, text, sizeof text)) {
+        size_t len = strlen(g_release_dir);
+        if (len >= 6 && strcmp(g_release_dir + len - 6, "/MacOS") == 0) {
+            snprintf(g_release_dir + len - 5, sizeof g_release_dir - (len - 5), "Resources");
+            snprintf(path, sizeof path, "%s/release.json", g_release_dir);
+        }
+    }
+#endif
     if (!read_small_file(path, text, sizeof text) ||
         !json_str(text, "title_id", id, sizeof id) ||
         !json_str(text, "exe", g_release_exe, sizeof g_release_exe))
@@ -660,6 +730,11 @@ static void release_init(void)
         return;
     }
     release_status();
+#if defined(__APPLE__)
+    release_unquarantine();
+    if (g_rel != REL_READY)
+        release_translocated_error();
+#endif
 }
 
 /* The name and id out of the game's own XBE, so the launcher says what it
@@ -1564,6 +1639,10 @@ static void release_start_build(void)
                  "Choose the disc image or the game's folder first.");
         return;
     }
+#if defined(__APPLE__)
+    if (release_translocated_error())
+        return;
+#endif
     snprintf(exe, sizeof exe, "%s/bin/xboxrecomp-build", g_release_dir);
     g_rel_relinking = g_rel_moved;
     argv[0] = exe; argv[1] = g_rel_relinking ? "relink" : "build";
@@ -1577,8 +1656,7 @@ static void release_start_build(void)
     g_build_started = lhost_ticks();
     if (!lhost_job_start(argv)) {
         snprintf(g_rel_error, sizeof g_rel_error,
-                 "The builder could not be started (%s). This launcher can run "
-                 "it on Linux only, so far.", exe);
+                 "The builder could not be started (%s).", exe);
         return;
     }
     g_rel = REL_BUILDING;

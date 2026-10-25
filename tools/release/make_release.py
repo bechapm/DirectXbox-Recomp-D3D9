@@ -22,6 +22,14 @@ it with what the release brings (docs/technical/self-build-release.md):
     icon.png               the toolkit's icon, for a desktop entry or Steam
     LICENSE NOTICE.txt README.txt
 
+On a Mac the release is an application, <Title>.app: the launcher is
+Contents/MacOS/<name>, and everything above is in Contents/Resources, with
+runtime/ beside it -- what the builder puts beside the game it builds (the
+SDL dylib, the Vulkan loader, MoltenVK and its manifest, DXC). zig builds the
+player's game with no SDK, so the engine is built with it the same way, and
+the parts that need Apple's SDK are built here with Xcode's compiler and
+carried prebuilt: SDL, as a dylib, and the launcher.
+
 The recipe (config/releases/<title>.json, or one in the title's own
 repository) names the title, its project (relative to the recipe), the
 executable and launcher targets, and the default.xbe images the title is
@@ -34,12 +42,14 @@ Run it where the toolkit builds (the Freedesktop SDK on SteamOS, with the
 rust-stable extension for the builder): the engine and launcher compile
 against this machine's SDL, X11, Wayland and audio headers, with the
 release's own zig, so what they need at run time is only what every player
-has. Nothing here starts a title.
+has. On a Mac it needs Xcode, Cargo and a Vulkan SDK (VULKAN_SDK, or
+--vulkan-sdk). Nothing here starts a title.
 """
 
 import argparse
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -48,6 +58,13 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+from tools.release.fetch_toolchain import fetch, host_platform  # noqa: E402
+
+PLATFORM = host_platform()
+MACOS = PLATFORM.startswith("macos")
+# The oldest macOS a release runs on (fetch_toolchain.py's target says the same).
+MACOS_MIN = "13.0"
 
 # What the toolkit's pipeline needs at a player's machine, beyond tools/.
 TOOLKIT_FILES = ["scripts/recompile.py", "LICENSE"]
@@ -56,13 +73,19 @@ TOOLKIT_DIRS = ["config", "templates/runtime", "src/hle"]
 TOOLS_SKIP = {"builder", "linux", "macos", "vk_spike", "release", "__pycache__"}
 
 # The build machine's headers for what SDL loads at run time, after zig's own
-# libc headers, and its libraries for the names SDL records.
-HOST_FLAGS = ["-DCMAKE_C_FLAGS=-idirafter /usr/include",
-              "-DCMAKE_CXX_FLAGS=-idirafter /usr/include",
-              "-DCMAKE_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu"]
+# libc headers, and its libraries for the names SDL records. Linux only: on a
+# Mac, SDL is built apart, with Xcode (build_sdl_macos).
+HOST_FLAGS = [] if MACOS else ["-DCMAKE_C_FLAGS=-idirafter /usr/include",
+                               "-DCMAKE_CXX_FLAGS=-idirafter /usr/include",
+                               "-DCMAKE_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu"]
+
+# SDL as the runtime builds it (CMakeLists.txt), as a dylib.
+SDL_OPTIONS = ["-DSDL_SHARED=ON", "-DSDL_STATIC=OFF", "-DSDL_TEST_LIBRARY=OFF",
+               "-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_INSTALL=OFF",
+               "-DSDL_CAMERA=OFF", "-DSDL_GPU=OFF", "-DSDL_RENDER=OFF"]
 
 NOTICE = """\
-{title} for Linux, a self-building release of the xboxrecomp toolkit.
+{title} for {os_name}, a self-building release of the xboxrecomp toolkit.
 
 It contains no game code or data. It recompiles your own copy of the game,
 on your machine, the first time you start it.
@@ -78,14 +101,19 @@ or later (LICENSE). This release also carries, each under its own licence:
   SDL 3.4 (zlib), miniupnpc 2.3 (BSD-3-Clause) and libsamplerate
     (BSD-2-Clause), linked into the game's runtime
   XbSymbolDatabase (MIT), from the Cxbx-Reloaded project
-  The DirectX Shader Compiler (dxc/LICENSE-MS.txt, dxc/LICENSE-LLVM.txt)
+  The DirectX Shader Compiler ({dxc_licenses})
+{extra}"""
+
+NOTICE_MACOS = """\
+  The Vulkan loader and MoltenVK (Apache-2.0, licenses/), from the LunarG
+    Vulkan SDK, in runtime/ with DXC, and put beside the game it builds
 """
 
 README = """\
 {title}
 {line}
 
-Start ./{name}. The first time, it asks for your copy of the game: the disc
+{start} The first time, it asks for your copy of the game: the disc
 image (.iso or .xiso) or the folder its files are in. It then builds the game
 from it, which takes a minute or two, and opens the settings; press Play.
 
@@ -97,8 +125,7 @@ This release works from these images of the game's default.xbe (SHA-1):
 {hashes}
 Any other is refused, because it has not been tested.
 
-icon.png is the icon to give a desktop shortcut, or a Steam shortcut
-(Add a Non-Steam Game, then Properties).
+{shortcut}
 
 This is an independent project, not affiliated with, endorsed by or sponsored
 by Microsoft Corporation. Xbox, DirectX and Direct3D are trademarks of the
@@ -119,9 +146,38 @@ def run(cmd, **kw):
         sys.exit(f"make_release: failed ({r.returncode}): {cmd[0]}")
 
 
-def copy_tree(src, dst, skip=()):
-    shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False,
-                    ignore=shutil.ignore_patterns("__pycache__", "test_*.py", "*.pyc", *skip))
+def tracked_files(repo, paths):
+    """The files git tracks under `paths` of `repo`, relative to it."""
+    r = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", "--", *paths],
+                       capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(f"make_release: git ls-files failed in {repo}: {r.stderr.strip()}")
+    return [f for f in r.stdout.split("\0") if f and (repo / f).is_file()]
+
+
+README_LINUX_START = "Start ./{name}."
+README_LINUX_SHORTCUT = """\
+icon.png is the icon to give a desktop shortcut, or a Steam shortcut
+(Add a Non-Steam Game, then Properties)."""
+
+README_MACOS_START = """\
+Move {app} to Applications (or any folder you like). This release is not
+signed with an Apple Developer ID, so before you open it the first time,
+open Terminal and run
+
+    xattr -dr com.apple.quarantine "/Applications/{app}"
+
+(with wherever you put it). That clears the flag macOS puts on everything
+downloaded, from the application and the tools it builds the game with.
+Then open it.
+
+(System Settings, Privacy & Security, Open Anyway also opens it, and it then
+tries to clear the same flag itself. If the build then stops because macOS
+will not run one of its tools, quit and run the command above.)
+"""
+README_MACOS_SHORTCUT = """\
+It needs macOS {macos_min} or later on Apple Silicon. Nothing else is
+installed: not Xcode, not its command line tools."""
 
 
 def toolchain_args(tc):
@@ -130,6 +186,82 @@ def toolchain_args(tc):
             f"-DCMAKE_CXX_COMPILER={tc / 'bin/zc++'}",
             f"-DCMAKE_AR={tc / 'bin/zar'}", f"-DCMAKE_RANLIB={tc / 'bin/zranlib'}",
             "-DCMAKE_BUILD_TYPE=Release", "-G", "Ninja"]
+
+
+def build_sdl_macos(work, tc, env):
+    """SDL as a dylib, with Xcode's compiler: its Cocoa, Metal and audio code
+    needs Apple's SDK, which zig cannot use (fetch_toolchain.py). Its build
+    folder is inside the engine's, so the engine package carries it. Only C
+    crosses into it, so mixing compilers is safe."""
+    sdl = work / "engine" / "sdl"
+    run([tc / "cmake/bin/cmake", "-S", ROOT / "third_party/SDL", "-B", sdl, "-G", "Ninja",
+         f"-DCMAKE_MAKE_PROGRAM={tc / 'ninja/bin/ninja'}", "-DCMAKE_BUILD_TYPE=Release",
+         "-DCMAKE_C_COMPILER=clang", "-DCMAKE_OBJC_COMPILER=clang",
+         f"-DCMAKE_OSX_DEPLOYMENT_TARGET={MACOS_MIN}", "-DCMAKE_OSX_ARCHITECTURES=arm64",
+         *SDL_OPTIONS], env=env)
+    run([tc / "cmake/bin/cmake", "--build", sdl], env=env)
+    return sdl
+
+
+def vulkan_sdk(arg):
+    """The Vulkan SDK's macOS folder: lib/ holds the loader, MoltenVK and DXC."""
+    for d in filter(None, [arg, os.environ.get("VULKAN_SDK")]):
+        d = Path(d).expanduser()
+        for cand in (d, d / "macOS"):
+            if (cand / "lib/libMoltenVK.dylib").is_file():
+                return cand
+    sys.exit("make_release: no Vulkan SDK (set VULKAN_SDK or pass --vulkan-sdk): "
+             "a Mac release carries its loader, MoltenVK and DXC")
+
+
+def copy_dylib(src, dst):
+    """A dylib, followed through its links and thinned to arm64."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src.resolve(), dst)
+    archs = subprocess.run(["lipo", "-archs", str(dst)], capture_output=True,
+                           text=True).stdout.split()
+    if len(archs) > 1 and "arm64" in archs:
+        run(["lipo", dst, "-thin", "arm64", "-output", dst])
+
+
+def macos_runtime(rel, sdk, sdl, cache):
+    """runtime/: what the builder puts beside the game it builds, where the
+    game looks for each (src/d3d/rhi_vulkan.c, rhi_vulkan_dxc.cpp, and the
+    @executable_path rpath for SDL)."""
+    rt = rel / "runtime"
+    for name in ("libvulkan.1.dylib", "libMoltenVK.dylib", "libdxcompiler.dylib"):
+        copy_dylib(sdk / "lib" / name, rt / name)
+    copy_dylib(sdl / "libSDL3.0.dylib", rt / "libSDL3.0.dylib")
+    icd = {"file_format_version": "1.0.0",
+           "ICD": {"library_path": "../../libMoltenVK.dylib", "api_version": "1.4.0",
+                   "is_portability_driver": True}}
+    src = sdk / "share/vulkan/icd.d/MoltenVK_icd.json"
+    if src.is_file():
+        icd = json.loads(src.read_text())
+        icd["ICD"]["library_path"] = "../../libMoltenVK.dylib"
+    (rt / "vulkan/icd.d").mkdir(parents=True)
+    (rt / "vulkan/icd.d/MoltenVK_icd.json").write_text(json.dumps(icd, indent=4) + "\n")
+    # Their licences, which the SDK does not carry: DXC's in dxc/, as on
+    # Linux, the loader's and MoltenVK's in licenses/.
+    (rel / "dxc").mkdir(exist_ok=True)
+    (rel / "licenses").mkdir(exist_ok=True)
+    for name, folder in (("dxc-license", "dxc"), ("dxc-notices", "dxc"),
+                         ("moltenvk-license", "licenses"), ("loader-license", "licenses")):
+        f = fetch(name, cache, PLATFORM)
+        shutil.copy2(f, rel / folder / f.name)
+
+
+def macos_icon(dst):
+    """The toolkit's icon as an .icns, from its PNGs."""
+    iconset = dst.parent / "icon.iconset"
+    iconset.mkdir()
+    png = ROOT / "assets/icon/png"
+    for size in (16, 32, 128, 256, 512):
+        shutil.copy2(png / f"{size}.png", iconset / f"icon_{size}x{size}.png")
+        if (png / f"{size * 2}.png").is_file():
+            shutil.copy2(png / f"{size * 2}.png", iconset / f"icon_{size}x{size}@2x.png")
+    run(["iconutil", "-c", "icns", iconset, "-o", dst])
+    shutil.rmtree(iconset)
 
 
 def main():
@@ -141,7 +273,9 @@ def main():
     ap.add_argument("--cache", help="downloads (default <out>/../downloads)")
     ap.add_argument("--version", help="this release's version (default: date and commit)")
     ap.add_argument("--archive", action="store_true",
-                    help="also write <name>-<version>-linux-x86_64.tar.xz beside --out")
+                    help=f"also write <name>-<version>-{PLATFORM}.tar.xz beside --out")
+    ap.add_argument("--vulkan-sdk", help="macOS: the Vulkan SDK to take the loader, "
+                    "MoltenVK and DXC from (default VULKAN_SDK)")
     args = ap.parse_args()
 
     recipe_path = Path(args.recipe).resolve()
@@ -155,6 +289,7 @@ def main():
     for img in images:
         if img.get("config") and not (project / img["config"]).is_dir():
             sys.exit(f"make_release: {img['config']} (for {img['sha1']}) is not in {project}")
+    sdk = vulkan_sdk(args.vulkan_sdk) if MACOS else None
     out = Path(args.out).resolve()
     work = Path(args.work).resolve() if args.work else out.parent / "release-work"
     cache = Path(args.cache).resolve() if args.cache else out.parent / "downloads"
@@ -167,6 +302,11 @@ def main():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     (out / marker).write_text("tools/release/make_release.py\n")
+    # Where release.json and everything beside it goes: the folder itself, or
+    # on a Mac the application's Resources.
+    app = out / f"{recipe['title_name']}.app" if MACOS else None
+    rel = app / "Contents/Resources" if MACOS else out
+    rel.mkdir(parents=True, exist_ok=True)
     # Zig's cache is shared; the builds are per release, because CMake keeps
     # a build folder on the compiler it was first configured with, and each
     # release's compiler is its own.
@@ -175,6 +315,9 @@ def main():
     work.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(zig_cache),
                ZIG_LOCAL_CACHE_DIR=str(zig_cache))
+    # zig is given its macOS version by its target (fetch_toolchain.py), and
+    # CMake would add a second from this.
+    env.pop("MACOSX_DEPLOYMENT_TARGET", None)
 
     if args.version:
         version = args.version
@@ -182,87 +325,119 @@ def main():
         sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
                              capture_output=True, text=True).stdout.strip() or "unknown"
         version = time.strftime("%Y%m%d") + "-" + sha
-    log(f"{recipe['title_name']} {version} -> {out}")
+    log(f"{recipe['title_name']} {version} ({PLATFORM}) -> {out}")
 
     # The compiler, CMake, Ninja and Python everything below is built with.
-    run([sys.executable, "-m", "tools.release.fetch_toolchain", "--out", out,
+    run([sys.executable, "-m", "tools.release.fetch_toolchain", "--out", rel,
          "--cache", cache], cwd=ROOT)
-    tc = out / "toolchain"
+    tc = rel / "toolchain"
     cmake = tc / "cmake/bin/cmake"
 
-    # The engine, built with that compiler, then packaged.
+    # The engine, built with that compiler, then packaged. On a Mac, SDL first,
+    # apart (build_sdl_macos), and the engine pointed at it.
     eng = work / "engine"
-    run([cmake, "-S", ROOT, "-B", eng, *toolchain_args(tc), *HOST_FLAGS], env=env)
+    sdl_args = []
+    if MACOS:
+        sdl = build_sdl_macos(work, tc, env)
+        sdl_args = ["-DXBOXRECOMP_EXTERNAL_SDL=ON", f"-DSDL3_DIR={sdl}"]
+    run([cmake, "-S", ROOT, "-B", eng, *toolchain_args(tc), *HOST_FLAGS, *sdl_args], env=env)
     run([cmake, "--build", eng, "--target", "xboxrecomp_engine"], env=env)
     run([sys.executable, "-m", "tools.release.make_engine_package", "--build", eng,
-         "--out", out / "engine"], cwd=ROOT)
+         "--out", rel / "engine"], cwd=ROOT)
 
     # XbSymbolDatabase's tool, which names the XDK functions in a player's XBE.
     xbsdb = work / "xbsdb"
     run([cmake, "-S", ROOT / "third_party/XbSymbolDatabase", "-B", xbsdb,
          *toolchain_args(tc)], env=env)
     run([cmake, "--build", xbsdb, "--target", "XbSymbolDatabaseCLI"], env=env)
-    (out / "bin").mkdir()
-    shutil.copy2(xbsdb / "projects/cli/XbSymbolDatabaseCLI", out / "bin")
+    (rel / "bin").mkdir()
+    shutil.copy2(xbsdb / "projects/cli/XbSymbolDatabaseCLI", rel / "bin")
 
-    # The builder, linked by zig for glibc 2.38 like everything else.
-    cargo_env = dict(env, CARGO_TARGET_DIR=str(work / "cargo"),
-                     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=str(tc / "bin/zcc"))
+    # The builder: linked by zig for glibc 2.38 like everything else on
+    # Linux; by Xcode's linker on a Mac, for the same macOS as the rest.
+    cargo_env = dict(env, CARGO_TARGET_DIR=str(work / "cargo"))
+    if MACOS:
+        cargo_env["MACOSX_DEPLOYMENT_TARGET"] = MACOS_MIN
+    else:
+        cargo_env["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"] = str(tc / "bin/zcc")
     run(["cargo", "build", "--release", "--locked"], cwd=ROOT / "tools/builder", env=cargo_env)
-    shutil.copy2(work / "cargo/release/xboxrecomp-build", out / "bin")
+    shutil.copy2(work / "cargo/release/xboxrecomp-build", rel / "bin")
 
-    # The pipeline, as much of the toolkit as lifting a title reads.
-    tk = out / "toolkit"
-    copy_tree(ROOT / "tools", tk / "tools", skip=TOOLS_SKIP)
-    for d in TOOLKIT_DIRS:
-        copy_tree(ROOT / d, tk / d, skip=("releases",))
-    for f in TOOLKIT_FILES:
+    # The pipeline, as much of the toolkit as lifting a title reads. Only
+    # what git tracks: a desk checkout also holds pipeline output, regression
+    # frames and the like, made from someone's game.
+    tk = rel / "toolkit"
+    for f in tracked_files(ROOT, ["tools", *TOOLKIT_DIRS, *TOOLKIT_FILES]):
+        parts = Path(f).parts
+        if (parts[0] == "tools" and len(parts) > 1 and parts[1] in TOOLS_SKIP) \
+                or "__pycache__" in parts or Path(f).name.startswith("test_") \
+                or f.startswith("config/releases/"):
+            continue
         (tk / f).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / f, tk / f)
 
     # The title's project, without generated code or build output.
-    tracked = subprocess.run(["git", "-C", str(project), "ls-files", "-z", "."],
-                             capture_output=True, text=True).stdout.split("\0")
+    tracked = tracked_files(project, ["."])
     lift = recipe.get("lift")
     wanted = set(recipe.get("include", [])) | ({lift[0]} if lift else set())
-    for rel in filter(None, tracked):
+    for rel_path in tracked:
         # What a title's build reads: its CMakeLists, its sources and its own
         # config (seeds, XDK symbols), and what the recipe adds (its own lift
         # script). Not other scripts, a submodule, or lifted code.
-        if not (rel == "CMakeLists.txt" or rel.startswith(("src/", "config/"))
-                or rel in wanted or any(rel.startswith(w.rstrip("/") + "/") for w in wanted)):
+        if not (rel_path == "CMakeLists.txt" or rel_path.startswith(("src/", "config/"))
+                or rel_path in wanted
+                or any(rel_path.startswith(w.rstrip("/") + "/") for w in wanted)):
             continue
-        if "/recomp/gen/" in rel or not (project / rel).is_file():
+        if "/recomp/gen/" in rel_path:
             continue
-        (out / "recipe" / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(project / rel, out / "recipe" / rel)
+        (rel / "recipe" / rel_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(project / rel_path, rel / "recipe" / rel_path)
 
-    # The launcher: the title's own target, built against the engine above.
-    # The project needs a lifted source to configure; the launcher uses none.
+    # The launcher: the title's own target. The project needs a lifted source
+    # to configure; the launcher uses none.
     lproj = work / "launcher-project"
     shutil.rmtree(lproj, ignore_errors=True)
-    shutil.copytree(out / "recipe", lproj)
+    shutil.copytree(rel / "recipe", lproj)
     (lproj / "src/recomp/gen").mkdir(parents=True, exist_ok=True)
     (lproj / "src/recomp/gen/placeholder.c").write_text(
         "/* make_release.py: the launcher needs no lifted code. */\n"
         "int xboxrecomp_release_placeholder;\n")
     # Anything else the title's CMakeLists insists on before it configures,
     # which its lift writes (split2-recomp: the region header).
-    for rel in recipe.get("placeholders", []):
-        (lproj / rel).parent.mkdir(parents=True, exist_ok=True)
-        (lproj / rel).write_text("/* make_release.py: a placeholder for the launcher's build. */\n")
+    for rp in recipe.get("placeholders", []):
+        (lproj / rp).parent.mkdir(parents=True, exist_ok=True)
+        (lproj / rp).write_text("/* make_release.py: a placeholder for the launcher's build. */\n")
     lbuild = work / "launcher"
-    run([cmake, "-S", lproj, "-B", lbuild, *toolchain_args(tc), *HOST_FLAGS,
-         f"-DXBOXRECOMP_DIR={ROOT}", f"-DXBOXRECOMP_PREBUILT={eng}"], env=env)
+    if MACOS:
+        # With Xcode's compiler, from the toolkit's sources: it draws through
+        # Core Text and Core Animation, which need the SDK. It links only C
+        # (settings, pads, addresses) and its own SDL, statically.
+        launcher_args = ["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={tc / 'ninja/bin/ninja'}",
+                         "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_C_COMPILER=clang",
+                         "-DCMAKE_CXX_COMPILER=clang++", "-DCMAKE_OBJC_COMPILER=clang",
+                         f"-DCMAKE_OSX_DEPLOYMENT_TARGET={MACOS_MIN}",
+                         "-DCMAKE_OSX_ARCHITECTURES=arm64", f"-DXBOXRECOMP_DIR={ROOT}"]
+    else:
+        # Against the engine above.
+        launcher_args = [*toolchain_args(tc), *HOST_FLAGS, f"-DXBOXRECOMP_DIR={ROOT}",
+                         f"-DXBOXRECOMP_PREBUILT={eng}"]
+    run([cmake, "-S", lproj, "-B", lbuild, *launcher_args], env=env)
     run([cmake, "--build", lbuild, "--target", recipe["launcher"]], env=env)
-    shutil.copy2(lbuild / recipe["launcher"], out / recipe["release_name"])
+    if MACOS:
+        (app / "Contents/MacOS").mkdir(parents=True)
+        shutil.copy2(lbuild / recipe["launcher"], app / "Contents/MacOS" / recipe["release_name"])
+    else:
+        shutil.copy2(lbuild / recipe["launcher"], out / recipe["release_name"])
 
-    # The shader compiler the renderer loads, with its licences.
-    (out / "dxc").mkdir()
+    # The shader compiler the renderer loads, with its licences. On a Mac,
+    # with the Vulkan loader and MoltenVK in runtime/.
+    (rel / "dxc").mkdir()
+    if MACOS:
+        macos_runtime(rel, sdk, sdl, cache)
     for f in ("lib/libdxcompiler.so", "lib/libdxil.so", "LICENSE-MS.txt", "LICENSE-LLVM.txt"):
         src = ROOT / "third_party/dxc" / f
         if src.is_file():
-            shutil.copy2(src, out / "dxc" / Path(f).name)
+            shutil.copy2(src, rel / "dxc" / Path(f).name)
 
     release = {
         "title_name": recipe["title_name"],
@@ -273,24 +448,58 @@ def main():
     }
     if lift:
         release["lift"] = lift
-    (out / "release.json").write_text(json.dumps(release, indent=2) + "\n")
-    shutil.copy2(ROOT / "LICENSE", out / "LICENSE")
-    (out / "NOTICE.txt").write_text(NOTICE.format(title=recipe["title_name"]))
-    (out / "README.txt").write_text(README.format(
+    (rel / "release.json").write_text(json.dumps(release, indent=2) + "\n")
+    shutil.copy2(ROOT / "LICENSE", rel / "LICENSE")
+    (rel / "NOTICE.txt").write_text(NOTICE.format(
+        title=recipe["title_name"], os_name="macOS" if MACOS else "Linux",
+        dxc_licenses="dxc/LICENSE-DXC.txt, dxc/ThirdPartyNotices-DXC.txt" if MACOS
+        else "dxc/LICENSE-MS.txt, dxc/LICENSE-LLVM.txt",
+        extra=NOTICE_MACOS if MACOS else ""))
+    if MACOS:
+        userdir = f"~/Library/Application Support/xboxrecomp/builds/{recipe['title_id']}"
+        start = README_MACOS_START.format(app=app.name)
+        shortcut = README_MACOS_SHORTCUT.format(macos_min=MACOS_MIN)
+    else:
+        userdir = f"~/.local/share/xboxrecomp/builds/{recipe['title_id']}"
+        start = README_LINUX_START.format(name=recipe["release_name"])
+        shortcut = README_LINUX_SHORTCUT
+    readme = README.format(
         title=recipe["title_name"], line="=" * len(recipe["title_name"]),
-        name=recipe["release_name"],
-        userdir=f"~/.local/share/xboxrecomp/builds/{recipe['title_id']}",
-        hashes="".join(f"  {i['sha1']}  {i.get('name', '')}\n" for i in images)))
-    # The toolkit's icon, for a desktop entry or a Steam shortcut.
-    shutil.copy2(ROOT / "assets/icon/png/256.png", out / "icon.png")
+        start=start, shortcut=shortcut, userdir=userdir,
+        hashes="".join(f"  {i['sha1']}  {i.get('name', '')}\n" for i in images))
+    (rel / "README.txt").write_text(readme)
+    # The toolkit's icon, for a desktop entry or a Steam shortcut; on a Mac,
+    # the application's.
+    shutil.copy2(ROOT / "assets/icon/png/256.png", rel / "icon.png")
+    if MACOS:
+        macos_icon(rel / "icon.icns")
+        with open(app / "Contents/Info.plist", "wb") as f:
+            plistlib.dump({
+                "CFBundleDevelopmentRegion": "en",
+                "CFBundleExecutable": recipe["release_name"],
+                "CFBundleIdentifier": f"org.xboxrecomp.release.{recipe['release_name']}",
+                "CFBundleInfoDictionaryVersion": "6.0",
+                "CFBundleName": recipe["title_name"][:15],
+                "CFBundleDisplayName": recipe["title_name"],
+                "CFBundleIconFile": "icon.icns",
+                "CFBundlePackageType": "APPL",
+                "CFBundleShortVersionString": version,
+                "CFBundleVersion": version,
+                "LSMinimumSystemVersion": MACOS_MIN,
+                "LSApplicationCategoryType": "public.app-category.games",
+                "NSHighResolutionCapable": True,
+                "NSSupportsAutomaticGraphicsSwitching": True,
+            }, f)
+        # Beside the application in the archive, where a player sees it first.
+        (out / "README.txt").write_text(readme)
 
     size = sum(f.lstat().st_size for f in out.rglob("*") if f.is_file() and not f.is_symlink())
     log(f"done: {out} ({size / 1e6:.0f} MB)")
 
-    # One file to publish: <name>-<version>-linux-x86_64.tar.xz beside the
+    # One file to publish: <name>-<version>-<platform>.tar.xz beside the
     # folder, unpacking as <name>/.
     if args.archive:
-        archive = out.parent / f"{recipe['release_name']}-{version}-linux-x86_64.tar.xz"
+        archive = out.parent / f"{recipe['release_name']}-{version}-{PLATFORM}.tar.xz"
         log(f"archiving to {archive}")
         with tarfile.open(archive, "w:xz", preset=6) as tar:
             tar.add(out, arcname=recipe["release_name"],

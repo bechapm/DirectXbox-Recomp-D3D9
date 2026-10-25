@@ -1703,11 +1703,15 @@ static int load_vulkan(void)
          * extension only governs vkCreateInstance, and the loader already
          * opens every manifest's driver earlier, to answer
          * vkEnumerateInstanceExtensionProperties -- which is where the
-         * second MoltenVK would get in. Set once, before any Vulkan call. */
-        if (m && strstr(beside[i], "Frameworks") && !getenv("VK_DRIVER_FILES") &&
-            !getenv("VK_ICD_FILENAMES")) {
+         * second MoltenVK would get in. Set once, before any Vulkan call.
+         *
+         * A loader beside the executable -- a self-building release puts one
+         * there (tools/builder, the release's runtime/) -- has its manifest
+         * beside it too, in vulkan/icd.d, for the same reason. */
+        if (m && !getenv("VK_DRIVER_FILES") && !getenv("VK_ICD_FILENAMES")) {
             char icd[1200];
-            snprintf(icd, sizeof icd, "%s../Resources/vulkan/icd.d/MoltenVK_icd.json", dir);
+            snprintf(icd, sizeof icd, "%s%svulkan/icd.d/MoltenVK_icd.json", dir,
+                     strstr(beside[i], "Frameworks") ? "../Resources/" : "");
             if (access(icd, R_OK) == 0)
                 setenv("VK_DRIVER_FILES", icd, 1);
         }

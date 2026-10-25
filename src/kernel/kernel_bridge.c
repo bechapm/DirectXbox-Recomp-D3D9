@@ -1954,8 +1954,7 @@ static ULONGLONG bridge_guest_deadline(uint32_t timeout_va, int *poll_only)
 #pragma comment(lib, "Synchronization.lib")   /* WaitOnAddress */
 #endif
 #if defined(__APPLE__)
-#include <os/os_sync_wait_on_address.h>      /* macOS 14.4 */
-#include <os/clock.h>
+#include "platform/darwin_compat.h"   /* os_sync_wait_on_address: macOS 14.4 */
 #endif
 
 /* Sleep on a counter until it is not `seen` any more, a wake, or `ms`.

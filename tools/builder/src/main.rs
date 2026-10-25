@@ -30,7 +30,9 @@
 //! now, rebuilding nothing.
 //!
 //! Everything happens in the player's folder for this title
-//! ($XDG_DATA_HOME/xboxrecomp/builds/<TITLEID>, or XBOXRECOMP_BUILD_DIR), so
+//! ($XDG_DATA_HOME/xboxrecomp/builds/<TITLEID>; on a Mac
+//! ~/Library/Application Support/xboxrecomp/builds/<TITLEID>; or
+//! XBOXRECOMP_BUILD_DIR), so
 //! the release itself can be read-only. Progress goes to stdout as one JSON
 //! object a line, for the launcher to draw; everything the tools print goes
 //! to build.log there.
@@ -178,6 +180,14 @@ fn fail<T>(message: impl Into<String>) -> Result<T, Failure> {
 fn user_dir(title_id: &str) -> Result<PathBuf, Failure> {
     if let Some(d) = std::env::var_os("XBOXRECOMP_BUILD_DIR") {
         return Ok(PathBuf::from(d).join(title_id));
+    }
+    // Where the runtime keeps a Mac's settings and saves (src/config/recomp_config.h).
+    if cfg!(target_os = "macos") {
+        return match std::env::var_os("HOME") {
+            Some(h) => Ok(PathBuf::from(h).join("Library/Application Support/xboxrecomp/builds")
+                .join(title_id)),
+            None => fail("no home folder to build in (HOME is not set)"),
+        };
     }
     let data = match std::env::var_os("XDG_DATA_HOME") {
         Some(d) if !d.is_empty() => PathBuf::from(d),
@@ -662,8 +672,22 @@ fn build(release: &Release, user: &Path, log: &Path) -> Result<PathBuf, Failure>
     let bdir = user.join("build");
     let cmake = tc.join("cmake/bin/cmake");
     let zig_cache = user.join("zig-cache");
+    // On a Mac the toolchain's own xcrun comes first (fetch_toolchain.py):
+    // the system's offers to install Xcode's tools, which zig does not need.
+    // And no deployment target from the player's environment: zig's target
+    // names the macOS a release is built for.
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![tc.join("bin")];
+    dirs.extend(std::env::split_paths(&path));
+    let mac_path = std::env::join_paths(dirs).unwrap_or(path);
     let with_env = |c: &mut Command| {
-        c.env("ZIG_GLOBAL_CACHE_DIR", &zig_cache).env("ZIG_LOCAL_CACHE_DIR", &zig_cache);
+        // From the player's folder, not wherever the launcher was started
+        // (a folder CMake may not be able to read).
+        c.current_dir(user)
+            .env("ZIG_GLOBAL_CACHE_DIR", &zig_cache).env("ZIG_LOCAL_CACHE_DIR", &zig_cache);
+        if cfg!(target_os = "macos") {
+            c.env("PATH", &mac_path).env_remove("MACOSX_DEPLOYMENT_TARGET");
+        }
     };
 
     progress("configure", 0, 1, "");
@@ -722,6 +746,14 @@ fn install(release: &Release, user: &Path, built: &Path, sha1: &str) -> Result<P
     let tmp = user.join(format!("{}.part", release.exe));
     fs::copy(built, &tmp).and_then(|_| fs::rename(&tmp, &dest))
         .or_else(|e| fail(format!("cannot install {}: {e}", dest.display())))?;
+    // What the release keeps for beside the game (on a Mac: the SDL dylib the
+    // game links, the Vulkan loader, MoltenVK and its manifest, DXC), copied
+    // rather than linked, so the game still starts after the release is
+    // moved; on APFS a copy is a clone, and costs nothing.
+    let runtime = release.dir.join("runtime");
+    if runtime.is_dir() {
+        sync_tree(&runtime, user)?;
+    }
     // The renderer looks for the shader compiler beside the executable first.
     let dxc = release.dir.join("dxc/libdxcompiler.so");
     if dxc.is_file() {
@@ -781,7 +813,18 @@ impl Drop for BuildLock {
 fn process_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_alive(pid: u32) -> bool {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    // Signal 0 checks without sending: EPERM is a process that exists but is
+    // not ours, which still holds the lock.
+    let alive = unsafe { kill(pid, 0) } == 0;
+    alive || io::Error::last_os_error().raw_os_error() == Some(1)
+}
+#[cfg(not(unix))]
 fn process_alive(_pid: u32) -> bool {
     true        // no cheap check here: a stale lock is removed by hand
 }
@@ -1065,7 +1108,7 @@ mod tests {
         assert!(!d.join("build.lock").exists());
         // A pid no process has: what a build killed by Cancel leaves.
         fs::write(d.join("build.lock"), "4000000000").unwrap();
-        if cfg!(target_os = "linux") {
+        if cfg!(unix) {
             assert!(BuildLock::take(&d).is_ok(), "a dead build's lock is taken over");
         }
         let _ = fs::remove_dir_all(&d);

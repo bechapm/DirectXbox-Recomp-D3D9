@@ -65,8 +65,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <wchar.h>
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "darwin_compat.h"     /* <mach/mach.h>, mach_vm_read_overwrite */
 #include <mach-o/dyld.h>
 #endif
 #include <stdio.h>

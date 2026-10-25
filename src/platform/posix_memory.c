@@ -19,8 +19,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #if defined(__APPLE__)
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "darwin_compat.h"     /* <mach/mach.h>, mach_vm_region */
 #endif
 
 #ifndef ERROR_INVALID_ADDRESS

@@ -122,10 +122,13 @@ function(xboxrecomp_export_engine)
     _xboxrecomp_engine_settings(_settings)
     _xboxrecomp_engine_identity(_identity)
     string(JOIN "" _identity ${_identity})
-    # SDL from the submodule leaves a package of its own in the build tree.
+    # SDL from the submodule leaves a package of its own in the build tree;
+    # an external one (XBOXRECOMP_EXTERNAL_SDL) is wherever SDL3_DIR is.
     set(_sdl "")
     if(TARGET SDL3-static AND EXISTS "${CMAKE_BINARY_DIR}/third_party/SDL")
         set(_sdl "${CMAKE_BINARY_DIR}/third_party/SDL")
+    elseif(XBOXRECOMP_EXTERNAL_SDL AND SDL3_DIR)
+        get_filename_component(_sdl "${SDL3_DIR}" ABSOLUTE)
     endif()
     file(WRITE "${CMAKE_BINARY_DIR}/xboxrecomp-engine.cmake"
          "set(XBOXRECOMP_ENGINE_SETTINGS \"${_settings}\")\n"

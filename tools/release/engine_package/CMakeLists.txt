@@ -50,5 +50,12 @@ target_link_libraries(xboxrecomp INTERFACE
     xbox_hle
 )
 
+# On a Mac the engine's SDL is a dylib, which the builder puts beside the game
+# (the release's runtime/), so that is where the game looks for it, wherever
+# the release itself has been moved to.
+if(APPLE)
+    target_link_options(xboxrecomp INTERFACE "LINKER:-rpath,@executable_path")
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/lifted_code.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/title_icon.cmake)

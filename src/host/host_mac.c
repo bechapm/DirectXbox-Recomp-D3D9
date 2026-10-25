@@ -2,13 +2,37 @@
  * host_mac.c -- the few AppKit calls SDL3 does not make for us, through the
  * Objective-C runtime so the library stays plain C.
  *
+ * The runtime's three entry points are looked up, not linked: SDL has
+ * loaded AppKit, and with it libobjc, by the time any of these is called,
+ * and a self-building release links the game with zig's libSystem stubs
+ * only, which have no libobjc (tools/release/fetch_toolchain.py).
+ *
  * All of these run on the main thread (host_sdl.c calls them from there).
  */
 #include "host_mac.h"
 
 #ifdef __APPLE__
+#include <dlfcn.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+
+static Class (*p_getClass)(const char *);
+static SEL (*p_registerName)(const char *);
+static void (*p_msgSend)(void);
+
+static int objc_ready(void)
+{
+    if (!p_msgSend) {
+        p_getClass = (Class (*)(const char *))dlsym(RTLD_DEFAULT, "objc_getClass");
+        p_registerName = (SEL (*)(const char *))dlsym(RTLD_DEFAULT, "sel_registerName");
+        p_msgSend = (void (*)(void))dlsym(RTLD_DEFAULT, "objc_msgSend");
+    }
+    return p_getClass && p_registerName && p_msgSend;
+}
+
+#define objc_getClass(n)    (objc_ready() ? p_getClass(n) : (Class)0)
+#define sel_registerName(n) p_registerName(n)
+#define objc_msgSend        p_msgSend
 
 typedef id (*msg_id)(id, SEL);
 typedef id (*msg_id_ptr)(id, SEL, const char *);
@@ -65,7 +89,7 @@ void host_mac_order_back(void *nswindow)
 {
     /* Behind every other window at its level, without activating anything:
      * the macOS form of SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE). */
-    if (nswindow)
+    if (nswindow && objc_ready())
         ((msg_void_id)objc_msgSend)((id)nswindow, sel_registerName("orderBack:"), nil);
 }
 

@@ -16,9 +16,8 @@ target_link_libraries(xbox_host PUBLIC SDL3::SDL3)
 target_link_libraries(xbox_host PRIVATE xbox_config)
 find_package(Threads REQUIRED)
 target_link_libraries(xbox_host PUBLIC Threads::Threads)
-if(APPLE)
-    target_link_libraries(xbox_host PUBLIC "-framework AppKit" "-framework Foundation" objc)
-endif()
+# No frameworks of its own: host_mac.c reaches AppKit through the Objective-C
+# runtime, which SDL has loaded, so the link needs nothing SDL does not bring.
 target_compile_options(xbox_host PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # ── A macOS application bundle for the title (scripts/make_macos_app.py) ──

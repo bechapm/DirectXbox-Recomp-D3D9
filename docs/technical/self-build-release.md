@@ -3,7 +3,8 @@
 A per-game download with no game code in it. The player unpacks it and starts
 the launcher, which asks for their own copy of the disc (an image or a folder),
 recompiles the game from it on their machine, and then shows the usual settings
-and Play. Linux first; Windows (llvm-mingw) and macOS follow.
+and Play. Linux and macOS (Apple Silicon) so far; Windows follows. The Mac
+release and what differs on it are in [macOS](#macos).
 
 Lifted C is derived from game code, so it can only be made on the player's
 machine from their own disc. Everything else the build needs travels with the
@@ -32,10 +33,11 @@ release.json              title, title id, version, executable, accepted SHA-1s
 bin/xboxrecomp-build      the builder (tools/builder, Rust)
 bin/XbSymbolDatabaseCLI   names the XDK functions in the player's own XBE
 toolchain/                zig 0.17, CMake 4.4, Ninja 1.13, zcc/zc++/zar/zranlib
+                          (and on a Mac an xcrun that fails, below)
 python/                   CPython 3.13 (python-build-standalone) with Capstone
 engine/                   the runtime, prebuilt (make_engine_package.py)
 toolkit/                  the pipeline: tools/, scripts/recompile.py, config/,
-                          templates/runtime, src/hle
+                          templates/runtime, src/hle (only what git tracks)
 recipe/                   the title's CMakeLists, src/ and config/
 dxc/                      the shader compiler the renderer loads
 LICENSE NOTICE.txt README.txt
@@ -45,7 +47,8 @@ TimeSplitters 2's is 637 MB unpacked, 497 MB of it the toolchain (zig is most).
 
 ## The player's folder
 
-`$XDG_DATA_HOME/xboxrecomp/builds/<TITLEID>` (`~/.local/share/...`), or
+`$XDG_DATA_HOME/xboxrecomp/builds/<TITLEID>` (`~/.local/share/...`; on a Mac
+`~/Library/Application Support/xboxrecomp/builds/<TITLEID>`), or
 `$XBOXRECOMP_BUILD_DIR/<TITLEID>` for tests. The release itself can be
 read-only.
 
@@ -125,7 +128,10 @@ A title's repository carries the recipe and a workflow run on version tags
 (split2-recomp's `.github/workflows/release.yml` is the model): check out with
 the toolkit submodule, install the toolkit's Linux build dependencies and
 DXC, run `make_release` from the submodule with `--version <tag> --archive`,
-and attach the archive to a GitHub release. No game files are involved: the
+the same on `macos-15` with `tools/macos/fetch_vulkan_sdk.sh` in place of the
+Linux dependencies, and attach both archives to a GitHub release from one job
+that runs after both. A repository without the submodule checks the toolkit
+out beside itself (Rainbow-six-three-recomp's workflow). No game files are involved: the
 release carries the tools and the title's project, never lifted code. The
 toolkit's own CI builds the TimeSplitters 2 release on every push as a check,
 and publishes nothing.
@@ -199,23 +205,120 @@ both; the Windows one returns 0 for now. Closing the window cancels a build.
 The release-built games behave as the GCC and clang builds do: same verdicts,
 swap counts within 1%, same audio health.
 
+## macOS
+
+A Mac release is an application, `<Title>.app`, for Apple Silicon and macOS 13
+or later, and the player's machine needs nothing installed: not Xcode, not its
+command line tools.
+
+```
+<Title>.app/Contents/MacOS/<name>      the launcher
+<Title>.app/Contents/Resources/        everything the Linux release has beside
+                                       its launcher, plus:
+  runtime/                             what the builder puts beside the game:
+    libSDL3.0.dylib                      the SDL the game links (@executable_path)
+    libvulkan.1.dylib libMoltenVK.dylib  the Vulkan loader and its driver
+    vulkan/icd.d/MoltenVK_icd.json       the driver's manifest, beside the loader
+    libdxcompiler.dylib                  DXC
+  licenses/                            the loader's and MoltenVK's
+  icon.icns
+README.txt                             beside the .app in the archive too
+```
+
+The archive is `<name>-<version>-macos-arm64.tar.xz`. The player's folder is
+`~/Library/Application Support/xboxrecomp/builds/<TITLEID>`, beside the
+runtime's settings and saves.
+
+**How the game is built without an SDK.** zig is given an explicit target,
+`aarch64-macos.13.0`, which keeps it to its own macOS libc headers and
+libSystem stubs, and it builds its own libc++, so what it links needs only
+libSystem. Two things in the engine are not covered by that, and are dealt with
+in the engine rather than by asking for Xcode:
+
+- Apple's frameworks. SDL is the only part of the engine that links them, so
+  `make_release` builds it apart, with Xcode, as a dylib
+  (`XBOXRECOMP_EXTERNAL_SDL`, `SDL3_DIR`), and the engine package carries it.
+  `host_mac.c` looks up the three Objective-C runtime functions it calls
+  instead of linking libobjc, and `xbox_host` links no frameworks of its own.
+  A game links `@rpath/libSDL3.0.dylib` and libSystem, nothing else.
+- Two SDK-only headers, `<mach/mach_vm.h>` and `<os/os_sync_wait_on_address.h>`:
+  `src/platform/darwin_compat.h` declares what is used from them (weakly, for
+  the macOS 14.4 one) when they are missing.
+
+zig cannot use the SDK's framework headers alongside its own, so the
+launcher, which draws through Core Text and Core Animation, is built with
+Xcode as well, from the toolkit's sources. It shares no C++ with the engine.
+
+On a Mac without the command line tools `/usr/bin/xcrun` is a stub that
+offers to install them, in a dialog, and CMake runs `xcrun --show-sdk-path`
+when it is given no SDK. The toolchain carries a `bin/xcrun` that fails
+quietly, and the builder puts that folder first on `PATH`.
+
+**What goes beside the game.** The builder copies `runtime/` beside the
+executable rather than linking it, so moving the application after a build
+does not break the game; on APFS the copy is a clone. The renderer finds a
+Vulkan loader beside the executable first, and the manifest beside the loader
+in `vulkan/icd.d` (`rhi_vulkan.c`), so no Vulkan SDK on the machine is
+involved.
+
+**Gatekeeper.** The release is not signed with a Developer ID. A downloaded
+copy is quarantined, every file of it, and macOS checks each quarantined tool
+the build starts. The README asks the player to run
+`xattr -dr com.apple.quarantine "<path>/<Title>.app"` before the first open.
+A player who uses Open Anyway instead gets the launcher, which then tries to
+clear the flag from its own bundle; opened from a translocated copy (before
+it has been moved out of the folder it was unpacked in) it says to move it
+first. Whether macOS lets an ad-hoc-signed application clear its own flag
+after Open Anyway has not been tested: it needs a person at the dialogs.
+
+**Making one** needs Xcode, Cargo and a Vulkan SDK (`VULKAN_SDK`, or
+`--vulkan-sdk`); otherwise the same command. CI installs LunarG's SDK with
+`tools/macos/fetch_vulkan_sdk.sh` (pinned, checked, no administrator).
+
+**Measured** (Oct 2026, M4 MacBook, under `sandbox-exec` with Xcode, the
+command line tools, Homebrew, the Vulkan SDK and every checkout unreadable,
+and `xcrun`, `git`, `cc` and `ld` not executable):
+
+| | TimeSplitters 2 (split2-recomp) | Rainbow Six 3 |
+|---|---|---|
+| Release, unpacked | 637 MB | 636 MB |
+| Build from a folder, first time | 42 s | 121 s |
+| The same through the launcher | 50 s | -- |
+| From a disc image (1.8 GB extracted) | 58 s | -- |
+| Rebuild from the same folder | 7 s | -- |
+| Lifted C against a desk lift | identical | identical |
+| Extracted files against the folder | identical | -- |
+| Running, against a desk build | ~118 fps uncapped in the front end, sound heard | 60 fps, same swaps, draws and audio health over 45 s |
+
+Rainbow Six 3's own lift (`scripts/release_lift.py`) undoes a hard-drive
+copy's patches before lifting, as its desk build does, so its release accepts
+both the disc's `default.xbe` and a hard-drive copy's.
+
 ## Testing without anyone's screen
 
 - `SDL_VIDEODRIVER=offscreen RECOMP_LAUNCHER_SHOT=<file.bmp>
   [RECOMP_LAUNCHER_SHOT_FRAMES=<n>]` draws the launcher into a file and quits,
-  without opening a window.
+  without opening a window. On a Mac too: the launcher asks SDL for no OpenGL
+  there, which offscreen does not have.
 - `RECOMP_LAUNCHER_BUILD=<disc>` starts building at once: the whole path
   through the launcher, from a script (and a front end that knows the disc).
 - `XBOXRECOMP_BUILD_DIR=<dir>` keeps a test's builds out of the player's folder.
 - `flatpak-spawn --host <release>/bin/xboxrecomp-build build --source <disc>`
   from the SDK is the clean-machine check: bare SteamOS has no compiler,
   CMake, headers or Capstone.
+- On a Mac, `sandbox-exec -f <profile> env -i HOME=$HOME PATH=/usr/bin:/bin
+  <release>/bin/xboxrecomp-build build --source <disc>` with a profile that
+  denies reading `/Applications/Xcode.app`, `/Library/Developer`,
+  `/opt/homebrew`, `/usr/local` and the checkouts, and executing
+  `/usr/bin/xcrun`, `git`, `cc` and `ld`. Do not quarantine a test copy and
+  start it: Gatekeeper then waits on a dialog, and locks the bundle.
 
 ## Not done yet
 
-- Windows (llvm-mingw) and macOS releases; the Win32 launcher's job and picker.
+- Windows releases; the Win32 launcher's job and picker.
+- macOS: no Developer ID signing or notarisation, and the Open Anyway path
+  untested (above). Intel Macs are not built for.
 - The desktop file dialogs are built but not exercised here (offscreen has
   none); in Game Mode (gamescope) they may not appear, so the path box stays.
-- No archive or signature step: `make_release` writes a folder.
-- `process_alive` is Linux-only; elsewhere a dead build's lock is removed by hand.
+- `process_alive` has no Windows form yet; there a dead build's lock is removed by hand.
 - An image is extracted, not read in place; the pipeline is still Python.
