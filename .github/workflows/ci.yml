@@ -1,4 +1,4 @@
-# Build and test on every push.
+# Build and test every pull request, and main after each merge.
 #
 # No game files are needed or used: the Python suite runs against synthetic
 # instructions and synthetic XBEs, the C build produces the runtime libraries,
@@ -18,16 +18,23 @@
 
 name: CI
 
+# A push to a branch with a pull request open used to run everything twice,
+# once for the push (refs/heads/...) and once for the pull request
+# (refs/pull/N/merge), which the concurrency group below saw as two refs. Now
+# a branch is checked through its pull request; main on its own pushes (the
+# merges); and a branch with no pull request yet through Run workflow.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# One run per pull request (or per ref): a newer push cancels the last.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
