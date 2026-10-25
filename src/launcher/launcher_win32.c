@@ -293,6 +293,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     wc.lpfnWndProc   = wndproc;
     wc.hInstance     = inst;
     wc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
+    wc.hIcon         = LoadIconA(inst, MAKEINTRESOURCEA(1));   /* cmake/title_icon.cmake */
     wc.lpszClassName = "xboxrecomp_launcher";
     if (!RegisterClassA(&wc))
         return 1;

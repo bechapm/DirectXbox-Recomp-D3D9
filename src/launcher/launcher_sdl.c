@@ -42,6 +42,7 @@
 extern char **environ;
 
 #include "launcher_theme_buf.h"
+#include "recomp_icon.h"
 
 #if defined(__APPLE__)
 void launcher_cocoa_present(void *nswindow, void *cgimage);   /* launcher_cocoa.m */
@@ -518,6 +519,18 @@ int main(int argc, char **argv)
         fprintf(stderr, "launcher: SDL_CreateWindow: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
+    }
+    {
+        /* The toolkit's icon (assets/icon), for the title bar and the dock or
+         * task bar. SDL copies it, so the surface goes straight away. */
+        SDL_Surface *icon = SDL_CreateSurfaceFrom(RECOMP_ICON_SIZE, RECOMP_ICON_SIZE,
+                                                  SDL_PIXELFORMAT_RGBA32,
+                                                  (void *)recomp_icon_rgba,
+                                                  RECOMP_ICON_SIZE * 4);
+        if (icon) {
+            SDL_SetWindowIcon(g_win, icon);
+            SDL_DestroySurface(icon);
+        }
     }
     if (!present_open()) {
         SDL_DestroyWindow(g_win);

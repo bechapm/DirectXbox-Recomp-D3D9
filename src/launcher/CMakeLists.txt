@@ -37,6 +37,10 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_theme_gdi.c
             ${_dir}/launcher_bindings.c
         )
+        if(COMMAND xboxrecomp_icon_rc)
+            xboxrecomp_icon_rc(_icon_rc)        # cmake/title_icon.cmake
+            target_sources(${TARGET} PRIVATE "${_icon_rc}")
+        endif()
     elseif(APPLE)
         add_executable(${TARGET}
             ${_dir}/launcher.c

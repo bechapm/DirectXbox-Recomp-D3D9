@@ -13,7 +13,8 @@
 
 [Quick start](#-quick-start) · [Title status](#-title-status) · [How it works](#-how-it-works) · [Xbox Live](#-playing-on-xbox-live-insignia) · [Documentation](#-documentation) · [Contributing](CONTRIBUTING.md)
 
-<sub>Formerly <code>xboxrecomp</code>. The repository, CMake targets and library names keep that name.</sub>
+<sub>Formerly <code>xboxrecomp</code>. The repository, CMake targets and library names keep that name.</sub><br/>
+<sub>An independent project, not affiliated with or endorsed by Microsoft. See <a href="#trademarks">Trademarks</a>.</sub>
 
 </div>
 
@@ -513,6 +514,19 @@ requires it. LGPL-2.1 permits linking those files from other code, so a recompil
 unaffected; what it asks is that notices stay and the library source stays available.
 
 Release notes are in [CHANGELOG.md](CHANGELOG.md).
+
+<a id="trademarks"></a>
+
+## ™️ Trademarks
+
+DirectXbox Recomp is an independent project. It is not affiliated with, endorsed by or
+sponsored by Microsoft Corporation. Xbox, DirectX and Direct3D are trademarks of the Microsoft
+group of companies; they are used here only to say which console and which graphics API this
+project works with. Game titles named in this repository are trademarks of their respective
+owners, and no game code or assets are included or distributed: every game is recompiled from
+a copy its player owns.
+
+The project's icon (`assets/icon`) is its own design, not Microsoft's logo or hardware.
 
 ## 🙏 Acknowledgements
 

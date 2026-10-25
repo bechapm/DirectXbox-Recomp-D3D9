@@ -19,6 +19,7 @@ it with what the release brings (docs/technical/self-build-release.md):
     recipe/                the title's project: its CMakeLists, src/ (main.c,
                            recomp_manual.c, any other sources) and config/
     dxc/                   the shader compiler the renderer loads
+    icon.png               the toolkit's icon, for a desktop entry or Steam
     LICENSE NOTICE.txt README.txt
 
 The recipe (config/releases/<title>.json, or one in the title's own
@@ -95,6 +96,15 @@ a folder is linked, never copied or changed.
 This release works from these images of the game's default.xbe (SHA-1):
 {hashes}
 Any other is refused, because it has not been tested.
+
+icon.png is the icon to give a desktop shortcut, or a Steam shortcut
+(Add a Non-Steam Game, then Properties).
+
+This is an independent project, not affiliated with, endorsed by or sponsored
+by Microsoft Corporation. Xbox, DirectX and Direct3D are trademarks of the
+Microsoft group of companies, used here only to say what this works with.
+{title} is a trademark of its owner. This release contains no game code or
+assets: the game is built on your computer from your own copy.
 """
 
 
@@ -271,6 +281,8 @@ def main():
         name=recipe["release_name"],
         userdir=f"~/.local/share/xboxrecomp/builds/{recipe['title_id']}",
         hashes="".join(f"  {i['sha1']}  {i.get('name', '')}\n" for i in images)))
+    # The toolkit's icon, for a desktop entry or a Steam shortcut.
+    shutil.copy2(ROOT / "assets/icon/png/256.png", out / "icon.png")
 
     size = sum(f.lstat().st_size for f in out.rglob("*") if f.is_file() and not f.is_symlink())
     log(f"done: {out} ({size / 1e6:.0f} MB)")

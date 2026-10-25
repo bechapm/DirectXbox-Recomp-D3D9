@@ -51,3 +51,4 @@ target_link_libraries(xboxrecomp INTERFACE
 )
 
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/lifted_code.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/title_icon.cmake)

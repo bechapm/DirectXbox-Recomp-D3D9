@@ -256,3 +256,6 @@ endif()
 # The flags lifted sources build with, applied to the title's targets once
 # its CMakeLists is done (cmake/lifted_code.cmake).
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/lifted_code.cmake)
+
+# The toolkit's icon on the title's executable, on Windows (cmake/title_icon.cmake).
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/title_icon.cmake)

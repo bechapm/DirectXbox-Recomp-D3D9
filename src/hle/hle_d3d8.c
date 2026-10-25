@@ -587,6 +587,9 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
     wc.lpfnWndProc   = shadow_wndproc;
     wc.hInstance     = GetModuleHandleA(NULL);
     wc.hCursor       = LoadCursorA(NULL, MAKEINTRESOURCEA(32512));   /* IDC_ARROW */
+    /* The toolkit's icon, a resource in the title's executable
+     * (cmake/title_icon.cmake); none, and Windows draws its default. */
+    wc.hIcon         = LoadIconA(wc.hInstance, MAKEINTRESOURCEA(1));
     wc.lpszClassName = "xboxrecomp_hle_d3d8_shadow";
     RegisterClassA(&wc);
 

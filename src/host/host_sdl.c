@@ -4,6 +4,7 @@
 #include "host.h"
 #include "host_mac.h"
 #include "recomp_config.h"                /* recomp_window_fit */
+#include "recomp_icon.h"                  /* the window icon */
 #include "rhi.h"                          /* RhiNativeWindow */
 
 #include <SDL3/SDL.h>
@@ -314,6 +315,17 @@ static void open_on_main(void *arg)
         return;
     }
     fit_to_display(w->sdl, req->width, req->height);
+    {
+        /* The toolkit's icon (assets/icon); SDL keeps its own copy. */
+        SDL_Surface *icon = SDL_CreateSurfaceFrom(RECOMP_ICON_SIZE, RECOMP_ICON_SIZE,
+                                                  SDL_PIXELFORMAT_RGBA32,
+                                                  (void *)recomp_icon_rgba,
+                                                  RECOMP_ICON_SIZE * 4);
+        if (icon) {
+            SDL_SetWindowIcon(w->sdl, icon);
+            SDL_DestroySurface(icon);
+        }
+    }
     w->id = SDL_GetWindowID(w->sdl);
     w->background = background;
     memset(&w->cb, 0, sizeof w->cb);
