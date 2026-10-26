@@ -361,6 +361,28 @@ system DLLs, and the builder type-checked for Windows. CI builds the release
 on `windows-2022` and runs the builder's tests there (the junction mirror
 included). A player-side build and a run need a Windows machine.
 
+## Android
+
+An APK is built by `tools/android/build_apk.py` (a title's project, lifted
+already) and `tools/android/make_apk.py` (the packaging, with the SDK's build
+tools and no Gradle). Several titles sit side by side in a launcher, so each
+APK has its own label and icon. The icon is `--icon`, else the one the title's
+recipe names, else the toolkit's own (`assets/icon/png/512.png`):
+
+```json
+"android": {"icon": "release/android/icon.png"}
+```
+
+The path is relative to the project, as an image's `config` is, and with no
+`--recipe` the one recipe in `<project>/release` is read. Give a square PNG
+of 192 pixels or more (an SVG works where `rsvg-convert` is installed).
+`make_apk` scales it to the five launcher densities (48 to 192 pixels,
+`res/mipmap-*/ic_launcher.png`), with Pillow when it is installed and
+otherwise with its own PNG reader and writer (8-bit, not interlaced; anything
+else is refused with a message), so a player's machine needs nothing more. A
+picture that is not square is centred on a transparent square. There is no
+adaptive or round icon: a launcher that wants one masks the square.
+
 ## Testing without anyone's screen
 
 - `SDL_VIDEODRIVER=offscreen RECOMP_LAUNCHER_SHOT=<file.bmp>

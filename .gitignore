@@ -65,6 +65,8 @@ d3d8_capture_*.tmp
 third_party/ffmpeg/
 # DXC release build, HLSL -> SPIR-V for the Vulkan backend (fetched, not committed; see docs/technical/vulkan-backend.md)
 third_party/dxc/
+third_party/dxc-android/
+third_party/android/
 
 # Local Python environment for the pipeline (capstone)
 .venv/

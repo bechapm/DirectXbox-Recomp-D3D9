@@ -1133,7 +1133,11 @@ BOOL TerminateThread(HANDLE h, DWORD exitCode)
 {
     w32_object *o = (w32_object *)h;
     if (!o || o->kind != K_THREAD) return FALSE;
+#if !defined(__ANDROID__)
+    /* Bionic has no pthread_cancel. Nothing in the runtime calls this, so
+     * on Android the thread is only marked as ended. */
     pthread_cancel(o->thread);
+#endif
     pthread_mutex_lock(&o->lock);
     o->exit_code = exitCode;
     o->exited    = 1;
@@ -1433,6 +1437,11 @@ VOID SecureZeroMemory(PVOID ptr, SIZE_T cnt)
 {
 #if defined(__APPLE__)
     // TODO: Darwin explicit_bzero equivalent is memset_s.
+#elif defined(__ANDROID__)
+    /* No explicit_bzero in bionic: a volatile store the compiler keeps. */
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+    while (cnt--)
+        *p++ = 0;
 #else
     explicit_bzero(ptr, cnt);
 #endif

@@ -78,6 +78,23 @@ int host_relaunch_self(void);
  * current environment (the launch data in it) is. Returns only on failure. */
 int host_launch_other(const char *exe);
 
+/* ---- the app in the background ---------------------------------------- */
+
+/* Whether the title is held at its next frame boundary (the flip gate,
+ * src/kernel), and why: the app is in the background (Android: paused), or
+ * its in-game menu is open. Held while any reason is set. The host sets
+ * them; any thread reads them. */
+enum { HOST_SUSPEND_BACKGROUND = 1, HOST_SUSPEND_MENU = 2 };
+void host_set_suspended(unsigned reason, int on);
+int  host_suspended(void);
+
+/* Asks for the held frame to be presented again, with the settings as they
+ * are now, so a change made in the menu shows at once behind it while the
+ * title stays where it is. The flip gate takes the request
+ * (host_take_redraw returns 1 once per request). */
+void host_request_redraw(void);
+int  host_take_redraw(void);
+
 /* ---- POSIX: which thread the title runs on --------------------------- */
 
 /* A host's main-thread event loop (src/host's recomp_host_loop_run/_quit).

@@ -242,6 +242,10 @@ typedef struct RecompSettings {
      * a surprise in the next. */
     int  mouse_look;            /* 0 or 1 */
     int  mouse_sensitivity;     /* RECOMP_MOUSE_SENSITIVITY_MIN..MAX */
+    /* The on-screen controls (src/input/touch_controls.h). */
+    char touch_controls[8];     /* "auto", "on", "off" */
+    double touch_opacity;       /* 0.1 .. 1.0 */
+    double touch_scale;         /* 0.5 .. 2.0 */
     char game_dir[512];         /* empty means beside the executable */
 
     /* System Link (src/kernel/xbox_net_udp.c). */

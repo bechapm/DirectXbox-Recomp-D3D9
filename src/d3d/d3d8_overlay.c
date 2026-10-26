@@ -24,7 +24,7 @@
 
 #define OVERLAY_W    512
 #define OVERLAY_H     28
-#define OVERLAY_PAD    8      /* from the top-left corner of the back buffer */
+#define OVERLAY_PAD    8      /* from the picture's top-left corner, in 480-line pixels */
 
 static struct {
     int             tried;     /* creation attempted */
@@ -366,17 +366,28 @@ static int overlay_set_text(const char *text)
     return g.text_w > 0;
 }
 
-void d3d8_overlay_draw(const char *text)
+static char g_want[128];       /* the line asked for, drawn by each present */
+
+void d3d8_overlay_set_text(const char *text)
+{
+    snprintf(g_want, sizeof g_want, "%s", text ? text : "");
+}
+
+void d3d8_overlay_present(RhiView *out, unsigned width, unsigned height,
+                          unsigned pic_x, unsigned pic_y, unsigned pic_h)
 {
     RhiOutputState saved;
-    RhiView *rtv = d3d8_GetDefaultTargetView();
     RhiViewport vp;
     OverlayConstants c;
-    UINT width = d3d8_GetBackBufferWidth(), height = d3d8_GetBackBufferHeight();
     float blend_factor[4] = { 1, 1, 1, 1 };
     void *mapped;
+    /* The size it had drawn into a 480-line frame and scaled with it, in
+     * whole steps so the glyphs stay sharp. */
+    unsigned scale = (pic_h + 240) / 480;
+    const char *text = g_want;
 
-    if (!text || !*text || !rtv || !width || !height)
+    if (scale < 1) scale = 1;
+    if (!text[0] || !out || !width || !height)
         return;
     if (!overlay_create() || !overlay_set_text(text))
         return;
@@ -385,10 +396,10 @@ void d3d8_overlay_draw(const char *text)
 
     if (!(mapped = rhi_buffer_map(g.cb, RHI_MAP_WRITE_DISCARD)))
         goto restore;
-    c.x = -1.0f + 2.0f * (float)OVERLAY_PAD / (float)width;
-    c.y =  1.0f - 2.0f * (float)OVERLAY_PAD / (float)height;
-    c.w =  2.0f * (float)g.text_w / (float)width;
-    c.h =  2.0f * (float)OVERLAY_H / (float)height;
+    c.x = -1.0f + 2.0f * (float)(pic_x + OVERLAY_PAD * scale) / (float)width;
+    c.y =  1.0f - 2.0f * (float)(pic_y + OVERLAY_PAD * scale) / (float)height;
+    c.w =  2.0f * (float)(g.text_w * scale) / (float)width;
+    c.h =  2.0f * (float)(OVERLAY_H * scale) / (float)height;
     c.tex_w = (float)g.text_w;
     c.tex_h = (float)OVERLAY_H;
     c.pad0 = c.pad1 = 0.0f;
@@ -400,7 +411,7 @@ void d3d8_overlay_draw(const char *text)
     vp.height = (float)height;
     vp.min_depth = 0.0f;
     vp.max_depth = 1.0f;
-    rhi_set_render_target(rtv, NULL);
+    rhi_set_render_target(out, NULL);
     rhi_set_viewports(1, &vp);
     rhi_set_vertex_layout(NULL);
     rhi_set_topology(RHI_TOPOLOGY_TRIANGLE_STRIP);

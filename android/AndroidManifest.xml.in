@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The APK shell's manifest. tools/android/make_apk.py fills in the
+     @...@ fields from the title's release recipe or its command line. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="@PACKAGE@"
+    android:versionCode="@VERSION_CODE@"
+    android:versionName="@VERSION_NAME@">
+
+    <uses-sdk android:minSdkVersion="@MIN_SDK@" android:targetSdkVersion="@TARGET_SDK@" />
+
+    <!-- The renderer is Vulkan 1.3 (src/d3d/rhi_vulkan.c). -->
+    <uses-feature android:name="android.hardware.vulkan.version"
+        android:version="0x403000" android:required="true" />
+    <uses-feature android:glEsVersion="0x00020000" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- The player's own copy of the game is read where it is, which on
+         Android 11 and later takes all-files access (SetupActivity). -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
+    <!-- extractNativeLibs: Android unpacks the libraries into the app's
+         library folder at install. The game is compiled on the device by
+         zig, shipped as libzig.so, and a program can only be started from a
+         real file there (mapped from the APK, it has no path to run). It
+         also lets them be compressed in the APK. -->
+    <!-- The icon is the title's own or the toolkit's, scaled to every
+         density by make_apk.py (res/mipmap-*/ic_launcher.png). There is no
+         round variant: a launcher that wants one masks this. -->
+    <application android:label="@LABEL@"
+        android:icon="@mipmap/ic_launcher"
+        android:hasCode="true"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:isGame="true"
+        android:appCategory="game"
+        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+        android:hardwareAccelerated="true">
+        <!-- The SHA-1 of the default.xbe the APK was built from: the game the
+             setup looks for. -->
+        <meta-data android:name="xboxrecomp.xbe_sha1" android:value="@XBE_SHA1@" />
+        <activity android:name="org.xboxrecomp.app.SetupActivity"
+            android:label="@LABEL@"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Builds the game from the player's copy on the device, then starts it. -->
+        <activity android:name="org.xboxrecomp.app.BuildActivity"
+            android:label="@LABEL@"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:exported="false" />
+        <activity android:name="org.xboxrecomp.app.RecompActivity"
+            android:label="@LABEL@"
+            android:alwaysRetainTaskState="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:preferMinimalPostProcessing="true"
+            android:exported="true" />
+    </application>
+</manifest>

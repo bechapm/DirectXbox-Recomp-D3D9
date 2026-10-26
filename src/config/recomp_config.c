@@ -303,6 +303,9 @@ void recomp_settings_defaults(RecompSettings *s)
     s->frame_interp      = 1;
     s->mouse_look        = 0;
     s->mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
+    snprintf(s->touch_controls, sizeof s->touch_controls, "auto");
+    s->touch_opacity     = 0.45;
+    s->touch_scale       = 1.0;
     snprintf(s->frame_cap, sizeof s->frame_cap, "adaptive");
     snprintf(s->syslink, sizeof s->syslink, "off");
     s->syslink_port      = RECOMP_SYSLINK_DEFAULT_PORT;
@@ -378,6 +381,12 @@ int recomp_settings_read(const char *path, RecompSettings *s)
         if ((v = from_table("mouse_sensitivity")) != NULL)
             s->mouse_sensitivity = clamp_int(atoi(v), RECOMP_MOUSE_SENSITIVITY_MIN,
                                              RECOMP_MOUSE_SENSITIVITY_MAX);
+        if ((v = from_table("touch_controls")) != NULL)
+            snprintf(s->touch_controls, sizeof s->touch_controls, "%s", v);
+        if ((v = from_table("touch_opacity")) != NULL)
+            s->touch_opacity = atof(v);
+        if ((v = from_table("touch_scale")) != NULL)
+            s->touch_scale = atof(v);
         if ((v = from_table("game_dir")) != NULL)
             snprintf(s->game_dir, sizeof s->game_dir, "%s", v);
         if ((v = from_table("syslink")) != NULL)
@@ -532,10 +541,7 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "#\n"
         "# How far a movement pushes the stick, %d to %d; %d is the default, a\n"
         "# full push at %d mouse counts a second.  [RECOMP_MOUSE_SENSITIVITY]\n"
-        "mouse_sensitivity = %d\n"
-        "\n"
-        "# Where the game's files are, if they are not beside the executable.\n"
-        "#                                                   [RECOMP_GAME_DIR]\n",
+        "mouse_sensitivity = %d\n",
         s->resolution_scale, s->widescreen, hor_plus, reg,
         s->widescreen_2d[0] ? s->widescreen_2d : "auto",
         s->anisotropy, s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
@@ -546,6 +552,22 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         clamp_int(s->mouse_sensitivity, RECOMP_MOUSE_SENSITIVITY_MIN,
                   RECOMP_MOUSE_SENSITIVITY_MAX));
 
+    fprintf(f,
+        "\n"
+        "# The on-screen controls, for a device without a pad. auto shows them\n"
+        "# while no pad is connected and hides them when one is used; a touch\n"
+        "# brings them back.                         [RECOMP_TOUCH_CONTROLS]\n"
+        "touch_controls = %s\n"
+        "# How solid they are, 0.1 to 1.0.             [RECOMP_TOUCH_OPACITY]\n"
+        "touch_opacity = %.2f\n"
+        "# Their size, 0.5 to 2.0.                       [RECOMP_TOUCH_SCALE]\n"
+        "touch_scale = %.2f\n"
+        "\n"
+        "# Where the game's files are, if they are not beside the executable.\n"
+        "#                                                   [RECOMP_GAME_DIR]\n",
+        s->touch_controls[0] ? s->touch_controls : "auto",
+        s->touch_opacity > 0 ? s->touch_opacity : 0.45,
+        s->touch_scale > 0 ? s->touch_scale : 1.0);
     if (s->game_dir[0])
         fprintf(f, "game_dir = %s\n", s->game_dir);
     else

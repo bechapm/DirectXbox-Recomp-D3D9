@@ -21,6 +21,7 @@
  * to controller 1's right stick after the bindings have had their say.
  */
 #include "input_bindings.h"
+#include "touch_controls.h"
 #include "recomp_pad.h"
 #include "recomp_config.h"   /* recomp_config_user_dir */
 
@@ -1112,8 +1113,14 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     if (port >= PORTS)
         return 0;
     c = &g_ctl[port];
-    if (c->device == DEV_NONE)
+    if (c->device == DEV_NONE) {
+        /* A phone with no pad: the touch controls are controller 1. */
+        if (port == 0 && recomp_touch_enabled()) {
+            recomp_touch_apply(out);
+            return 1;
+        }
         return 0;
+    }
     memset(&kc, 0, sizeof kc);
     key_cache_tick();
     memset(&pad, 0, sizeof pad);
@@ -1170,6 +1177,9 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
             out->sThumbRY = add_look(out->sThumbRY, look[1]);
         }
     }
+    /* The on-screen controls, on top of everything bound (touch_controls.h). */
+    if (port == 0)
+        recomp_touch_apply(out);
     return 1;
 }
 

@@ -1357,6 +1357,10 @@ void          xbox_D3D8DepthCopyShutdown(void);
    waits to be shown; Present shows it without counting a frame; End puts
    the scene target back. FALSE from Begin: no second image, draw nothing. */
 BOOL xbox_D3D8InterpBegin(void);
+/* The scene as it stands presented again, with the overlay and the touch
+ * controls as they are now: a held frame redrawn behind the in-game menu.
+ * On the presenting thread. */
+void xbox_D3D8Represent(void);
 void xbox_D3D8InterpPresent(void);
 void xbox_D3D8InterpEnd(void);
 

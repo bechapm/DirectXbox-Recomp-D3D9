@@ -14,11 +14,27 @@ target_link_libraries(xbox_host PUBLIC SDL3::SDL3)
 # recomp_window_fit: the window's size against the screen, the same rule
 # as the Win32 window in src/hle. xbox_config depends on nothing.
 target_link_libraries(xbox_host PRIVATE xbox_config)
+# host_set_suspended (src/platform/host_main.h), set from Android's lifecycle.
+target_link_libraries(xbox_host PRIVATE platform)
 find_package(Threads REQUIRED)
 target_link_libraries(xbox_host PUBLIC Threads::Threads)
 # No frameworks of its own: host_mac.c reaches AppKit through the Objective-C
 # runtime, which SDL has loaded, so the link needs nothing SDL does not bring.
 target_compile_options(xbox_host PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+# Android: SDL_main, which SDL's Java activity calls in libmain.so, and the
+# app's log, switches and folders (android_main.c). An object library, so its
+# SDL_main lands in the title's library though nothing there calls it. The
+# title's main() is renamed recomp_title_main where its main.c is compiled.
+if(ANDROID)
+    add_library(xbox_android_main OBJECT android_main.c android_build.c android_title.c)
+    # The in-game menu's settings: the HLE's live switches, the touch
+    # controls and the settings file.
+    target_link_libraries(xbox_android_main PUBLIC SDL3::SDL3 android log
+                          xbox_hle xbox_input xbox_config platform)
+    target_include_directories(xbox_android_main PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../hle)
+    target_compile_options(xbox_android_main PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
 
 # ── A macOS application bundle for the title (scripts/make_macos_app.py) ──
 #

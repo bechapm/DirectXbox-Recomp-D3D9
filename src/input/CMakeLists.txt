@@ -9,6 +9,8 @@ add_library(xbox_input STATIC
     # The pads themselves: SDL3 everywhere, XInput on Windows behind
     # RECOMP_PAD_API=xinput or the bindings file's "pad_api".
     recomp_pad.c
+    # The on-screen controller (Android's default when there is no pad).
+    touch_controls.c
 )
 
 target_include_directories(xbox_input PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

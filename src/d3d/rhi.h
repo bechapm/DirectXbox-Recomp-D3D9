@@ -298,17 +298,24 @@ enum { RHI_CLEAR_DEPTH = 1, RHI_CLEAR_STENCIL = 2 };
 
 /* ---- the calls ----------------------------------------------------------------- */
 
-/* What RhiDeviceDesc.window points to on Linux (and any POSIX host but
- * Apple): the window system's own handles for the window SDL made, filled in
- * by its owner (src/host's host_window_present_target) and kept as long as
+/* What RhiDeviceDesc.window points to on Linux and Android (any POSIX host
+ * but Apple): the window system's own handles for the window SDL made, filled
+ * in by its owner (src/host's host_window_present_target) and kept as long as
  * the window. The handles are plain pointers here so that nothing including
- * this needs X11's or Wayland's headers. */
-enum { RHI_NATIVE_X11 = 1, RHI_NATIVE_WAYLAND = 2 };
+ * this needs X11's, Wayland's or the NDK's headers. */
+enum { RHI_NATIVE_X11 = 1, RHI_NATIVE_WAYLAND = 2, RHI_NATIVE_ANDROID = 3 };
 typedef struct {
-    uint32_t kind;          /* RHI_NATIVE_X11 or RHI_NATIVE_WAYLAND */
+    uint32_t kind;          /* RHI_NATIVE_X11, _WAYLAND or _ANDROID */
     void    *display;       /* X11: Display *; Wayland: struct wl_display * */
-    void    *surface;       /* Wayland: struct wl_surface *; X11: unused */
+    void    *surface;       /* Wayland: struct wl_surface *; Android: ANativeWindow *;
+                             * X11: unused */
     uint64_t xwindow;       /* X11: the Window (an XID); Wayland: unused */
+    /* Android: the activity's window now, with a reference the caller
+     * releases (ANativeWindow_release), or NULL while the app is in the
+     * background. The surface is destroyed when the app is paused and a new
+     * one made when it resumes; the renderer asks before each frame and
+     * follows it. Called from the rendering thread. */
+    void   *(*current)(void *self);
 } RhiNativeWindow;
 
 /* The device and its swap chain */

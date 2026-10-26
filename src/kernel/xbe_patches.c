@@ -158,6 +158,19 @@ int xbox_xbe_patches_apply(const uint8_t *xbe, size_t xbe_size,
                            uint8_t **out, size_t *out_size)
 {
     unsigned int size = 0;
-    const unsigned char *blob = recomp_xbe_patches(&size);
+    const unsigned char *blob;
+#if defined(XBOXRECOMP_SPLIT_TITLE)
+    /* The title is a library of its own (src/host/android_title.c): its
+     * definition is not the one this engine linked, which is the weak
+     * default, so it is asked for by name. */
+    {
+        extern void *recomp_title_symbol(const char *name);
+        const unsigned char *(*fn)(unsigned int *) =
+            (const unsigned char *(*)(unsigned int *))recomp_title_symbol("recomp_xbe_patches");
+        blob = fn ? fn(&size) : recomp_xbe_patches(&size);
+    }
+#else
+    blob = recomp_xbe_patches(&size);
+#endif
     return xbox_xbe_patches_apply_blob(blob, size, xbe, xbe_size, out, out_size);
 }

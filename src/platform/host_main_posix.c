@@ -221,6 +221,35 @@ int host_module_range(uintptr_t *lo, uintptr_t *hi)
 }
 #endif
 
+/* ---- the app in the background ---------------------------------------- */
+
+static volatile unsigned g_suspended;    /* HOST_SUSPEND_* bits */
+
+void host_set_suspended(unsigned reason, int on)
+{
+    if (on)
+        __atomic_fetch_or(&g_suspended, reason, __ATOMIC_SEQ_CST);
+    else
+        __atomic_fetch_and(&g_suspended, ~reason, __ATOMIC_SEQ_CST);
+}
+
+static volatile int g_redraw;            /* a redraw asked for, not yet done */
+
+void host_request_redraw(void)
+{
+    __atomic_store_n(&g_redraw, 1, __ATOMIC_SEQ_CST);
+}
+
+int host_take_redraw(void)
+{
+    return __atomic_exchange_n(&g_redraw, 0, __ATOMIC_SEQ_CST);
+}
+
+int host_suspended(void)
+{
+    return __atomic_load_n(&g_suspended, __ATOMIC_SEQ_CST) != 0;
+}
+
 /* ---- the title's thread ---------------------------------------------- */
 
 typedef struct {

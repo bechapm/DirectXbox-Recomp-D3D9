@@ -47,14 +47,36 @@ extern ptrdiff_t g_xbox_mem_offset;
  * start a line, like HLE_EXPORT: tools.recomp scans for the marker and writes
  * the definition into recomp_hle.c from the title's XDK symbols. 0 means the
  * symbols could not name it, so check before use. */
+#if defined(XBOXRECOMP_SPLIT_TITLE)
+/* The engine and the title in two libraries (Android, where the title is
+ * compiled on the device into libgame.so; src/host/android_title.c). The
+ * engine is loaded first and cannot name the title's definitions, so each
+ * name is a slot of the engine's own, registered at load and filled from the
+ * title's definition when the title library is loaded. */
+void hle_split_note(const char *symbol, void *slot, int is_var);
+#define HLE_IMPORT_VAR(name)                                                   \
+    __attribute__((weak)) uint32_t hle_var_##name;                             \
+    __attribute__((constructor)) static void hle_split_var_##name(void)        \
+    { hle_split_note("hle_var_" #name, &hle_var_##name, 1); }                  \
+    extern uint32_t hle_var_##name
+#else
 #define HLE_IMPORT_VAR(name) extern const uint32_t hle_var_##name
+#endif
 
 /* Declares the original, lifted body of a replaced function as
  * hle_original_<name>, for a replacement that runs the title's own code and
  * then does its own work. Must start a line, like HLE_EXPORT: tools.recomp
  * scans for it, keeps the body as sub_XXXXXXXX_hle_original, and defines the
  * pointer in recomp_hle.c -- 0 when this title does not replace the function. */
+#if defined(XBOXRECOMP_SPLIT_TITLE)
+#define HLE_ORIGINAL(name)                                                     \
+    __attribute__((weak)) void (*hle_original_##name)(void);                   \
+    __attribute__((constructor)) static void hle_split_orig_##name(void)       \
+    { hle_split_note("hle_original_" #name, (void *)&hle_original_##name, 0); } \
+    extern void (*hle_original_##name)(void)
+#else
 #define HLE_ORIGINAL(name) extern void (*const hle_original_##name)(void)
+#endif
 
 /* Run the original body with the guest stack exactly as the caller left it.
  * The body pops its own return address and arguments, as its `ret N` does;

@@ -2,7 +2,8 @@
  * d3d8_overlay.h -- a line of text drawn over the finished frame.
  *
  * The renderer's own on-screen display: whatever the caller hands it, drawn
- * top-left over the back buffer just before the frame is presented. It knows
+ * at the top-left of the picture, over the swap chain, as the frame is
+ * presented. It knows
  * nothing about what the text says, so what to show and when to show it stays
  * with the caller (src/hle decides; see RECOMP_FPS_OVERLAY there).
  *
@@ -25,16 +26,27 @@
 #ifndef XBOXRECOMP_D3D8_OVERLAY_H
 #define XBOXRECOMP_D3D8_OVERLAY_H
 
+#include "rhi.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Draws one line over the current back buffer. Safe to call every frame with
- * the same text: the bitmap is only re-rendered when the text changes. A
- * failure to create anything it needs disables it for the rest of the run,
- * once, with a line on stderr -- an overlay must never be the reason a title
- * stops drawing. */
-void d3d8_overlay_draw(const char *text);
+/* The line to draw from now on; NULL or "" for none. It is drawn by every
+ * present (d3d8_overlay_present), not into the title's frame, so a frame
+ * presented again -- an in-between frame, or a held frame redrawn behind a
+ * menu -- carries the line as it is now. Called on the presenting thread. */
+void d3d8_overlay_set_text(const char *text);
+
+/* Draws the line over `out` (the swap chain, w x h pixels) at the top-left
+ * of the picture, which the display put at (pic_x, pic_y), pic_h pixels
+ * tall; the glyphs are scaled with the picture, as they were when the line
+ * was drawn into a 480-line frame. The bitmap is only re-rendered when the
+ * text changes. A failure to create anything it needs disables it for the
+ * rest of the run, once, with a line on stderr -- an overlay must never be
+ * the reason a title stops drawing. */
+void d3d8_overlay_present(RhiView *out, unsigned w, unsigned h,
+                          unsigned pic_x, unsigned pic_y, unsigned pic_h);
 
 /* Releases everything. Called from the device teardown. */
 void d3d8_overlay_shutdown(void);

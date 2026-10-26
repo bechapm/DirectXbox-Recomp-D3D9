@@ -326,6 +326,11 @@ void xbox_Nv2aFlipGateSetIdle(xbox_FlipGateIdleFn fn);
  * RECOMP_FPS_CAP asked for that is not a stop on the cycle), and the next
  * one along. For a key the player presses while the title runs. */
 const char *xbox_Nv2aFlipGateModeName(void);
+
+/* While the title is held at its Swap (host_suspended), what presents the
+ * held frame again when the host asks (host_request_redraw). Set by the
+ * renderer's owner; runs on the held thread, with the guest lock dropped. */
+void xbox_Nv2aFlipGateSetHeldRedraw(void (*fn)(void));
 void        xbox_Nv2aFlipGateCycle(void);
 
 /* The running title's own name, from its XBE certificate, as UTF-8; NULL

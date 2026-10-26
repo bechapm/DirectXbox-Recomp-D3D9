@@ -16,6 +16,7 @@ set(XBR_D3D8_SOURCES
     d3d8_combiners.c
     d3d8_vsh.c
     d3d8_overlay.c
+    d3d8_touch.c
     d3d8_movie.c
     d3d8_screencopy.c
     d3d8_depthcopy.c
@@ -36,6 +37,11 @@ else()
     # picture), so nothing above it has to know.
     add_library(xbox_d3d8 STATIC ${XBR_D3D8_SOURCES})
     target_link_libraries(xbox_d3d8 PUBLIC platform ${CMAKE_DL_LIBS})
+    if(ANDROID)
+        # ANativeWindow_acquire/_release: the renderer keeps its own reference
+        # to the activity's window (rhi_vulkan.c).
+        target_link_libraries(xbox_d3d8 PUBLIC android)
+    endif()
 endif()
 
 # The Vulkan backend, built when the vendored headers are checked out

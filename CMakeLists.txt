@@ -135,6 +135,16 @@ else()
 
     # ── Runtime Libraries ─────────────────────────────────────────
 
+    # Android: the engine and the title as two libraries, the title compiled
+    # on the player's device (cmake/android.cmake). The engine then reaches the
+    # title only through slots bound when the title is loaded.
+    if(ANDROID)
+        option(XBOXRECOMP_ANDROID_SPLIT "Build the engine apart from the title (Android)" ON)
+        if(XBOXRECOMP_ANDROID_SPLIT)
+            add_compile_definitions(XBOXRECOMP_SPLIT_TITLE)
+        endif()
+    endif()
+
     # Platform: Win32/NT type vocabulary + POSIX implementation of generic
     # Win32 host primitives. Carries no Xbox semantics; provides the foundation
     # the kernel HLE and the graphics/audio/input layers build on.
@@ -263,6 +273,9 @@ endif()
 # The flags lifted sources build with, applied to the title's targets once
 # its CMakeLists is done (cmake/lifted_code.cmake).
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/lifted_code.cmake)
+
+# Android's engine and title libraries (cmake/android.cmake).
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/android.cmake)
 
 # The toolkit's icon on the title's executable, on Windows (cmake/title_icon.cmake).
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/title_icon.cmake)

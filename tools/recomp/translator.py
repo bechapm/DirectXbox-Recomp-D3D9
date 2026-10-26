@@ -2854,6 +2854,17 @@ class BatchTranslator:
         jobs = max(1, min(int(jobs or 1), len(work)))
         if sys.platform == "win32":
             jobs = min(jobs, 61)    # ProcessPoolExecutor's limit there
+        if jobs > 1:
+            # Python for Android has no _multiprocessing (no named
+            # semaphores there), so no process pool: one at a time. The
+            # result is the same either way (test_parallel_lift).
+            try:
+                import _multiprocessing  # noqa: F401
+            except ImportError:
+                if verbose:
+                    print("  no process pool on this Python; lifting one at a time",
+                          file=sys.stderr)
+                jobs = 1
         if jobs <= 1:
             codes = []
             for i, (addr, name, func_info) in enumerate(work):

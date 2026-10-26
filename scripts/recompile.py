@@ -34,6 +34,7 @@ project, or the second title silently lifts from the first one's disassembly
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -213,7 +214,9 @@ def build_commands(args, xbe: Path, analysis_json: Path, stage_xbe: Path = None)
         lift.append("--trace-all-entries")
     # XDK functions with a name-keyed replacement (tools/recomp/hle.py), used
     # whenever tools.xdk_symbols has been run for this XBE.
-    hle_symbols = original.with_name(original.stem + "_xdk_symbols.json")
+    # getattr: a caller may build the arguments without this option.
+    hle_symbols = (Path(args.hle_symbols) if getattr(args, "hle_symbols", None) else
+                   original.with_name(original.stem + "_xdk_symbols.json"))
     if hle_symbols.exists():
         lift += ["--hle-symbols", str(hle_symbols)]
     # The lift writes the runtime's copy of the patches (recomp_xbe_patches.c)
@@ -233,6 +236,43 @@ def build_commands(args, xbe: Path, analysis_json: Path, stage_xbe: Path = None)
     return [(name, commands[name]) for name in selected]
 
 
+def in_process() -> bool:
+    """Whether stages run in this interpreter rather than in their own.
+
+    On Android the pipeline runs inside the app, in a Python embedded in it
+    (src/host/android_build.c): there is no python executable to start, and
+    an app cannot start child processes of itself safely anyway. Elsewhere
+    RECOMP_IN_PROCESS=1 asks for the same, to try it."""
+    return bool(os.environ.get("RECOMP_IN_PROCESS")) or not sys.executable
+
+
+def run_in_process(argv) -> int:
+    """One `python -m tools.<stage> ...` command, run here with runpy.
+
+    Each stage runs as if it had a process of its own: the pipeline's modules
+    are dropped afterwards, so module-level state set by one stage never
+    reaches the next, and sys.argv and the working directory are put back."""
+    import runpy
+
+    i = argv.index("-m")
+    module, args = argv[i + 1], [str(a) for a in argv[i + 2:]]
+    saved_argv, saved_cwd = sys.argv, os.getcwd()
+    sys.argv = [module] + args
+    os.chdir(REPO)
+    try:
+        runpy.run_module(module, run_name="__main__", alter_sys=True)
+        return 0
+    except SystemExit as e:
+        if e.code is None or e.code == 0:
+            return 0
+        return e.code if isinstance(e.code, int) else 1
+    finally:
+        sys.argv = saved_argv
+        os.chdir(saved_cwd)
+        for loaded in [m for m in sys.modules if m == "tools" or m.startswith("tools.")]:
+            del sys.modules[loaded]
+
+
 def run(name: str, argv, dry_run: bool) -> bool:
     print(f"\n{'=' * 70}")
     print(f"  {STAGES.index(name) + 1}/4  {name}")
@@ -243,11 +283,14 @@ def run(name: str, argv, dry_run: bool) -> bool:
         return True
 
     start = time.time()
-    result = subprocess.run(argv, cwd=REPO)
+    if in_process():
+        returncode = run_in_process(argv)
+    else:
+        returncode = subprocess.run(argv, cwd=REPO).returncode
     elapsed = time.time() - start
 
-    if result.returncode != 0:
-        print(f"\n  FAILED: stage '{name}' exited {result.returncode} "
+    if returncode != 0:
+        print(f"\n  FAILED: stage '{name}' exited {returncode} "
               f"after {elapsed:.1f}s", file=sys.stderr)
         return False
 
@@ -277,6 +320,10 @@ def main() -> int:
                          "else the toolkit's) when one exists")
     ap.add_argument("--no-xbe-patches", action="store_true",
                     help="Ignore this title's XBE patch file")
+    ap.add_argument("--hle-symbols", metavar="FILE",
+                    help="tools.xdk_symbols JSON for this XBE, where there is "
+                         "none beside it (<xbe>_xdk_symbols.json): a game "
+                         "folder that is only read, as on Android")
     ap.add_argument("--trace-all-entries", action="store_true",
                     help="Hook every function's entry so a profiled run can "
                          "report how many distinct functions it reached. That "

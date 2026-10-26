@@ -6,6 +6,7 @@
 #include "recomp_config.h"                /* recomp_window_fit */
 #include "recomp_icon.h"                  /* the window icon */
 #include "rhi.h"                          /* RhiNativeWindow */
+#include "platform/host_main.h"            /* host_set_suspended */
 
 #include <SDL3/SDL.h>
 #ifdef __APPLE__
@@ -215,6 +216,26 @@ int host_window_background(void)
     return bg && *bg && strcmp(bg, "0") != 0;
 }
 
+#ifdef __ANDROID__
+/* Android pauses the activity when the player leaves it (Home, the task
+ * switcher, the screen going off). A watch, not the event loop: the events
+ * are sent from Android's own thread, and SDL may block the loop's thread
+ * while the app is paused. The title is held at its next Swap meanwhile
+ * (host_suspended). */
+static bool SDLCALL app_lifecycle(void *user, SDL_Event *e)
+{
+    (void)user;
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+        host_set_suspended(HOST_SUSPEND_BACKGROUND, 1);
+        fprintf(stderr, "[HOST] the app is going into the background\n");
+    } else if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+        host_set_suspended(HOST_SUSPEND_BACKGROUND, 0);
+        fprintf(stderr, "[HOST] the app is back in the foreground\n");
+    }
+    return true;
+}
+#endif
+
 /* Main thread: start SDL's video the first time a window is wanted. */
 static int start_video(int background)
 {
@@ -235,6 +256,9 @@ static int start_video(int background)
         fprintf(stderr, "[HOST] SDL video failed to start: %s\n", SDL_GetError());
         return 0;
     }
+#ifdef __ANDROID__
+    SDL_AddEventWatch(app_lifecycle, NULL);
+#endif
     if (background)
         host_mac_set_accessory();
     g_wake_event = SDL_RegisterEvents(1);
@@ -306,6 +330,10 @@ static void open_on_main(void *arg)
 #ifdef __APPLE__
     flags |= SDL_WINDOW_METAL;
 #endif
+#ifdef __ANDROID__
+    /* The whole screen, with the status and navigation bars hidden. */
+    flags |= SDL_WINDOW_FULLSCREEN;
+#endif
     if (background)
         flags |= SDL_WINDOW_NOT_FOCUSABLE;
     w->sdl = SDL_CreateWindow(req->title ? req->title : "xboxrecomp",
@@ -360,6 +388,33 @@ host_window *host_window_open(int width, int height, const char *title,
     return req.result;
 }
 
+#ifdef __ANDROID__
+#include <android/native_window.h>
+
+/* RhiNativeWindow.current: the activity's window as SDL has it now, with a
+ * reference for the renderer. Under the properties' lock, because SDL clears
+ * the property (taking that lock) before it releases the window when the
+ * activity pauses: holding it, the window read is either NULL or still
+ * alive when the reference is taken. Any thread. */
+static void *android_window_now(void *self)
+{
+    host_window *w = &g_window;
+    SDL_PropertiesID props;
+    ANativeWindow *win;
+
+    (void)self;
+    if (!w->sdl || !(props = SDL_GetWindowProperties(w->sdl)))
+        return NULL;
+    SDL_LockProperties(props);
+    win = (ANativeWindow *)SDL_GetPointerProperty(props,
+        SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+    if (win)
+        ANativeWindow_acquire(win);
+    SDL_UnlockProperties(props);
+    return win;
+}
+#endif
+
 static void layer_on_main(void *arg)
 {
     host_window *w = arg;
@@ -397,9 +452,20 @@ static void layer_on_main(void *arg)
                 SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
             if (w->native.display && w->native.xwindow)
                 w->layer = &w->native;
+        } else if (driver && !strcmp(driver, "android")) {
+            /* The activity's surface. Android replaces it when the app is
+             * paused and resumed. */
+            w->native.kind = RHI_NATIVE_ANDROID;
+            w->native.surface = SDL_GetPointerProperty(props,
+                SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+#ifdef __ANDROID__
+            w->native.current = android_window_now;
+#endif
+            if (w->native.surface)
+                w->layer = &w->native;
         }
         if (!w->layer)
-            fprintf(stderr, "[HOST] no X11 or Wayland handles for the window (video driver %s)\n",
+            fprintf(stderr, "[HOST] no native handles for the window (video driver %s)\n",
                     driver ? driver : "none");
     }
 #endif
