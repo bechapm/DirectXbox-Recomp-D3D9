@@ -20,11 +20,23 @@ import argparse
 import re
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 HEADER_SUFFIXES = {".h", ".hpp", ".hh", ".inc", ".inl"}
-PATH_RE = re.compile(r'/[^"\s;)>]+')
+# A path in a CMake file: /posix/style, or C:/windows/style (CMake writes
+# Windows paths with forward slashes).
+PATH_RE = re.compile(r'(?:[A-Za-z]:)?/[^"\s;)>]+')
+
+
+def spellings(root):
+    """The ways a folder can be written in a CMake file. On Windows CMake
+    writes D:/a/b where Python's str() gives D:\\a\\b, so a rewrite or a check
+    that knows only one of them finds nothing; and Windows paths are
+    case-insensitive (the drive letter's case varies between tools)."""
+    forms = {str(root), root.as_posix()}
+    flags = re.I if isinstance(root, PureWindowsPath) else 0
+    return [re.compile(re.escape(f), flags) for f in sorted(forms, key=len, reverse=True)]
 
 
 def fail(msg):
@@ -74,10 +86,10 @@ def rewrite(text, build, source, up):
     levels below its root. The build folder first: it may sit in the source."""
     prefix = ('get_filename_component(_xr_pkg "${CMAKE_CURRENT_LIST_DIR}'
               + "/.." * up + '" ABSOLUTE)\n')
-    for root, repl in sorted(((str(build), "${_xr_pkg}/build"),
-                              (str(source), "${_xr_pkg}")),
-                             key=lambda t: -len(t[0])):
-        text = text.replace(root, repl)
+    for root, repl in sorted(((build, "${_xr_pkg}/build"), (source, "${_xr_pkg}")),
+                             key=lambda t: -len(str(t[0]))):
+        for form in spellings(root):
+            text = form.sub(lambda m: repl, text)
     return prefix + text
 
 
@@ -163,8 +175,8 @@ def main():
     # Nothing may still point at the machine this was made on.
     for f in out.rglob("*.cmake"):
         t = f.read_text()
-        for root in (str(build), str(source)):
-            if root in t:
+        for root in (build, source):
+            if any(form.search(t) for form in spellings(root)):
                 fail(f"{f.relative_to(out)} still names {root}")
 
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
