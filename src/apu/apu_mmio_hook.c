@@ -36,6 +36,8 @@ uint64_t mcpx_ac97_apply_mask(uint32_t mcpx_offset, uint64_t value)
 #include <windows.h>
 /* getenv: without <stdlib.h> its pointer is truncated to int. */
 #include <stdlib.h>
+#include <string.h>
+#include "../platform/mmio_decode.h"
 
 /* APU MMIO base in Xbox VA space */
 #define APU_MMIO_BASE  0xFE800000u
@@ -380,7 +382,8 @@ static int ac97_store(void *dst, uint64_t value, int size)
  * ============================================================ */
 
 /* Defined below, next to the AC'97 handler it is shared with. */
-static int mmio_decode_write_value(PCONTEXT ctx, uint64_t *out, int *out_size);
+static int mmio_decode_write_value(PCONTEXT ctx, uintptr_t host_addr,
+                                   uint64_t *out, int *out_size);
 static int ac97_store(void *dst, uint64_t value, int size);
 
 /* The registers a guest ISR acknowledges through, and the summary bit.
@@ -422,7 +425,7 @@ int nv2a_intr_handle_write(PCONTEXT ctx, uintptr_t host_addr,
     uint64_t written;
     int size;
 
-    if (!mmio_decode_write_value(ctx, &written, &size))
+    if (!mmio_decode_write_value(ctx, host_addr, &written, &size))
         return 0;
 
     if (nv2a_offset == NV2A_PCRTC_INTR_0_OFF) {
@@ -450,6 +453,51 @@ int nv2a_intr_handle_write(PCONTEXT ctx, uintptr_t host_addr,
     return ac97_store((void *)host_addr, written, size);
 }
 
+/* Any other store, through the shared decoder (platform/mmio_decode.h): the
+ * read-modify-writes in particular. MSVC never fuses a volatile load and
+ * store, so its code reaches these pages as MOVs; clang does, and the
+ * runtime's own `PCRTC_INTR_0 |= 1` becomes `or dword [mem], 1`. Both pages
+ * that use this are trapped for writes only, so the current value is read
+ * where it is, and the value the instruction stores is captured for the
+ * caller rather than written. */
+typedef struct {
+    uintptr_t addr;
+    uint64_t  value;
+    int       size, stores;
+} store_capture;
+
+static uint64_t capture_rd(void *dev, uint32_t off, int size)
+{
+    store_capture *c = (store_capture *)dev;
+    uint64_t v = 0;
+    (void)off;
+    memcpy(&v, (const void *)c->addr, (size_t)size);
+    return v;
+}
+
+static void capture_wr(void *dev, uint32_t off, uint64_t val, int size)
+{
+    store_capture *c = (store_capture *)dev;
+    (void)off;
+    c->value = val;
+    c->size = size;
+    c->stores++;
+}
+
+static int decode_store_shared(PCONTEXT ctx, uintptr_t host_addr,
+                               uint64_t *out, int *out_size)
+{
+    store_capture c = { host_addr, 0, 0, 0 };
+    CONTEXT after = *ctx;
+
+    if (!mmio_emulate(&after, 0, &c, capture_rd, capture_wr) || c.stores != 1)
+        return 0;
+    *ctx = after;
+    *out = c.value;
+    *out_size = c.size;
+    return 1;
+}
+
 /* Decode the value and width a faulting store was going to write.
  *
  * Shared by the AC'97 and NV2A handlers, which differ only in what they do
@@ -457,7 +505,8 @@ int nv2a_intr_handle_write(PCONTEXT ctx, uintptr_t host_addr,
  * caller must then let the fault through -- silently skipping an instruction
  * whose width is a guess is how a wrong RIP happens.
  */
-static int mmio_decode_write_value(PCONTEXT ctx, uint64_t *out, int *out_size)
+static int mmio_decode_write_value(PCONTEXT ctx, uintptr_t host_addr,
+                                   uint64_t *out, int *out_size)
 {
     const uint8_t *ip = (const uint8_t *)ctx->Rip;
     int prefix_len = 0, has_66 = 0, rex = 0, has_rex = 0;
@@ -505,7 +554,7 @@ static int mmio_decode_write_value(PCONTEXT ctx, uint64_t *out, int *out_size)
         ctx->Rip += prefix_len + 1 + modrm_len + 1;
         return 1;
     }
-    return 0;
+    return decode_store_shared(ctx, host_addr, out, out_size);
 }
 
 int mcpx_ac97_handle_write(PCONTEXT ctx, uintptr_t host_addr, uint32_t mcpx_offset)
@@ -598,6 +647,13 @@ int mcpx_ac97_handle_write(PCONTEXT ctx, uintptr_t host_addr, uint32_t mcpx_offs
             return 0;
         ctx->Rip += prefix_len + 1 + modrm_len + 1;
         return 1;
+    }
+
+    {
+        uint64_t val;
+        int size;
+        if (decode_store_shared(ctx, host_addr, &val, &size))
+            return ac97_store((void *)host_addr, ac97_apply_mask(mcpx_offset, val), size);
     }
 
     {
