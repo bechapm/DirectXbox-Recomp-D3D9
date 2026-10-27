@@ -57,8 +57,18 @@ endif()
 # macOS SDK installer makes under /usr/local.
 set(XBR_THIRD_PARTY ${CMAKE_CURRENT_LIST_DIR}/../../third_party)
 set(XBR_DXC_INCLUDE "")
-set(XBR_DXC_SEARCH ${XBR_THIRD_PARTY}/dxc/inc)
-if(NOT WIN32)       # Windows keeps to the drop, as it always has
+# An Android build is pointed at the DXC its APK carries (build_apk.py passes
+# XBOXRECOMP_DXC_INCLUDE; the default is fetch_deps.py's folder). The host's
+# own DXC is no use there, and finding none must not quietly build without a
+# renderer, so Android looks at nothing else.
+set(XBOXRECOMP_DXC_INCLUDE "" CACHE PATH "Where DXC's dxcapi.h is (searched first)")
+set(XBR_DXC_SEARCH ${XBOXRECOMP_DXC_INCLUDE})
+if(ANDROID)
+    list(APPEND XBR_DXC_SEARCH ${XBR_THIRD_PARTY}/android/dxc/include/dxc)
+else()
+    list(APPEND XBR_DXC_SEARCH ${XBR_THIRD_PARTY}/dxc/inc)
+endif()
+if(NOT WIN32 AND NOT ANDROID)       # Windows keeps to the drop, as it always has
     list(APPEND XBR_DXC_SEARCH ${XBR_THIRD_PARTY}/dxc/include/dxc
          $ENV{VULKAN_SDK}/include/dxc /usr/local/include/dxc)
 endif()
@@ -76,6 +86,14 @@ else()
     set(XBR_VULKAN_DEFAULT OFF)
 endif()
 option(XBOXRECOMP_VULKAN "Build the Vulkan renderer backend" ${XBR_VULKAN_DEFAULT})
+# Vulkan is Android's only renderer: without it the game runs to a black
+# screen, which is what a CI runner with no DXC headers once shipped.
+if(ANDROID AND NOT XBOXRECOMP_VULKAN)
+    message(FATAL_ERROR "an Android build needs the Vulkan backend: Vulkan-Headers, volk, "
+                        "VulkanMemoryAllocator (git submodule update --init) and DXC for "
+                        "Android's headers (tools/android/fetch_deps.py, or set "
+                        "XBOXRECOMP_DXC_INCLUDE)")
+endif()
 if(XBOXRECOMP_VULKAN)
     if(NOT XBR_DXC_INCLUDE)
         message(FATAL_ERROR "XBOXRECOMP_VULKAN needs DXC's headers (dxcapi.h): third_party/dxc/inc, "
@@ -100,8 +118,10 @@ if(XBOXRECOMP_VULKAN)
     elseif(APPLE)
         target_compile_definitions(xbox_d3d8 PRIVATE VK_USE_PLATFORM_METAL_EXT)
     endif()
-    # Where the build found the compiler, as the last place to look.
-    if(WIN32 AND EXISTS ${XBR_THIRD_PARTY}/dxc/bin/x64/dxcompiler.dll)
+    # Where the build found the compiler, as the last place to look. Not on
+    # Android, where it is the APK's own library, found by name.
+    if(ANDROID)
+    elseif(WIN32 AND EXISTS ${XBR_THIRD_PARTY}/dxc/bin/x64/dxcompiler.dll)
         set(XBR_DXC_LIB ${XBR_THIRD_PARTY}/dxc/bin/x64/dxcompiler.dll)
     elseif(APPLE AND EXISTS ${XBR_DXC_INCLUDE}/../../lib/libdxcompiler.dylib)
         get_filename_component(XBR_DXC_LIB ${XBR_DXC_INCLUDE}/../../lib/libdxcompiler.dylib ABSOLUTE)

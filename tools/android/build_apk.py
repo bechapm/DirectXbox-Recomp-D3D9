@@ -169,7 +169,10 @@ def main():
              "-DCMAKE_TOOLCHAIN_FILE=" + os.path.join(ndk, "build", "cmake", "android.toolchain.cmake"),
              "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-" + a.api,
              "-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release",
-             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"])
+             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+             # The headers of the DXC the APK carries: without them the
+             # engine has no renderer (src/d3d/CMakeLists.txt refuses).
+             "-DXBOXRECOMP_DXC_INCLUDE=" + os.path.join(deps, "dxc", "include", "dxc")])
     run(["cmake", "--build", build, "--target", "main", "pyexec"])
 
     # libzig.so: the compiler, named as a library so the APK carries it in
