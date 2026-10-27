@@ -968,6 +968,8 @@ static DWORD_PTR guest_cpu_mask(void)
     return mask;
 }
 
+static int guest_cpu_pinned(void) { return 0; }   /* the waits below keep yielding */
+
 static void guest_cpu_pin(void)
 {
     DWORD_PTR m = guest_cpu_mask();
@@ -1051,6 +1053,11 @@ static int guest_cpu(void)
     return cpu;
 }
 
+static int guest_cpu_pinned(void)
+{
+    return guest_cpu() >= 0;
+}
+
 static void guest_cpu_pin(void)
 {
     unsigned long mask[16] = { 0 };
@@ -1064,6 +1071,8 @@ static void guest_cpu_pin(void)
                 "cpu %d\n", cpu);
 }
 #else
+static int guest_cpu_pinned(void) { return 0; }
+
 /* macOS has no way to pin a thread to a core, only hints --
  * THREAD_AFFINITY_POLICY is ignored on Apple Silicon. What macOS
  * does take is a QoS class, and USER_INTERACTIVE keeps a thread on the
@@ -1702,15 +1711,35 @@ static int guest_reserved_against_me(void)
     return host_time_ns() < s_gl_resv_until;
 }
 
+/* A guest thread waiting for the lock to be its turn. Yielding is right when
+ * the thread it waits for has a core of its own; with every guest thread
+ * pinned to one core (RECOMP_GUEST_ONE_CPU, Android's default) each yield is
+ * a context switch away from the thread doing the work. Rainbow Six 3 in a
+ * level, pinned on a Snapdragon 8 Gen 3: two waiters spent 80% of their time
+ * in sched_yield and the clock, on the main thread's core. So there, after a
+ * few yields, sleep for 50 us at a time: lock waits went from 8.3% of the
+ * process to 1.4%, the level from 51-57 fps to 60, and frames over 60 ms
+ * from 71 to 30 in 30 s. */
+static void guest_backoff(int spins)
+{
+#ifndef _WIN32
+    if (spins >= 4 && guest_cpu_pinned()) {
+        struct timespec ts = { 0, 50000 };
+        nanosleep(&ts, NULL);
+        return;
+    }
+#endif
+    if (spins < 64)
+        SwitchToThread();
+    else
+        Sleep(0);
+}
+
 static void guest_wait_reservation(void)
 {
     int spins = 0;
-    while (guest_reserved_against_me()) {
-        if (++spins < 64)
-            SwitchToThread();
-        else
-            Sleep(0);
-    }
+    while (guest_reserved_against_me())
+        guest_backoff(++spins);
 }
 
 /* A free lock goes to the highest priority waiting for it.
@@ -1796,7 +1825,7 @@ static void guest_cs_enter_ex(int keep_turn)
                 }
                 if (!aside++)
                     InterlockedIncrement(&s_gl_outranked);
-                SwitchToThread();
+                guest_backoff(aside);
                 continue;
             }
             break;
@@ -2104,6 +2133,22 @@ void recomp_guest_backedge_yield(void)
             fprintf(stderr, "  [GUESTLOCK] back edge on tid %lu, not holding the lock\n",
                     (unsigned long)GetCurrentThreadId());
         return;
+    }
+    /* The clock is only needed to tell whether this thread's quantum is up,
+     * and reading it was most of what a back edge cost while a thread waits:
+     * 20% of Rainbow Six 3's Bink thread on Android, where clock_gettime is
+     * a call into the vDSO on every iteration of a pixel loop. One back edge
+     * in 32 reads it, a few microseconds late against a 2 ms quantum; a
+     * higher-priority waiter needs no clock and is seen at once. */
+    {
+        static RECOMP_TLS unsigned skip;
+        int32_t mine = guest_my_priority(), top;
+
+        for (top = GL_PRIO_HOST; top > mine; top--)
+            if (s_gl_waiting_at[top - GL_PRIO_MIN] > 0)
+                break;
+        if (top <= mine && (++skip & 31))
+            return;
     }
     now = host_time_ns();
     if (!guest_should_hand_over(now, 1))

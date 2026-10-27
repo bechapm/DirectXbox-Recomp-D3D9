@@ -245,6 +245,13 @@ static int start_video(int background)
      * timeout's SIGTERM must keep killing the process. */
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
+#ifdef __ANDROID__
+    /* On Android every event SDL queues wakes SDL_WaitEventTimeout, and every
+     * pump queues a poll sentinel, so the loop below never slept: the host
+     * main thread spun on the clock, 70% of a core in every title. Nothing
+     * here reads the sentinel. */
+    SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
     if (background) {
         /* Not "regular" (no Dock icon, no activation at launch), and neither
          * showing nor raising the window activates it. */

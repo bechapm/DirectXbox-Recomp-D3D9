@@ -24,6 +24,21 @@ per 5 s; TimeSplitters 2, nearly one thread, never showed the problem. Host
 threads (renderer, audio, timers) are given the whole CPU set back when they
 start (`w32_thread_unpin`), since a Linux thread inherits its creator's mask.
 
+Three costs that pinning exposed, all fixed (27 Oct 2026, measured with
+`simpleperf` on Rainbow Six 3):
+
+- **SDL's event wait never slept.** On Android every event SDL queues wakes
+  `SDL_WaitEventTimeout`, and every pump queues a poll sentinel, so the host
+  loop spun on the clock: 70% of a core in every title. `host_sdl.c` turns the
+  sentinel off on Android (`SDL_HINT_POLL_SENTINEL`).
+- **A back edge read the clock on every iteration** while any thread waited
+  for the lock, 20% of RS3's Bink thread. It reads it on one back edge in 32
+  now, unless a higher-priority thread waits.
+- **Waiters yielded on the holder's core.** A guest thread waiting its turn
+  spun on `sched_yield`, which on a shared core takes time from the thread it
+  waits for. Pinned, it sleeps 50 us at a time after four tries
+  (`guest_backoff`).
+
 ## Building an APK
 
 An APK carries no game code. The player installs it, chooses their own copy
