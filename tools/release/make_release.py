@@ -81,6 +81,14 @@ HOST_FLAGS = [] if MACOS or WINDOWS else ["-DCMAKE_C_FLAGS=-idirafter /usr/inclu
                                "-DCMAKE_CXX_FLAGS=-idirafter /usr/include",
                                "-DCMAKE_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu"]
 
+# SDL's SSE3-AVX512F tests, answered for zig (clang 22, x86-64), which has all
+# of them. Each test links with its own -m flag, which to zig is a new CPU, so
+# it builds the C runtime and compiler-rt again for each: on Windows, MinGW's
+# runtime, about 2 minutes a test and 13 of a cold release; 13 s each on
+# Linux. MMX, SSE and SSE2 are x86-64's baseline and cost nothing.
+SDL_SIMD_PRESEED = [f"-DCOMPILER_SUPPORTS_{f}=1"
+                    for f in ("SSE3", "SSE4_1", "SSE4_2", "AVX", "AVX2", "AVX512F")]
+
 # SDL as the runtime builds it (CMakeLists.txt), as a dylib.
 SDL_OPTIONS = ["-DSDL_SHARED=ON", "-DSDL_STATIC=OFF", "-DSDL_TEST_LIBRARY=OFF",
                "-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_INSTALL=OFF",
@@ -359,10 +367,11 @@ def main():
     # The engine, built with that compiler, then packaged. On a Mac, SDL first,
     # apart (build_sdl_macos), and the engine pointed at it.
     eng = work / "engine"
-    sdl_args = []
     if MACOS:
         sdl = build_sdl_macos(work, tc, env)
         sdl_args = ["-DXBOXRECOMP_EXTERNAL_SDL=ON", f"-DSDL3_DIR={sdl}"]
+    else:
+        sdl_args = SDL_SIMD_PRESEED
     run([cmake, "-S", ROOT, "-B", eng, *toolchain_args(tc), *HOST_FLAGS, *sdl_args], env=env)
     run([cmake, "--build", eng, "--target", "xboxrecomp_engine"], env=env)
     run([sys.executable, "-m", "tools.release.make_engine_package", "--build", eng,
