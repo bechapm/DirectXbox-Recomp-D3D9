@@ -177,6 +177,11 @@ HANDLE GetCurrentThread(void);
 HANDLE GetCurrentProcess(void);
 DWORD  GetCurrentProcessId(void);
 BOOL   SetThreadPriority(HANDLE h, int priority);
+/* Give the calling thread the process's CPU mask back. A Linux thread
+ * inherits its creator's, and RECOMP_GUEST_ONE_CPU pins guest threads, so a
+ * host thread a guest thread starts would otherwise share the guest's core.
+ * Does nothing off Linux. */
+void   w32_thread_unpin(void);
 int    GetThreadPriority(HANDLE h);
 VOID   SwitchToThread(void);
 DWORD  QueueUserAPC(PAPCFUNC func, HANDLE thread, ULONG_PTR data);

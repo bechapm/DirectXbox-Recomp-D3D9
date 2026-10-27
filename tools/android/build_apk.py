@@ -141,6 +141,8 @@ def main():
     ap.add_argument("--api", default="30")
     ap.add_argument("--version-code", default="1")
     ap.add_argument("--version-name", default="1.0")
+    ap.add_argument("--profileable", action="store_true",
+                    help="let simpleperf profile the game from adb (make_apk.py --profileable)")
     a = ap.parse_args()
 
     project = os.path.abspath(a.project)
@@ -222,6 +224,8 @@ def main():
             "--version-name", a.version_name, "--strip", "--out", out]
     if icon:
         cmd += ["--icon", icon]
+    if a.profileable:
+        cmd += ["--profileable"]
     run(cmd, env=env)
 
 

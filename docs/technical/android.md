@@ -12,6 +12,18 @@ threads and the guest lock are the macOS arm64 paths (`memory-layout.md`), the
 renderer is the Vulkan RHI (`vulkan-backend.md`), and the window, sound and pads
 are SDL3. What is Android's own is below.
 
+**Guest threads run on the prime core** (`RECOMP_GUEST_ONE_CPU`, on by default
+on Android only, `=0` to switch off). The guest lock lets one guest thread run
+at a time, so a title with several busy threads hands the lock over thousands
+of times a second, and each handoff wakes a different host thread; a phone's
+scheduler wakes such a thread onto whichever core it likes, often a small one at
+a low clock. Pinned to the fastest core (`cpu_capacity` 1024, cpu7 on a
+Snapdragon 8 Gen 3) a handoff is a context switch. Gladius's Sofdec intro went
+from 38-39 ms a frame to its own 30 fps, and its handoffs from ~5500 to ~60
+per 5 s; TimeSplitters 2, nearly one thread, never showed the problem. Host
+threads (renderer, audio, timers) are given the whole CPU set back when they
+start (`w32_thread_unpin`), since a Linux thread inherits its creator's mask.
+
 ## Building an APK
 
 An APK carries no game code. The player installs it, chooses their own copy
@@ -243,6 +255,11 @@ Things that cost time:
   denied` under `<files>`), so give each run its own folders rather than
   cleaning up after one.
 - **`adb install -r` closes the running app.**
+- **A release APK cannot be profiled**; build a side-by-side package with
+  `build_apk.py --package <release package>.dev --profileable`, which
+  `simpleperf record --app <package>` accepts. It has its own data and needs
+  all-files access once (`adb shell appops set <package>
+  MANAGE_EXTERNAL_STORAGE allow`, our own package).
 
 ## What the desktop shares
 

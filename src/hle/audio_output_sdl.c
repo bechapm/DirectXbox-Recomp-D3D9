@@ -541,6 +541,10 @@ static int postmix_install(SDL_AudioDeviceID dev, int muted)
     return 1;
 }
 
+#ifndef _WIN32
+void w32_thread_unpin(void);   /* win32_compat.h */
+#endif
+
 static void *open_device_thread(void *arg)
 {
     SDL_AudioDeviceID dev;
@@ -549,6 +553,11 @@ static void *open_device_thread(void *arg)
     int muted = mute && *mute && strcmp(mute, "0") != 0;
 
     (void)arg;
+#ifndef _WIN32
+    /* Started from a guest thread: SDL's audio threads, which start from
+     * this one, would share the guest's core (RECOMP_GUEST_ONE_CPU). */
+    w32_thread_unpin();
+#endif
     /* SDL's audio brings up its event subsystem, which would otherwise turn
      * SIGINT/SIGTERM into a quit event nobody reads (src/host/host_sdl.c). */
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");

@@ -307,6 +307,9 @@ def main():
                     help="a file for the APK's assets/, stored as it is (the build kit)")
     ap.add_argument("--strip", action="store_true",
                     help="drop debug sections from the libraries (dynamic symbols stay)")
+    ap.add_argument("--profileable", action="store_true",
+                    help="let simpleperf profile the game from adb (android:profileable "
+                         "shell=\"true\"): for a side-by-side dev package, not a release")
     a = ap.parse_args()
 
     sdk = sdk_dir(a.sdk)
@@ -352,6 +355,8 @@ def main():
                      "XBE": a.xbe, "XBE_SHA1": a.xbe_sha1.lower(),
                      "TARGET_SDK": a.target_sdk}.items():
             manifest = manifest.replace("@%s@" % k, v.replace("&", "&amp;").replace('"', "&quot;"))
+        manifest = manifest.replace(
+            "@PROFILEABLE@", '<profileable android:shell="true" />' if a.profileable else "")
         man_path = os.path.join(work, "AndroidManifest.xml")
         with open(man_path, "w", encoding="utf-8") as f:
             f.write(manifest)

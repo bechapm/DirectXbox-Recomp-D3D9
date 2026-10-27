@@ -713,6 +713,7 @@ static w32_object *timer_remove(int i)
 static void *timer_service(void *arg)
 {
     (void)arg;
+    w32_thread_unpin();
     pthread_mutex_lock(&g_timer_lock);
     for (;;) {
         ULONGLONG now = timer_now_ns(CLOCK_MONOTONIC), next = 0;
@@ -955,12 +956,33 @@ BOOL ReleaseMutex(HANDLE h)
 
 #define W32_DEFAULT_STACK ((size_t)8 << 20)
 
+#ifdef __linux__
+static cpu_set_t g_process_cpus;
+static int       g_process_cpus_ok;
+
+/* Before main, so before anything is pinned. */
+__attribute__((constructor)) static void save_process_cpus(void)
+{
+    g_process_cpus_ok = sched_getaffinity(0, sizeof g_process_cpus, &g_process_cpus) == 0;
+}
+
+void w32_thread_unpin(void)
+{
+    if (g_process_cpus_ok)
+        sched_setaffinity(0, sizeof g_process_cpus, &g_process_cpus);
+}
+#else
+void w32_thread_unpin(void) {}
+#endif
+
 static void *thread_trampoline(void *arg)
 {
     w32_object *o = (w32_object *)arg;
     /* First: a guest thread can fault, and a fault on an exhausted stack is
-     * reported only from an alternate signal stack (fault_posix.c). */
+     * reported only from an alternate signal stack (fault_posix.c). A guest
+     * thread pins itself again on its way into lifted code. */
     recomp_fault_thread_init();
+    w32_thread_unpin();
     t_self_obj = o;
     t_tid      = o->tid;
 
@@ -1208,6 +1230,7 @@ static void *timer_thread(void *arg)
     w32_object *o = (w32_object *)arg;
     int once = (o->timer_period == 0);
 
+    w32_thread_unpin();
     /* initial due time */
     if (o->timer_due) Sleep(o->timer_due);
     if (!o->timer_cancel && o->timer_cb)
@@ -1282,6 +1305,7 @@ struct w32_tp_args { PTP_SIMPLE_CALLBACK cb; PVOID ctx; };
 static void *w32_tp_trampoline(void *arg)
 {
     struct w32_tp_args *a = (struct w32_tp_args *)arg;
+    w32_thread_unpin();
     a->cb(NULL, a->ctx);
     free(a);
     return NULL;

@@ -974,10 +974,98 @@ static void guest_cpu_pin(void)
     if (m)
         SetThreadAffinityMask(GetCurrentThread(), m);
 }
+#elif defined(__linux__)
+/* Linux and Android: the same pick by sysfs. A core's cpu_capacity (1024 for
+ * the fastest, set by the kernel on every big.LITTLE part) says which class it
+ * is in, and cpuinfo_max_freq stands in where there is none; ties go to the
+ * highest-numbered core, which keeps the guest off CPU 0 as on Windows.
+ *
+ * On a phone this is the speed half of the switch. The guest lock runs one
+ * guest thread at a time, so every handoff wakes another host thread, and
+ * the scheduler is free to wake a thread that was only ever partly busy onto
+ * a small core at a low clock. On one core a handoff is a context switch.
+ * Gladius's Sofdec intro on a Snapdragon 8 Gen 3 (27 Oct 2026): 38-39 ms a
+ * frame and ~5500 handoffs per 5 s unpinned; on the prime core 33 ms, the
+ * movie's own 30 fps, and ~60. So on Android it is on unless set to 0. 
+ *
+ * The raw syscall, because bionic declares cpu_set_t and its macros only
+ * under _GNU_SOURCE; a mask of longs is the same thing. */
+#include <sys/syscall.h>
+
+static long core_rank(int cpu)
+{
+    static const char *const leaf[] = { "cpu_capacity", "cpufreq/cpuinfo_max_freq" };
+    char path[96];
+    long v = -1;
+    int i;
+
+    for (i = 0; i < 2 && v < 0; i++) {
+        FILE *f;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/%s", cpu, leaf[i]);
+        if ((f = fopen(path, "r"))) {
+            if (fscanf(f, "%ld", &v) != 1)
+                v = -1;
+            fclose(f);
+        }
+        if (v >= 0 && i == 1)
+            v += 1L << 40;   /* a frequency never ranks against a capacity */
+    }
+    return v;
+}
+
+static int guest_cpu(void)
+{
+    static int cpu = -2;
+    if (cpu == -2) {
+        const char *v = getenv("RECOMP_GUEST_ONE_CPU");
+#ifdef __ANDROID__
+        long n = v && *v ? strtol(v, NULL, 0) : 1;   /* on unless =0: see above */
 #else
-/* No POSIX host here can pin a thread to a core: Linux could
- * (pthread_setaffinity_np) but has never been asked to, and macOS has only
- * hints -- THREAD_AFFINITY_POLICY is ignored on Apple Silicon. What macOS
+        long n = v ? strtol(v, NULL, 0) : 0;
+#endif
+        unsigned long allowed[16] = { 0 };
+        int bits = (int)(sizeof allowed * 8), c;
+        long best = -1;
+
+        cpu = -1;
+        if (n <= 0)
+            return cpu;
+        if (syscall(SYS_sched_getaffinity, 0, sizeof allowed, allowed) < 0)
+            return cpu;
+        if (n == 1) {
+            for (c = 0; c < bits; c++) {
+                long r;
+                if (!(allowed[c / 64] >> (c % 64) & 1))
+                    continue;
+                if ((r = core_rank(c)) >= best) {
+                    best = r;
+                    cpu = c;
+                }
+            }
+        } else if (n - 2 < bits && (allowed[(n - 2) / 64] >> ((n - 2) % 64) & 1)) {
+            cpu = (int)(n - 2);
+        }
+        fprintf(stderr, "[THREAD] guest threads on one host core (cpu %d, rank %ld, "
+                "RECOMP_GUEST_ONE_CPU)\n", cpu, cpu >= 0 ? core_rank(cpu) : -1L);
+    }
+    return cpu;
+}
+
+static void guest_cpu_pin(void)
+{
+    unsigned long mask[16] = { 0 };
+    int cpu = guest_cpu();
+
+    if (cpu < 0)
+        return;
+    mask[cpu / 64] = 1UL << (cpu % 64);
+    if (syscall(SYS_sched_setaffinity, 0, sizeof mask, mask) < 0)
+        fprintf(stderr, "[THREAD] RECOMP_GUEST_ONE_CPU: could not pin a guest thread to "
+                "cpu %d\n", cpu);
+}
+#else
+/* macOS has no way to pin a thread to a core, only hints --
+ * THREAD_AFFINITY_POLICY is ignored on Apple Silicon. What macOS
  * does take is a QoS class, and USER_INTERACTIVE keeps a thread on the
  * performance cores, which is the half of the switch that was about speed
  * (the E-core measurement above). The half that was about running one guest

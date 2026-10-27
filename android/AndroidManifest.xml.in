@@ -46,6 +46,10 @@
              was built for: the game the setup looks for. -->
         <meta-data android:name="xboxrecomp.xbe" android:value="@XBE@" />
         <meta-data android:name="xboxrecomp.xbe_sha1" android:value="@XBE_SHA1@" />
+        <!-- make_apk.py, profileable: simpleperf from adb may profile the
+             game (android:profileable), which a release build otherwise
+             refuses. Empty in a release. -->
+        @PROFILEABLE@
         <activity android:name="org.xboxrecomp.app.SetupActivity"
             android:label="@LABEL@"
             android:screenOrientation="sensorLandscape"

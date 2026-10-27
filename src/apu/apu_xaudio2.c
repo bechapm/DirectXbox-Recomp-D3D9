@@ -197,6 +197,8 @@ static int               g_xa2_initialized;
 static int               g_xa2_closed;
 static int               g_xa2_frames_written;
 
+void w32_thread_unpin(void);   /* win32_compat.h */
+
 static void *open_thread(void *arg)
 {
     SDL_AudioSpec spec;
@@ -205,6 +207,9 @@ static void *open_thread(void *arg)
     const char *mute = getenv("RECOMP_MUTE");
 
     (void)arg;
+    /* Started from a guest thread: SDL's audio threads start from this one
+     * and would share the guest's core (RECOMP_GUEST_ONE_CPU). */
+    w32_thread_unpin();
     /* SDL's audio brings up its event subsystem; keep SIGINT/SIGTERM fatal. */
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
