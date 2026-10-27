@@ -40,7 +40,7 @@ import java.util.List;
  *     a document link; with all-files access, one on the device's storage or an
  *     SD card is a path the pipeline and the engine can read, which is what is
  *     kept.
- *   - Found on this device: folders under the usual places whose default.xbe
+ *   - Found on this device: folders under the usual places whose boot XBE
  *     is one of the release's images (the manifest's xboxrecomp.xbe_sha1), and
  *     disc images (checked when they are built).
  *   - Allow access to files, while the app does not have it.
@@ -100,7 +100,7 @@ public class SetupActivity extends Activity {
         TextView sub = Theme.text(this, "Choose your copy of the game", 18, Theme.GREEN, false);
         sub.setPadding(0, dp(10), 0, dp(4));
         box.addView(sub);
-        TextView how = Theme.text(this, "A folder holding default.xbe, or a disc image (.iso). "
+        TextView how = Theme.text(this, "A folder holding " + bootXbe() + ", or a disc image (.iso). "
                                   + "It is only read: the game is built from it on this device, once.",
                                   14, Theme.TEXT_DIM, false);
         how.setPadding(0, 0, 0, dp(18));
@@ -120,7 +120,7 @@ public class SetupActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER);
-        folderButton = button("Choose game folder", "The folder with default.xbe", v -> pick(PICK_FOLDER));
+        folderButton = button("Choose game folder", "The folder with " + bootXbe(), v -> pick(PICK_FOLDER));
         imageButton = button("Choose disc image", "An .iso of the game", v -> pick(PICK_IMAGE));
         LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         half.setMargins(dp(6), dp(6), dp(6), dp(6));
@@ -231,8 +231,8 @@ public class SetupActivity extends Activity {
                 + "the device's own storage or SD card (its menu lists them), not from Recent or Downloads.");
             return;
         }
-        if (request == PICK_FOLDER && !new File(path, "default.xbe").isFile()) {
-            say("There is no default.xbe in " + path + ". Choose the game's own folder, the one holding it.");
+        if (request == PICK_FOLDER && !new File(path, bootXbe()).isFile()) {
+            say("There is no " + bootXbe() + " in " + path + ". Choose the game's own folder, the one holding it.");
             return;
         }
         if (request == PICK_IMAGE && !new File(path).isFile()) {
@@ -277,21 +277,35 @@ public class SetupActivity extends Activity {
 
     // ---- copies found without asking ----
 
-    private String expectedSha1() {
+    private String meta(String key) {
         try {
             ApplicationInfo ai = getPackageManager().getApplicationInfo(
                 getPackageName(), PackageManager.GET_META_DATA);
-            if (ai.metaData != null) {
-                // The release's images, comma separated (PAL, USA, ...).
-                String s = ai.metaData.getString("xboxrecomp.xbe_sha1");
-                if (s != null && s.length() >= 40)
-                    return s.toLowerCase();
-            }
+            if (ai.metaData != null)
+                return ai.metaData.getString(key);
         } catch (PackageManager.NameNotFoundException e) {
             // fall through
         }
         return null;
     }
+
+    private String expectedSha1() {
+        // The release's images, comma separated (PAL, USA, ...).
+        String s = meta("xboxrecomp.xbe_sha1");
+        return s != null && s.length() >= 40 ? s.toLowerCase() : null;
+    }
+
+    /* The XBE the game boots: default.xbe unless the recipe names another
+     * (Gladius's gladius_eng.xbe beside a language launcher). */
+    private String bootXbe() {
+        if (bootXbe == null) {
+            String s = meta("xboxrecomp.xbe");
+            bootXbe = s != null && !s.isEmpty() ? s : "default.xbe";
+        }
+        return bootXbe;
+    }
+
+    private String bootXbe;
 
     private List<String> scan() {
         String want = expectedSha1();
@@ -311,7 +325,7 @@ public class SetupActivity extends Activity {
     private void look(File dir, int depth, String want, List<String> out) {
         if (depth > MAX_DEPTH || dir == null || !dir.isDirectory())
             return;
-        File xbe = new File(dir, "default.xbe");
+        File xbe = new File(dir, bootXbe());
         if (xbe.isFile()) {
             String digest = sha1(xbe);
             if (want == null || (!digest.isEmpty() && want.contains(digest)))
@@ -353,13 +367,13 @@ public class SetupActivity extends Activity {
     }
 
     /* A folder holding the game, or a disc image of it. */
-    private static boolean hasGame(String dir) {
+    private boolean hasGame(String dir) {
         if (dir == null)
             return false;
         File f = new File(dir);
         if (f.isFile())
             return isImage(f);
-        return new File(f, "default.xbe").isFile();
+        return new File(f, bootXbe()).isFile();
     }
 
     /* Whether a disc image is an Xbox one: its XDVDFS volume descriptor, at

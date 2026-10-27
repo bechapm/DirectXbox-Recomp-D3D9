@@ -170,10 +170,29 @@ def main():
              "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-" + a.api,
              "-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release",
              "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+             # The toolkit linked into the copy: a title whose CMakeLists
+             # looks for it beside its own checkout (../DirectXbox-Recomp)
+             # finds it here, as a desktop release passes its engine.
+             "-DXBOXRECOMP_DIR=" + os.path.join(copy, "xboxrecomp"),
              # The headers of the DXC the APK carries: without them the
              # engine has no renderer (src/d3d/CMakeLists.txt refuses).
              "-DXBOXRECOMP_DXC_INCLUDE=" + os.path.join(deps, "dxc", "include", "dxc")])
     run(["cmake", "--build", build, "--target", "main", "pyexec"])
+
+    # XbSymbolDatabase's tool, which names the XDK functions in the player's
+    # XBE for a recipe that does not carry them (as a desktop release's
+    # bin/XbSymbolDatabaseCLI does). An executable, shipped as a library for
+    # the same reason as zig below.
+    xbsdb = os.path.join(work, "xbsdb")
+    if not os.path.isfile(os.path.join(xbsdb, "build.ninja")):
+        run(["cmake", "-S", os.path.join(TOOLKIT, "third_party", "XbSymbolDatabase"), "-B", xbsdb,
+             "-G", "Ninja",
+             "-DCMAKE_TOOLCHAIN_FILE=" + os.path.join(ndk, "build", "cmake", "android.toolchain.cmake"),
+             "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-" + a.api,
+             "-DCMAKE_BUILD_TYPE=Release", "-DXBSDB_BUILD_UNITTEST=OFF"])
+    run(["cmake", "--build", xbsdb, "--target", "XbSymbolDatabaseCLI"])
+    libxbsdb = os.path.join(work, "libxbsdbcli.so")
+    shutil.copy2(os.path.join(xbsdb, "projects", "cli", "XbSymbolDatabaseCLI"), libxbsdb)
 
     # libzig.so: the compiler, named as a library so the APK carries it in
     # its library folder, where Android lets a program be started.
@@ -192,11 +211,12 @@ def main():
     out = a.out or os.path.join(project, "build", a.package + ".apk")
     env = dict(os.environ, ANDROID_HOME=sdk)
     libs = [os.path.join(build, "libmain.so"), os.path.join(build, "xboxrecomp", "libpyexec.so"),
-            need["python"], need["capstone"], libzig, need["dxc"]]
+            need["python"], need["capstone"], libzig, libxbsdb, need["dxc"]]
     cmd = [sys.executable, os.path.join(HERE, "make_apk.py")]
     for lib in libs:
         cmd += ["--lib", lib]
     cmd += ["--asset", kit, "--package", a.package, "--label", a.label,
+            "--xbe", recipe.get("xbe", "default.xbe"),
             "--xbe-sha1", ",".join(i["sha1"] for i in images),
             "--min-sdk", a.api, "--version-code", a.version_code,
             "--version-name", a.version_name, "--strip", "--out", out]

@@ -289,10 +289,13 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--version-code", default="1")
     ap.add_argument("--version-name", default="1.0")
+    ap.add_argument("--xbe", default="default.xbe",
+                    help="the XBE the game boots, which the app's setup looks for "
+                         "(a recipe's \"xbe\"; default.xbe)")
     ap.add_argument("--xbe-sha1", default="",
-                    help="SHA-1s of the default.xbe images the release is for, comma "
+                    help="SHA-1s of the --xbe images the release is for, comma "
                          "separated: what the app's setup looks for on the device "
-                         "(any default.xbe if empty)")
+                         "(any copy if empty)")
     ap.add_argument("--icon", default=DEFAULT_ICON,
                     help="the launcher icon: a PNG, square, 192 px or more (or an SVG with "
                          "rsvg-convert installed); default the toolkit's own")
@@ -346,7 +349,7 @@ def main():
             manifest = f.read()
         for k, v in {"PACKAGE": a.package, "LABEL": a.label, "VERSION_CODE": a.version_code,
                      "VERSION_NAME": a.version_name, "MIN_SDK": a.min_sdk,
-                     "XBE_SHA1": a.xbe_sha1.lower(),
+                     "XBE": a.xbe, "XBE_SHA1": a.xbe_sha1.lower(),
                      "TARGET_SDK": a.target_sdk}.items():
             manifest = manifest.replace("@%s@" % k, v.replace("&", "&amp;").replace('"', "&quot;"))
         man_path = os.path.join(work, "AndroidManifest.xml")

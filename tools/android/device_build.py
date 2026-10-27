@@ -8,7 +8,8 @@ device what xboxrecomp-build (tools/builder) does on a desktop:
 
   1. the game: an ISO is extracted once; a folder is read where it is
   2. the check: default.xbe's SHA-1 must be one the release lists
-  3. the lift: the title's own recipe (release.json's "lift"), on a private
+  3. the lift: the title's own recipe (release.json's "lift"), or else the
+     toolkit's recompile.py as the desktop builder runs it, on a private
      copy of the XBE, in a copy of the title's project
   4. the compile: the lifted C and the title's own sources, with zig, with
      the flags the APK's build recorded (android-build.json)
@@ -126,16 +127,57 @@ def lift(kit, spec, work, game, image, env):
     xbe = os.path.join(xdir, spec["xbe"])
     shutil.copyfile(os.path.join(game, spec["xbe"]), xbe)
 
+    name = image.get("name", "")
     hook = spec.get("lift")
-    if not hook:
-        raise Failure("release.json names no lift")
-    cmd = [sys.executable, os.path.join(project, hook[0])] + \
-          [a.replace("{xbe_dir}", xdir) for a in hook[1:]]
-    progress("lift", 0, 1, image)
-    log(f"lifting {image} with the title's recipe")
-    run(cmd, cwd=project, env=env, what="the translation to C")
-    progress("lift", 1, 1, image)
+    if hook:
+        cmd = [sys.executable, os.path.join(project, hook[0])] + \
+              [a.replace("{xbe_dir}", xdir) for a in hook[1:]]
+        cwd = project
+        log(f"lifting {name} with the title's recipe")
+    else:
+        cmd = default_lift(kit, project, xbe, image, work, env)
+        cwd = os.path.join(kit, "toolkit")
+        log(f"lifting {name} with the toolkit's pipeline")
+    progress("lift", 0, 1, name)
+    run(cmd, cwd=cwd, env=env, what="the translation to C")
+    progress("lift", 1, 1, name)
     return project
+
+
+def default_lift(kit, project, xbe, image, work, env):
+    """A recipe that names no lift is lifted as the desktop builder lifts it
+    (tools/builder, lift()): the toolkit's recompile.py into the project,
+    with the image's seeds and XBE patches."""
+    # This image's addresses: its own folder when the recipe has one per
+    # image, else the recipe's config/.
+    config = os.path.join(project, image.get("config") or "config")
+    # Which XDK functions sit where in this image: the recipe's, else found
+    # here by signature. Beside the XBE, named after it, where recompile.py
+    # looks.
+    stem = os.path.splitext(os.path.basename(xbe))[0]
+    symbols = os.path.join(os.path.dirname(xbe), stem + "_xdk_symbols.json")
+    carried = os.path.join(config, "xdk_symbols.json")
+    if os.path.isfile(carried):
+        shutil.copyfile(carried, symbols)
+    else:
+        progress("lift", 0, 1, "naming the XDK functions")
+        run([sys.executable, "-m", "tools.xdk_symbols", xbe,
+             "--cli", os.path.join(kit, "bin", "XbSymbolDatabaseCLI"), "--out", symbols],
+            cwd=os.path.join(kit, "toolkit"), env=env, what="XbSymbolDatabase")
+    cmd = [sys.executable, os.path.join(kit, "toolkit", "scripts", "recompile.py"), xbe,
+           "--work-dir", os.path.join(work, "pipe", "out"), "--project", project]
+    seeds = os.path.join(config, "seeds.json")
+    if os.path.isfile(seeds):
+        cmd += ["--seeds", seeds]
+    # An image with a folder of its own has its patches there or none: the
+    # toolkit's config/xbe_patches/<TITLEID>.json cannot say which image
+    # it is for.
+    patches = os.path.join(config, "xbe_patches.json")
+    if os.path.isfile(patches):
+        cmd += ["--xbe-patches", patches]
+    elif image.get("config"):
+        cmd.append("--no-xbe-patches")
+    return cmd
 
 
 # ---- 4-5. compile and link --------------------------------------------------
@@ -231,6 +273,14 @@ def main():
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONUNBUFFERED="1",
                TMPDIR=os.path.join(a.work, "tmp"))
     os.makedirs(env["TMPDIR"], exist_ok=True)
+    # XbSymbolDatabase's tool where a desktop release has it (bin/ beside the
+    # toolkit), which is where a title's own lift looks for it. A link: Android
+    # starts programs only from the APK's library folder.
+    cli = os.path.join(a.kit, "bin", "XbSymbolDatabaseCLI")
+    os.makedirs(os.path.dirname(cli), exist_ok=True)
+    if os.path.lexists(cli):
+        os.remove(cli)
+    os.symlink(os.path.join(a.libdir, "libxbsdbcli.so"), cli)
     t0 = time.time()
     try:
         game = game_folder(a.source, a.game_out, os.path.join(a.kit, "toolkit"), spec["xbe"])
@@ -241,7 +291,7 @@ def main():
             raise Failure(f"this {spec['xbe']} (SHA-1 {digest}) is not a copy of "
                           f"{spec['title_name']} this release was made for")
         progress("check", 1, 1, image.get("name", ""))
-        project = lift(a.kit, spec, a.work, game, image.get("name", ""), env)
+        project = lift(a.kit, spec, a.work, game, image, env)
         zenv = zig_env(a.kit, a.work, env)
         objects = compile_all(a.kit, spec, project, a.work, zig, zenv, a.jobs)
         link(spec, objects, a.libdir, a.out, zig, zenv, a.work, a.kit)

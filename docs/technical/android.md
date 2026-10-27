@@ -43,6 +43,7 @@ compile flags, and packs everything (`make_apk.py`): 37 s from clean, 89 MB.
 | `lib/arm64-v8a/libmain.so` | the engine, every library linked whole, compiled with `XBOXRECOMP_SPLIT_TITLE` |
 | `libpython3.14.so`, `libpyexec.so` | Python, and a program that starts it (`android/pyexec.c`) |
 | `libzig.so` | zig: the compiler, named as a library |
+| `libxbsdbcli.so` | XbSymbolDatabase's CLI, which names the XDK functions in the player's XBE; linked as the kit's `bin/XbSymbolDatabaseCLI`, where a desktop release has it |
 | `libcapstone.so` | Capstone, for the pipeline |
 | `libdxcompiler.so` | DXC, for the renderer |
 | `assets/buildkit.zip` | 18 MB: Python's standard library (no tests, no GUI), the pipeline and the title's recipe as a desktop release takes them, the headers and flags the title's sources compile with, the NDK sysroot, zig's library without other platforms' C libraries |
@@ -79,7 +80,11 @@ internal folder, which adb cannot read):
 2. the check: `default.xbe`'s SHA-1 against the recipe's images
 3. the lift: the title's own recipe (`scripts/build.py --no-build --relift`
    for TimeSplitters 2) on a private copy of the XBE, in a copy of the
-   project with `xboxrecomp/` linked to the kit's pipeline
+   project with `xboxrecomp/` linked to the kit's pipeline. A recipe that
+   names no lift is lifted as the desktop builder lifts it: the XDK symbols
+   from the recipe's `config/xdk_symbols.json`, else found with
+   XbSymbolDatabase, then `scripts/recompile.py` with the image's seeds and
+   XBE patches
 4. the compile: the lifted C and the title's sources, by zig, eight at a time,
    with the recorded flags (`{kit}` and `{project}` filled in) and a libc
    paths file naming the NDK sysroot (`ZIG_LIBC`)

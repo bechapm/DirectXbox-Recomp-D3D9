@@ -41,8 +41,10 @@
         android:appCategory="game"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
         android:hardwareAccelerated="true">
-        <!-- The SHA-1 of the default.xbe the APK was built from: the game the
-             setup looks for. -->
+        <!-- The XBE the game boots (default.xbe unless the recipe says, as
+             Gladius's gladius_eng.xbe), and the SHA-1s of the images the APK
+             was built for: the game the setup looks for. -->
+        <meta-data android:name="xboxrecomp.xbe" android:value="@XBE@" />
         <meta-data android:name="xboxrecomp.xbe_sha1" android:value="@XBE_SHA1@" />
         <activity android:name="org.xboxrecomp.app.SetupActivity"
             android:label="@LABEL@"
