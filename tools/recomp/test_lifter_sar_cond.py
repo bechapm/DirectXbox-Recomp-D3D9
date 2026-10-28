@@ -59,10 +59,16 @@ def test_the_memcpy_tail_branch_is_taken_under_32_bytes():
     assert not eval(expr, {"_fas": 64 >> 5}), expr   # 64 bytes: run it
 
 
-def test_shl_and_shr_get_no_invented_rule():
+def test_shl_and_shr_do_not_borrow_the_sar_rule():
     # Their OF is not 0, so the signed conditions are not the result's sign.
+    # They used to have no rule at all; they now read OF as a shift by one
+    # defines it (test_lifter_overflow_parity.py sweeps them against x86),
+    # and what must never happen is the sar shortcut being applied to them.
     for setter in ("shl", "shr"):
-        assert _make_condition("jle", setter, OPS) is None, setter
+        expr = _make_condition("jle", setter, OPS)[0]
+        assert expr != _make_condition("jle", "sar", OPS)[0], setter
+        assert ">> 31" in expr, (setter, expr)
+    assert "_cf" in _make_condition("jle", "shl", OPS)[0]
 
 
 if __name__ == "__main__":

@@ -1207,6 +1207,40 @@ class FunctionTranslator:
     _CARRY_CC = frozenset({
         "b", "nae", "c", "ae", "nb", "nc", "be", "na", "a", "nbe",
     })
+    # shl's OF is the result's top bit XOR the bit shifted out, which is _cf,
+    # so after shl these read the carry too (lifter._make_condition).
+    _OF_CC = frozenset({
+        "o", "no", "l", "nge", "ge", "nl", "le", "ng", "g", "nle",
+    })
+
+    # The conditions that have a rule after mul/imul: CF and OF.
+    _MUL_FLAG_CC = frozenset({"o", "no", "b", "nae", "c", "ae", "nb", "nc"})
+
+    @staticmethod
+    def _function_reads_mul_flags(instructions):
+        """True when something in the function could read a multiply's CF/OF.
+
+        Deliberately coarse -- any CF or OF reader anywhere, not one that
+        follows a multiply -- because a reader at a join (the per-edge plan)
+        is not in address order after its setter. It only has to be cheap
+        and never false when the answer is yes; adc/sbb and the other carry
+        readers are covered by needs_cf, which also turns this on. sahf keeps
+        the OF it finds, so it counts.
+        """
+        for insn in instructions:
+            m = insn.mnemonic
+            if m == "sahf":
+                return True
+            cc = None
+            if m.startswith("j") and len(m) > 1:
+                cc = m[1:]
+            elif m.startswith("set"):
+                cc = m[3:]
+            elif m.startswith("cmov") and len(m) > 4:
+                cc = m[4:]
+            if cc in FunctionTranslator._MUL_FLAG_CC:
+                return True
+        return False
 
     @staticmethod
     def _function_needs_cf(instructions):
@@ -1227,10 +1261,14 @@ class FunctionTranslator:
                 cc = m[3:]
             elif m.startswith("cmov") and len(m) > 4:
                 cc = m[4:]
-            if (cc in FunctionTranslator._CARRY_CC
+            # lahf copies CF into AH bit 0, so it is a carry reader wherever a
+            # jb would be one.
+            if ((cc in FunctionTranslator._CARRY_CC or m == "lahf")
                     and (last_setter in CF_TRACKED
                          or last_setter in ("inc", "dec", "rep-cmps")
                          or last_setter in BT_MODIFY)):
+                return True
+            if cc in FunctionTranslator._OF_CC and last_setter in ("shl", "sal"):
                 return True
             if m.startswith("rep") and ("cmps" in m or "scas" in m):
                 # repe cmpsb and friends set CF from the last pair compared
@@ -1246,6 +1284,56 @@ class FunctionTranslator:
             elif m in _FLAGS_UNDEFINED:
                 last_setter = None
         return False
+
+    def _unlanded_branch_targets(self, instructions, start, end,
+                                 switch_leaders, arms, imm_refs, roots):
+        """Direct branch targets, reachable from the entry, with no block.
+
+        Reachability follows the blocks' own successors, plus each switch
+        dispatch's arms and, from a register-indirect jmp, the jmp-reg
+        continuations the lifter will emit a goto for (imm_refs). `roots` are
+        further ways in (catch continuations). A target outside [start, end)
+        is a tail call, not this function's business.
+
+        A target inside an instruction that is itself reachable is left
+        alone. The case this exists for is a target swallowed by bytes nothing
+        executes -- the table's decode -- and re-decoding there costs nothing
+        real. Re-decoding inside a reachable instruction would tear up code
+        that runs, and MSVC does not jump into the middle of its own
+        instructions; what does is data the function finder took for code. In
+        TimeSplitters 2 every function that tripped the unguarded version sat
+        in one such stretch (0x1FB900-0x1FCF00, all aas/insb/outsd), and each
+        re-decode there only exposed fresh junk targets to chase.
+        """
+        blocks = self.disasm.build_basic_blocks(
+            instructions, start, end,
+            extra_leaders=switch_leaders if switch_leaders else None)
+        by_start = {bb.start: bb for bb in blocks}
+        seen, pending, unlanded = set(), [start, *roots], set()
+        while pending:
+            addr = pending.pop()
+            if addr in seen:
+                continue
+            seen.add(addr)
+            bb = by_start.get(addr)
+            if bb is None:
+                if start <= addr < end:
+                    unlanded.add(addr)
+                continue
+            succ = list(bb.successors)
+            last = bb.last_insn
+            if last is not None and last.mnemonic == "jmp" and not last.jump_target:
+                succ += arms.get(last.address, ())
+                if last.operands and last.operands[0].type == "reg":
+                    succ += imm_refs
+            pending.extend(succ)
+        if unlanded:
+            live = [(insn.address, insn.end_address)
+                    for a in seen if a in by_start
+                    for insn in by_start[a].instructions]
+            unlanded = {t for t in unlanded
+                        if not any(lo < t < hi for lo, hi in live)}
+        return unlanded
 
     def _func_has_prologue(self, instructions):
         """Check if function starts with push ebp; mov ebp, esp."""
@@ -1386,17 +1474,16 @@ class FunctionTranslator:
         self.lifter.imm_code_refs = imm_refs
 
         # Collect switch table targets as extra block leaders
-        def collect_switch_leaders(insns):
-            leaders = set(imm_refs)
+        def switch_arms(insns):
+            arms = {}
             for insn in insns:
                 if insn.mnemonic == "jmp" and not insn.jump_target and insn.operands:
                     targets = self.lifter._analyze_switch_table(insn.operands, insn.address)
-                    for t in targets:
-                        if start <= t < end:
-                            leaders.add(t)
-            return leaders
+                    arms[insn.address] = {t for t in targets if start <= t < end}
+            return arms
 
-        switch_leaders = collect_switch_leaders(instructions)
+        arms = switch_arms(instructions)
+        switch_leaders = set(imm_refs).union(*arms.values())
 
         # A switch target the decode never produced an instruction for cannot
         # become a block leader, so it gets no label and its `goto` is dropped
@@ -1415,16 +1502,33 @@ class FunctionTranslator:
         # but their arms were never made leaders, and the two just past the
         # fourth table stayed inside the out-of-phase junk. Every call through
         # them failed to resolve at run time.
+        #
+        # A DIRECT jump can land in swallowed bytes the same way: a jmp or jcc
+        # to the code just past an inline table, which the table's linear
+        # decode ran over. Its target never becomes a block either, and its
+        # goto is dropped just the same. Upstream met it in Dead or Alive 3,
+        # where a function lost a whole switch case and character select
+        # never started a match. So once every switch arm has decoded, the
+        # direct branch targets get the same treatment -- but only those of
+        # blocks reachable from the entry (or from a switch arm, a catch
+        # continuation or a jmp-reg continuation, the ways in that are not
+        # direct branches). A branch decoded out of the table data itself is
+        # unreachable, and must not be allowed to force a re-decode.
         if recovered is None:
             resync = set()
-            for _round in range(8):
+            for _round in range(16):
                 missing = switch_leaders - {insn.address for insn in instructions}
+                if not missing:
+                    missing = self._unlanded_branch_targets(
+                        instructions, start, end, switch_leaders, arms,
+                        imm_refs, cxx_conts) - resync
                 if not missing:
                     break
                 resync |= missing
                 instructions = self.disasm.disassemble_function(
                     raw_bytes, start, end, resync=resync)
-                switch_leaders = collect_switch_leaders(instructions)
+                arms = switch_arms(instructions)
+                switch_leaders = set(imm_refs).union(*arms.values())
         # RECOMP_DEBUG_FUNC=<hex start>: say how this function's switch arms
         # were found, for the one that lifts with a dead arm.
         if os.environ.get("RECOMP_DEBUG_FUNC", "").upper() == f"{start:08X}":
@@ -1683,8 +1787,10 @@ class FunctionTranslator:
         # because eax may be replaced before the branch reads the result.
         # sahf and the fcomi family leave an EFLAGS image in _fa, and sahf
         # reads the OF before it from _fb.
+        # mul and imul leave "the product did not fit" (CF = OF) in _fa.
         if any(insn.mnemonic in ("cmp", "test", "bsf", "bsr", "cmpxchg",
                                  "lock cmpxchg", "inc", "dec", "sahf",
+                                 "mul", "imul",
                                  "fcomi", "fcomip", "fcompi", "fucomi",
                                  "fucomip", "fucompi")
                or insn.mnemonic in _RESULT_SNAPSHOT_SETTERS
@@ -1730,6 +1836,8 @@ class FunctionTranslator:
         # corrupts multi-word arithmetic (add/adc pairs) and the shr/adc
         # idiom MSVC emits for odd trailing elements.
         self.lifter.needs_cf = has_carry
+        self.lifter.needs_mul_flags = (
+            has_carry or self._function_reads_mul_flags(instructions))
         self.lifter.publishes_ebp = self._func_owns_a_frame(instructions)
 
         # SSE and MMX are architectural state, declared globally by the
