@@ -1409,10 +1409,11 @@ static int vertex_format_components(RhiFormat f)
 static RhiVertexLayout *create_vsh_input_layout_decl(
     uint16_t inputs_read, const NV2AVshSlot *vsh, const RhiShader *vs)
 {
-    RhiVertexElement elems[NV2A_VS_MAX_INPUTS];
+    RhiVertexElement elems[NV2A_VS_MAX_INPUTS + 1];
     RhiVertexLayout *layout = NULL;
     UINT elem_count = 0;
-    int i, j;
+    int i, j, has_v0 = 0;
+    const D3D8VshInput *pos = NULL;
 
     for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
         const D3D8VshInput *in = NULL;
@@ -1437,9 +1438,31 @@ static RhiVertexLayout *create_vsh_input_layout_decl(
         elems[elem_count].slot           = 0;
         elems[elem_count].offset         = in ? in->offset : 0;
         elem_count++;
+        if (i == 0)
+            has_v0 = 1;
+        if (in && !pos && (in->format == RHI_FORMAT_R32G32B32_FLOAT ||
+                           in->format == RHI_FORMAT_R32G32B32A32_FLOAT))
+            pos = in;
     }
     if (elem_count == 0)
         return NULL;
+    /* RTX Remix takes a draw's vertices from the element whose usage is
+     * POSITION, and leaves out a draw that has none. v0 is that usage here
+     * (rhi_d3d9_attr_semantic), but a program need not keep its position
+     * there: TimeSplitters 2's level is v1, and none of it was ray traced.
+     * Without a v0, the first three- or four-float register the program
+     * reads is given to Remix as the position too; the program itself never
+     * reads the extra element. Remix's vertex capture takes the program's
+     * own output position anyway; this one gives it the vertices to count
+     * and hash. */
+    if (rhi_d3d9_active() && !has_v0 && pos) {
+        elems[elem_count].semantic       = "POSITION";
+        elems[elem_count].semantic_index = 0;
+        elems[elem_count].format         = pos->format;
+        elems[elem_count].slot           = 0;
+        elems[elem_count].offset         = pos->offset;
+        elem_count++;
+    }
 
     layout = rhi_vertex_layout_create(elems, elem_count, vs);
     if (!layout) {
