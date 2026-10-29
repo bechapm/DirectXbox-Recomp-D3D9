@@ -109,6 +109,13 @@ BOOL xbox_InputIsConnected(DWORD dwPort);
  */
 DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILITIES *pCaps);
 
+/* For a title's own debugging tools (src/hle/hle_input.c). Withholding a
+ * port (0-3) makes the title read a neutral, still-connected pad there; the
+ * tool reads the real device with xbox_InputRead: buttons, the analog
+ * buttons A B X Y black white L R, and the sticks lx ly rx ry. */
+void xbox_InputWithhold(unsigned port, int on);
+int  xbox_InputRead(unsigned port, uint16_t *buttons, uint8_t analog[8], int16_t thumbs[4]);
+
 #ifdef __cplusplus
 }
 #endif
