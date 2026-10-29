@@ -86,6 +86,7 @@ or `[]` unbinds.
 | `pad:lx+` `pad:lx-` `pad:ly+` .. `pad:ry-` | one half of one stick axis |
 | `mouse:left` `mouse:right` `mouse:middle` | a mouse button, heard by the game's window (Oct 2026) |
 | `mouse:x1` `mouse:x2` | the mouse's side buttons, back and forward |
+| `mouse:wheel_up` `mouse:wheel_down` | a notch of the wheel: a 50 ms press, then a 40 ms release (Oct 2026) |
 
 **Controls** are the 24 inputs an Xbox pad has: `a b x y black white start
 back ltrigger rtrigger`, `dpad_up/down/left/right`, `lthumb`, `rthumb`, and
@@ -116,10 +117,28 @@ person and their hardware, and a toolkit that builds several titles should not
 make them rebind for each one. A title that genuinely needs its own gets one
 through (3), and a test run gets one through (1).
 
+### A title's own layout
+
+*October 2026.* Which key should fire depends on the game, so a title can
+ship its own layout: `recomp_title_input(DEFAULTS config/input_defaults.json)`
+in its CMakeLists (src/config/CMakeLists.txt) compiles a file in this format
+into `xbox_config`, which the game and its launcher both link. It is read
+over the built-in layout below, and becomes what an unbound control reads and
+what the launcher's reset gives back. A control the file names replaces the
+built-in one whole, so name its pad source too.
+
+Such a title keeps its player's bindings to itself, in
+`titles/<TITLEID>.input.json` in the per-user folder, beside its settings
+file, instead of the `input_bindings.json` every other game shares (its keys
+mean something only in it), and it does not read a file in the working
+directory. `RECOMP_INPUT_CONFIG` still beats both. The search order lives in
+one place, `recomp_input_config_path` in `src/config/recomp_config.c`.
+`MOUSE_LOOK` on the same line makes mouse look on by default for the title.
+
 ### Defaults, when there is no file
 
-Exactly what the runtime did before this existed, so nothing changes for a run
-that has not been configured:
+For a title without a layout of its own, exactly what the runtime did before
+this existed, so nothing changes for a run that has not been configured:
 
 - controller 1: XInput pad 0 **and** the keyboard -- arrows = D-pad,
   Enter = START, Backspace = BACK, Z = A, X = B, A = X, S = Y, Q = White,
@@ -141,7 +160,15 @@ messages on Windows and from the SDL shell's events elsewhere
 (`host_window_callbacks.on_mouse_button`). Unlike the keyboard on Windows,
 which `GetAsyncKeyState` reads whatever is in front, a click in another
 window is not a press. A window that loses the focus lets every button go.
-The wheel is not a source.
+
+**The wheel is two sources** (Oct 2026), `mouse:wheel_up` and
+`mouse:wheel_down`. A wheel has no "held", so each notch is a press 50 ms
+long followed by a 40 ms release: a title polling once a frame sees both,
+and one counting presses counts one per notch. Notches faster than that wait
+their turn, at most four of them, and a turn the other way drops what is
+still waiting. The window passes `WM_MOUSEWHEEL` (focus only) on Windows and
+SDL's wheel event elsewhere (`host_window_callbacks.on_mouse_wheel`) to
+`recomp_mouse_wheel`, which adds a fine wheel's fractions into notches.
 
 **Mouse look is a setting of the title, not a binding.** `mouse_look = 1` in
 the title's settings file (`RECOMP_MOUSE_LOOK`; the launcher's Input tab has
@@ -189,6 +216,22 @@ A `RECOMP_WINDOW_BACKGROUND=1` run never takes it. The `[INPUT] mouse look:`
 line at start-up says it is on and with what; the first movement is named
 like any first press.
 
+**Direct mouse aim.** A stick is a speed, so the right stick's mouse look
+always feels like a stick: the title's dead zone, its top turn speed and its
+acceleration all still apply. A title that knows where its view angles are
+calls `recomp_mouse_set_direct(1)`: the window still takes the pointer, the
+right stick gets nothing, and the title takes the motion itself with
+`recomp_mouse_take` (counts, x right, y down) and turns by it, with
+`recomp_mouse_sensitivity` for the player's setting. TimeSplitters 2 does
+this at the function that turns the player (its `src/ts2_mouse.c`).
+
+**A title's last word.** `recomp_bindings_set_filter` runs after everything
+else in a sample, with the pad as it will read and the part of it the
+keyboard and mouse alone press. It is for what one key must mean differently
+by what is on screen: TimeSplitters 2's Escape is bound to Start, which
+pauses in a level, and the filter makes it B in the menus, where Start would
+accept.
+
 `tests/input_mouse` drives both through `recomp_bindings_sample` with no
 window and no pad.
 
@@ -228,8 +271,11 @@ does what they say.
 
 The launcher's Input tab binds them too: its second column is "keyboard /
 mouse", and while a binding there waits for its answer any mouse button,
-the side ones included, is taken. A click while the pad column waits gives
-up, as Escape does.
+the side ones included, and a turn of the wheel are taken. Escape can be
+bound there: a tap binds it, holding it for most of a second gives up. In
+the pad column Escape gives up at once, and so does a click. The column
+holds up to two sources a control (shown "Mouse wheel up, Left arrow"),
+the shape a title's layout sometimes wants; binding one replaces both.
 
 ## What the runtime does with it
 

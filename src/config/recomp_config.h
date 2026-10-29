@@ -138,6 +138,22 @@ unsigned       recomp_widescreen_title_serial(void);
  * offered only 60, 30 and adaptive in the launcher and on F10. */
 int            recomp_title_keeps_time(void);
 
+/* The title's own default controls, as binding-file text, from
+ * recomp_title_input(DEFAULTS ...) in its CMakeLists
+ * (src/config/CMakeLists.txt); NULL for a title that has none and uses the
+ * toolkit's generic layout. The runtime (input_bindings.c) and the launcher
+ * both start from it. */
+const char    *recomp_title_input_defaults(void);
+/* The binding file this title reads and the launcher writes: the
+ * RECOMP_INPUT_CONFIG environment variable if set; for a title with its
+ * own defaults, titles/<TITLEID>.input.json in the per-user folder, kept
+ * apart because its keys mean something in that game only; otherwise the
+ * input_bindings.json every other game shares. 0 when there is nowhere to
+ * put it. */
+int            recomp_input_config_path(uint32_t title_id, char *out, size_t n);
+/* Mouse look's default for this title: recomp_title_input(MOUSE_LOOK). */
+int            recomp_title_mouse_look(void);
+
 /* The 4:3-to-16:9 Hor+ factor, (4/3)/(16/9): the projection's x scale is
  * multiplied by it, which widens the horizontal field of view and leaves
  * the vertical alone. */

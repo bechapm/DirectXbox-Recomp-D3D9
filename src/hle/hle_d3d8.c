@@ -461,6 +461,12 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     case WM_INPUT:
         shadow_mouse_raw(lp);
         break;                          /* DefWindowProc cleans up after it */
+    case WM_MOUSEWHEEL:
+        /* Sent to the window with the focus only, so a wheel turned over
+         * another program is not the game's. 120 is a notch; a fine wheel
+         * sends less, and recomp_mouse_wheel adds the pieces up. */
+        recomp_mouse_wheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
+        return 0;
     case WM_ACTIVATE:
         /* Switched to by keyboard: take the pointer now. Clicked to the
          * front: on the click, if it lands in the window (shadow_mouse_button)
@@ -769,6 +775,12 @@ static void shadow_host_mouse_motion(void *user, float dx, float dy)
     recomp_mouse_move(dx, dy);
 }
 
+static void shadow_host_mouse_wheel(void *user, float notches)
+{
+    (void)user;
+    recomp_mouse_wheel(notches);
+}
+
 static void shadow_host_mouse_button(void *user, int button, int down)
 {
     (void)user;
@@ -794,6 +806,7 @@ static HWND shadow_window(UINT width, UINT height)
     cb.on_fullscreen = shadow_host_fullscreen;
     cb.on_mouse_motion = shadow_host_mouse_motion;
     cb.on_mouse_button = shadow_host_mouse_button;
+    cb.on_mouse_wheel = shadow_host_mouse_wheel;
     /* The title's own name, out of its XBE certificate (UTF-8). */
     g_shadow_host = host_window_open((int)width, (int)height, xbox_XbeTitleName(), &cb);
     if (!g_shadow_host) {

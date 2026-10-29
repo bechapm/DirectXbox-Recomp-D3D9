@@ -77,6 +77,9 @@ typedef struct {
      * loses the focus reports every button up. Main thread. */
     void (*on_mouse_motion)(void *user, float dx, float dy);
     void (*on_mouse_button)(void *user, int button, int down);
+    /* The wheel, in notches (fractions from a fine-grained one), positive
+     * away from the player. Main thread. */
+    void (*on_mouse_wheel)(void *user, float notches);
     void *user;
 } host_window_callbacks;
 

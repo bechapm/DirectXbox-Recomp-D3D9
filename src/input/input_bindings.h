@@ -60,7 +60,12 @@ void recomp_bindings_rumble(unsigned port, unsigned short low, unsigned short hi
 enum {
     RECOMP_MOUSE_LEFT, RECOMP_MOUSE_RIGHT, RECOMP_MOUSE_MIDDLE,
     RECOMP_MOUSE_X1, RECOMP_MOUSE_X2,
-    RECOMP_MOUSE_BUTTONS
+    RECOMP_MOUSE_BUTTONS,
+    /* The wheel's two directions, "mouse:wheel_up" and "mouse:wheel_down":
+     * sources too, though nothing holds them. Each notch is a short press
+     * (recomp_mouse_wheel). */
+    RECOMP_MOUSE_WHEEL_UP = RECOMP_MOUSE_BUTTONS, RECOMP_MOUSE_WHEEL_DOWN,
+    RECOMP_MOUSE_SOURCES
 };
 
 /* Mouse look is on and controller 1 reads something: the window should
@@ -73,6 +78,38 @@ void recomp_mouse_button(int button, int down);
 /* The window lost the focus or the pointer: every button up, and motion
  * not yet read is dropped, so nothing is left held or moving. */
 void recomp_mouse_release(void);
+/* Wheel notches, positive away from the player (up). Each is a press of
+ * the matching mouse:wheel_ source long enough for a title polling once a
+ * frame to see it, then a release, then the next; a fast spin is queued
+ * (up to a handful) rather than lost or merged into one long press. A
+ * high-resolution wheel's fractions add up to whole notches. */
+void recomp_mouse_wheel(float notches);
+
+/* ---- the mouse, for a title that aims with it itself --------------------
+ *
+ * A camera on the right stick turns at a speed; a mouse says how far. A
+ * title that knows where its view angles are can take the mouse's motion
+ * and turn by it directly, which is what mouse aim means on a PC. With
+ * direct on, mouse look still takes the pointer, but adds nothing to the
+ * right stick; the motion waits for recomp_mouse_take. */
+void recomp_mouse_set_direct(int on);
+/* The motion since the last take, in mouse counts, x right and y down;
+ * 0 when there was none or mouse look is off. */
+int  recomp_mouse_take(float *dx, float *dy);
+/* The player's mouse sensitivity setting, RECOMP_MOUSE_SENSITIVITY_MIN..MAX
+ * (recomp_config.h), for a title turning the motion into angles. */
+int  recomp_mouse_sensitivity(void);
+
+/* ---- a title's last word ------------------------------------------------
+ *
+ * Called at the end of every sample, after the bindings, mouse look and the
+ * touch controls, with what the port reads (which it may change) and the
+ * part of it the keyboard and mouse alone are pressing. For what one key
+ * must mean differently by what is on screen: Escape, bound to Start,
+ * backing out of a menu where Start would accept. */
+typedef void (*RecompBindingsFilter)(unsigned port, XBOX_GAMEPAD *pad,
+                                     const XBOX_GAMEPAD *from_keyboard);
+void recomp_bindings_set_filter(RecompBindingsFilter filter);
 
 #ifdef __cplusplus
 }

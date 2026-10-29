@@ -71,7 +71,7 @@ class Sources(unittest.TestCase):
 
     def test_the_mouse_buttons_are_valid_and_its_movement_is_not(self):
         for source in ("mouse:left", "mouse:right", "mouse:middle",
-                       "mouse:x1", "mouse:x2"):
+                       "mouse:x1", "mouse:x2", "mouse:wheel_up", "mouse:wheel_down"):
             self.assertTrue(bindings.is_valid_source(source), source)
         for source in ("mouse:", "mouse:Left", "mouse:wheel", "mouse:x+"):
             self.assertFalse(bindings.is_valid_source(source), source)

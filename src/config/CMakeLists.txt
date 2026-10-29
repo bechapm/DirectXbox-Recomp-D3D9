@@ -107,6 +107,56 @@ function(recomp_title_timing KIND)
     endif()
 endfunction()
 
+# The title's own controls, said once in its CMakeLists:
+#
+#     recomp_title_input(DEFAULTS config/input_defaults.json MOUSE_LOOK)
+#
+# DEFAULTS is a binding file in the format input_bindings.json has
+# (docs/technical/input-binding.md) holding the layout that suits this
+# game: which key is its fire, which its reload. It replaces the toolkit's
+# generic layout as what a control reads when nobody has bound it, and what
+# the launcher's reset gives back. A title that has one keeps its player's
+# bindings in a file of its own (titles/<TITLEID>.input.json in the
+# per-user folder) rather than the file every other game shares, because
+# its keys mean something only in it.
+#
+# MOUSE_LOOK makes mouse look on by default for this title; a settings
+# file that already says otherwise keeps what it says.
+#
+# Compiled into this library, like widescreen, because the game and its
+# launcher both link it and so cannot be told different things.
+function(recomp_title_input)
+    cmake_parse_arguments(_in "MOUSE_LOOK" "DEFAULTS" "" ${ARGN})
+    if(_in_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "recomp_title_input: unexpected \"${_in_UNPARSED_ARGUMENTS}\"")
+    endif()
+    if(DEFINED _in_DEFAULTS)
+        get_filename_component(_file "${_in_DEFAULTS}" ABSOLUTE
+                               BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(NOT EXISTS "${_file}")
+            message(FATAL_ERROR "recomp_title_input: ${_file} does not exist")
+        endif()
+        set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" APPEND PROPERTY
+                     CMAKE_CONFIGURE_DEPENDS "${_file}")
+        file(READ "${_file}" _json)
+        # One C string literal per line of the file.
+        string(REPLACE "\\" "\\\\" _json "${_json}")
+        string(REPLACE "\"" "\\\"" _json "${_json}")
+        string(REPLACE "\r" "" _json "${_json}")
+        string(REPLACE "\n" "\\n\"\n    \"" _json "${_json}")
+        set(_out "${CMAKE_BINARY_DIR}/recomp_title_input.c")
+        file(WRITE "${_out}.tmp"
+             "/* Written by recomp_title_input from ${_file}. */\n"
+             "const char recomp_title_input_json[] =\n    \"${_json}\";\n")
+        configure_file("${_out}.tmp" "${_out}" COPYONLY)    # rewritten only when it changes
+        target_sources(xbox_config PRIVATE "${_out}")
+        target_compile_definitions(xbox_config PRIVATE RECOMP_TITLE_INPUT_DEFAULTS=1)
+    endif()
+    if(_in_MOUSE_LOOK)
+        target_compile_definitions(xbox_config PRIVATE RECOMP_TITLE_MOUSE_LOOK=1)
+    endif()
+endfunction()
+
 # Absent from a prebuilt engine package, which carries no tests.
 if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../tests/config_smoke)
     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../tests/config_smoke
