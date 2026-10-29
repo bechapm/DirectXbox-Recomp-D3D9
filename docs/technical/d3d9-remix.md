@@ -120,7 +120,6 @@ testing.
 - A register combiner program too long for ps_2_a, under fixed function, is
   approximated (stage 0's texture times diffuse). Under fixed function the
   combiners' fog register reads no fog; D3D9's fog unit fogs the result.
-- A shadow-map stage compares one texel, not four filtered.
 - Vertex blending (skinned fixed-function) is ignored, as under D3D11.
 - Point sprites are one pixel, as under D3D11.
 - Frame interpolation is untested under D3D9.

@@ -52,7 +52,7 @@ it.
 | Screen copies | A draw | `StretchRect` with point filtering (a draw would be taken by Remix for the scene) | Matches on TS2 | Low; a scaled copy filters as point, not as a draw would |
 | Clears with rectangles | A draw | D3D9's `Clear` with rectangles | Matches on TS2 | Low |
 | Depth copy to a texture | A draw that Loads the depth | The same draw in Shader Model 3: the `INTZ` depth sampled at texel centres with a point sampler, the bytes split arithmetically | New, untested. Under Remix a copy into a texture the back buffer's size may be dropped: Remix ignores a draw with no position into its primary target | Medium: Rainbow Six 3's depth of field and bloom read it |
-| Shadow-map compare | Comparison sampler, four texels filtered | One texel compared | **Gap** | Medium for titles with shadow buffers |
+| Shadow-map compare | Four texels Loaded, compared and filtered | The same four texels, each sampled at its centre (where any filter returns that texel), the size passed in `tex_scale[i].zw` | New, untested | Medium for titles with shadow buffers |
 | Multisampling | Supported | None (`d9_sample_count_supported` is 1x only) | **Gap** | Low: titles that ask for it draw at 1x |
 | 2D array images | Supported | First layer only | **Gap** | Low |
 | Touch-screen overlay | Drawn | Not drawn (its shader tests bits) | By design | None for desktop play |

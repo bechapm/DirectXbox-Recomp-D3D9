@@ -699,13 +699,31 @@ static int emit_shadow_compare(const NV2ACombinerState *state, char *buf, int bu
     int off = *poff;
 
     if (state->host != NV2A_HOST_SM5) {
-        /* Shader Model 2 and 3 have no Load and no texture size: one texel,
-         * as the sampler filters it, against the reference. */
+        /* Shader Model 2 and 3 have no Load and no texture size: the size is
+         * tex_scale[i].zw (d3d8_combiners_prepare_draw), and each texel is
+         * sampled at its centre, where any filter returns that texel alone.
+         * Without a size, one texel against the reference. */
         EMIT("    {\n");
         EMIT("        float4 q = input.tc%d;\n", i);
         EMIT("        float qw = abs(q.w) > 1e-20 ? q.w : 1.0;\n");
-        EMIT("        float s = shadow_test(tex2D(tex%d, q.xy / qw * tex_scale[%d].xy).r"
-             " * shadow_max[%d], q.z / qw);\n", i, i, i);
+        EMIT("        float2 uv = q.xy / qw * tex_scale[%d].xy;\n", i);
+        EMIT("        float ref = q.z / qw;\n");
+        EMIT("        float m = shadow_max[%d];\n", i);
+        EMIT("        float2 sz = tex_scale[%d].zw;\n", i);
+        EMIT("        float s;\n");
+        EMIT("        if (sz.x > 0) {\n");
+        EMIT("            float2 p = uv * sz - 0.5;\n");
+        EMIT("            float2 f = frac(p);\n");
+        EMIT("            float2 c0 = clamp(floor(p), 0, sz - 1) + 0.5;\n");
+        EMIT("            float2 c1 = clamp(floor(p) + 1, 0, sz - 1) + 0.5;\n");
+        EMIT("            float s00 = shadow_test(tex2D(tex%d, c0 / sz).r * m, ref);\n", i);
+        EMIT("            float s10 = shadow_test(tex2D(tex%d, float2(c1.x, c0.y) / sz).r * m, ref);\n", i);
+        EMIT("            float s01 = shadow_test(tex2D(tex%d, float2(c0.x, c1.y) / sz).r * m, ref);\n", i);
+        EMIT("            float s11 = shadow_test(tex2D(tex%d, c1 / sz).r * m, ref);\n", i);
+        EMIT("            s = lerp(lerp(s00, s10, f.x), lerp(s01, s11, f.x), f.y);\n");
+        EMIT("        } else {\n");
+        EMIT("            s = shadow_test(tex2D(tex%d, uv).r * m, ref);\n", i);
+        EMIT("        }\n");
         EMIT("        r_t%d = float4(s, s, s, s);\n", i);
         EMIT("    }\n");
         *poff = off;
@@ -1784,6 +1802,19 @@ BOOL d3d8_combiners_prepare_draw(void)
                 cb->shadow_max[i] = 65535.0f; break;
             default:
                 cb->shadow_max[i] = 1.0f; break;
+            }
+            /* A shadow-map stage under Shader Model 2 or 3, which cannot ask
+             * a texture its size: the host image's, for the four-texel
+             * compare (emit_shadow_compare). */
+            if (g_combiner_state.shadow[i] && g_combiner_state.host != NV2A_HOST_SM5 && tex) {
+                RhiImage *img = d3d8_base_resource(tex);
+                RhiImageDesc d;
+
+                if (img) {
+                    rhi_image_get_desc(img, &d);
+                    cb->tex_scale[i][2] = (float)d.width;
+                    cb->tex_scale[i][3] = (float)d.height;
+                }
             }
         }
         {
