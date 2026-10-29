@@ -1009,8 +1009,8 @@ static void ff_vs_prepare_draw(DWORD fvf)
             cb->flags = 0x01; /* pre-transformed */
         } else {
             float wv[16], wvp[16], wvp_t[16], world_t[16];
-            float world_inv[16], world_inv_t[16];
-            float wv_t[16], wv_inv[16], wv_inv_t[16];
+            float world_inv[16];
+            float wv_t[16], wv_inv[16];
 
             world = d3d8_GetTransform(D3DTS_WORLD);
             view  = d3d8_GetTransform(D3DTS_VIEW);
@@ -1044,17 +1044,20 @@ static void ff_vs_prepare_draw(DWORD fvf)
             mat4_transpose(world_t, (const float *)world);
             memcpy(cb->world, world_t, sizeof(world_t));
 
-            /* WorldInvTranspose = transpose(inverse(world)) */
+            /* WorldInvTranspose = transpose(inverse(world)). Like every
+             * matrix here it is uploaded transposed, for the column-major
+             * HLSL, and the transpose of it is inverse(world) itself.
+             * Uploading transpose(inverse(world)) gave the shader
+             * inverse(world): a rotated object's normals turned the other
+             * way (Max Payne lit from behind). */
             mat4_inverse(world_inv, (const float *)world);
-            mat4_transpose(world_inv_t, world_inv);
-            memcpy(cb->world_inv_transpose, world_inv_t, sizeof(world_inv_t));
+            memcpy(cb->world_inv_transpose, world_inv, sizeof(world_inv));
 
-            /* WorldView (camera space) and its inverse-transpose */
+            /* WorldView (camera space) and its inverse-transpose, the same */
             mat4_transpose(wv_t, wv);
             memcpy(cb->world_view, wv_t, sizeof(wv_t));
             mat4_inverse(wv_inv, wv);
-            mat4_transpose(wv_inv_t, wv_inv);
-            memcpy(cb->world_view_inv_transpose, wv_inv_t, sizeof(wv_inv_t));
+            memcpy(cb->world_view_inv_transpose, wv_inv, sizeof(wv_inv));
 
             cb->screen_w = (float)d3d8_GetGuestWidth();
             cb->screen_h = (float)d3d8_GetGuestHeight();
