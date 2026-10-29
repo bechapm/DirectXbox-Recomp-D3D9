@@ -34,10 +34,10 @@
  *  - No depth clamp: D3D9 always clips to 0 <= z <= w. Where the raster
  *    state asks for clamping (depth_clip 0, the title's draws by default)
  *    RHI_VP_ADJUST clamps each vertex's z into that range instead (flag at
- *    c254), so geometry past the far plane is drawn at it, not cut away. A
- *    vertex behind the eye (w <= 0) gets z = w / 2, so along an edge to it
- *    z stays between 0 and w until w reaches 0: what remains is the w > 0
- *    clip D3D11 makes anyway, not a near plane D3D11 has switched off.
+ *    c254), so geometry past the far plane is drawn at it, not cut away.
+ *    A vertex behind the eye is left as it is: giving it z = w / 2 kept an
+ *    edge to it inside 0 <= z <= w only at that vertex, and the floor under
+ *    the eye, which reaches w = 0 on screen, was cut away by the far plane.
  *  - Formats D3D9 has no equal of are converted on the way in (R8G8B8A8 to
  *    A8R8G8B8, R8G8 and the 16-bit one- and two-channel formats widened), so
  *    every image samples as it does under D3D11.
@@ -110,8 +110,8 @@ static const char kVsPrelude[] =
     "void rhi_vp_adjust_pos(inout float4 p)\n"
     "{\n"
     "    p.xy = p.xy * rhi_vp_adjust.xy + rhi_vp_adjust.zw * p.w;\n"
-    "    if (rhi_depth_clamp.x != 0)\n"
-    "        p.z = p.w > 0 ? clamp(p.z, 0, p.w) : 0.5 * p.w;\n"
+    "    if (rhi_depth_clamp.x != 0 && p.w > 0)\n"
+    "        p.z = clamp(p.z, 0, p.w);\n"
     "}\n"
     "#define RHI_VP_ADJUST(p) rhi_vp_adjust_pos(p)\n"
     "#line 1\n";
