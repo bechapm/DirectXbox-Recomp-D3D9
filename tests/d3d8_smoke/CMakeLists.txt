@@ -8,6 +8,7 @@ if(WIN32)
     # compiles part of it compiles the interface and its D3D11 backend too.
     set(D3D8_SMOKE_RHI
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_d3d9.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_d3d11.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_shader_cache.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_compile.c
@@ -56,6 +57,7 @@ if(NOT WIN32)
     # behind it is enough to link them.
     set(D3D8_SMOKE_RHI
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_d3d9.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_shader_cache.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_compile.c
     )

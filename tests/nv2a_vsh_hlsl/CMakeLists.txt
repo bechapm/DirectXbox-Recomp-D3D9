@@ -12,6 +12,7 @@ if(NOT WIN32)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_vsh.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/kernel/nv2a_vsh.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_d3d9.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_shader_cache.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_compile.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_vulkan_dxc.cpp
@@ -39,6 +40,7 @@ add_executable(nv2a_vsh_hlsl_test
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/kernel/nv2a_vsh.c
     # d3d8_vsh.c creates its objects through rhi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_d3d9.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_d3d11.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_shader_cache.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_compile.c

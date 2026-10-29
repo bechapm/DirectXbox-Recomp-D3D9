@@ -96,6 +96,10 @@ static const char kVsPrelude[] =
 static const char kPsPrelude[] =
     "#define RHI_D3D9 1\n"
     "#define RHI_D3D9_PS 1\n"
+    /* A pass keeps both stages in one source, and its vertex entry point is
+     * parsed in the pixel compile too. */
+    "#define RHI_VERTEX_ID TEXCOORD15\n"
+    "#define RHI_VP_ADJUST(p)\n"
     "#line 1\n";
 
 /* ---- the objects ------------------------------------------------------------------ */
@@ -945,9 +949,11 @@ static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
         if (!s)
             return;
         r.left = (LONG)x0; r.top = (LONG)y0; r.right = (LONG)(x0 + w); r.bottom = (LONG)(y0 + h);
-        if (img->pool == D3DPOOL_DEFAULT)
+        /* A dynamic texture written whole is discarded; a part of one is
+         * locked as a rectangle, keeping the rest. */
+        if (img->pool == D3DPOOL_DEFAULT && !box)
             flags = D3DLOCK_DISCARD;
-        if (SUCCEEDED(IDirect3DSurface9_LockRect(s, &lr, (box && !flags) ? &r : NULL, flags))) {
+        if (SUCCEEDED(IDirect3DSurface9_LockRect(s, &lr, box ? &r : NULL, flags))) {
             write_rows(img, lr.pBits, (uint32_t)lr.Pitch, data, row_pitch, w, rows);
             IDirect3DSurface9_UnlockRect(s);
         }
@@ -1116,6 +1122,9 @@ static RhiView *d9_view_create(RhiImage *img, uint32_t kind, const RhiViewDesc *
         free(v);        /* a depth surface that was not made to be sampled */
         return NULL;
     }
+    /* A view keeps its image, as a D3D11 view keeps its resource: the
+     * renderer may let go of an image while a view of it is still bound. */
+    d9_image_retain(img);
     return v;
 }
 
@@ -1131,6 +1140,7 @@ static void d9_view_destroy(RhiView *v)
     if (g_b.rt == v) g_b.rt = NULL;
     if (g_b.ds == v) g_b.ds = NULL;
     if (v->surf) IDirect3DSurface9_Release(v->surf);
+    if (v->image) d9_image_destroy(v->image);
     free(v);
 }
 

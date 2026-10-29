@@ -11,6 +11,7 @@ set(XBR_COMBINERS_TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_shaders.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_combiners.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_d3d9.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/rhi_shader_cache.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/d3d/d3d8_compile.c
 )
