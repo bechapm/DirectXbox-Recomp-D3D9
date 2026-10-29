@@ -108,10 +108,13 @@ lost, and the back buffer keeps its size.
 
 ## Known gaps
 
-- The title's 2D drawn by vertex programs is ray traced as geometry: Remix
-  recognises orthographic 2D as UI only under fixed function. It does no harm
-  in TimeSplitters 2's levels, but its textures belong in `rtx.uiTextures`.
-  `RECOMP_D3D9_SKIP_ORTHO=1` leaves such draws out, for testing.
+[d3d9-parity.md](d3d9-parity.md) lists every place this backend draws
+differently from D3D11, and what Remix is told about the title's 2D and sky
+(`remix_draw` in `rhi_d3d9.c`: 2D drawn by programs is marked as UI with a
+fixed texture, `rtx.uiTextures = 0xA2F17C4A8F3E3CEA`; the sky gets a viewport
+Remix takes for sky). `RECOMP_D3D9_SKIP_ORTHO=1` leaves the 2D out, for
+testing.
+
 - The PAL release of TimeSplitters 2 does not hand its camera over yet.
 
 - A register combiner program too long for ps_2_a, under fixed function, is
