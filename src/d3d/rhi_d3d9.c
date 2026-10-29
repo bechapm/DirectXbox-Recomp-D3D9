@@ -161,6 +161,7 @@ struct RhiImage {
     IDirect3DBaseTexture9 *tex;     /* 2D, cube or volume */
     IDirect3DSurface9     *surf;    /* a depth image that is not sampled */
     int      screen_copy;           /* rhi_d3d9_copy_rect has copied the screen into it */
+    uint64_t id;                    /* what it holds, for kind_2d (image_id) */
 };
 
 struct RhiView {
@@ -175,6 +176,7 @@ struct RhiShader {
     uint32_t stage;
     IDirect3DVertexShader9 *vs;
     IDirect3DPixelShader9  *ps;
+    uint64_t id;                    /* its bytecode's hash, for kind_2d */
 };
 
 struct RhiVertexLayout {
@@ -870,6 +872,7 @@ static void d9_buffer_update(RhiBuffer *b, const void *data)
 /* ---- images ------------------------------------------------------------------------ */
 
 static RhiImage *d9_image_create(const RhiImageDesc *d, const RhiSubresourceData *initial);
+static uint64_t image_id(const RhiImage *img, const void *data, size_t bytes);
 static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
                             const void *data, uint32_t row_pitch, uint32_t slice_pitch);
 
@@ -886,6 +889,7 @@ static RhiImage *d9_image_create(const RhiImageDesc *d, const RhiSubresourceData
     img->desc.samples = 1;      /* no multisampling here: Remix renders its own */
     img->desc.sample_quality = 0;
     img->refs = 1;
+    img->id = image_id(img, NULL, 0);
     if (map_format(d->format, d->bind, &img->fmt, &img->conv, &img->bpp_in, &img->bpp_out,
                    &img->block) != 0) {
         fprintf(stderr, "[RHI] d3d9: no D3D9 format for DXGI format %u\n", (unsigned)d->format);
@@ -1007,6 +1011,35 @@ static void write_rows(const RhiImage *img, uint8_t *dst, uint32_t dst_pitch,
         convert_row_img(img, dst + (size_t)y * dst_pitch, src + (size_t)y * src_pitch, texels);
 }
 
+/* An image's identity for kind_2d, which must survive the image being made
+ * again: its description, and, once its first level is filled whole, a
+ * sample of what it was filled with (256 words spread across it, not all of
+ * it: this runs at every upload). A pointer would do for a title, which keeps
+ * its images; a frame replayed in a loop (d3d8_replay) makes every image anew
+ * each time round, and its 2D was never learnt. */
+static uint64_t image_id(const RhiImage *img, const void *data, size_t bytes)
+{
+    const RhiImageDesc *d = &img->desc;
+    uint64_t v[7], h = 1469598103934665603ull;
+    size_t i;
+
+    v[0] = d->type; v[1] = d->width; v[2] = d->height; v[3] = d->depth;
+    v[4] = d->mip_levels; v[5] = d->format; v[6] = d->bind;
+    for (i = 0; i < 7; i++)
+        h = (h ^ v[i]) * 1099511628211ull;
+    if (data && bytes >= 8) {
+        size_t n = bytes / 8 < 256 ? bytes / 8 : 256, step = (bytes - 8) / (n > 1 ? n - 1 : 1);
+
+        for (i = 0; i < n; i++) {
+            uint64_t w;
+
+            memcpy(&w, (const uint8_t *)data + i * step, 8);
+            h = (h ^ w) * 1099511628211ull;
+        }
+    }
+    return h;
+}
+
 static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
                             const void *data, uint32_t row_pitch, uint32_t slice_pitch)
 {
@@ -1023,6 +1056,8 @@ static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
         h = box->bottom - box->top;
     }
     rows = img->block ? (h + 3) / 4 : h;
+    if (sub == 0 && !box && data)
+        img->id = image_id(img, data, (size_t)row_pitch * rows);
 
     if (img->desc.type == RHI_IMAGE_3D) {
         IDirect3DVolumeTexture9 *vt = (IDirect3DVolumeTexture9 *)img->tex;
@@ -1340,6 +1375,14 @@ compiled:
     }
     s->stage = stage;
     bytes = (const DWORD *)ID3D10Blob_GetBufferPointer(code);
+    {
+        const uint8_t *b = (const uint8_t *)bytes;
+        size_t i, nb = ID3D10Blob_GetBufferSize(code);
+
+        s->id = 1469598103934665603ull;
+        for (i = 0; i < nb; i++)
+            s->id = (s->id ^ b[i]) * 1099511628211ull;
+    }
     if (stage == RHI_STAGE_VERTEX)
         hr = IDirect3DDevice9_CreateVertexShader(g_dev, bytes, &s->vs);
     else
@@ -2129,8 +2172,10 @@ static uint64_t kind_2d(void)
     uint64_t h = 1469598103934665603ull, v[6];
     int i;
 
-    v[0] = (uint64_t)(uintptr_t)g_b.vs;
-    v[1] = (uint64_t)(uintptr_t)(t0 ? t0->image : NULL);
+    /* What the program and the texture are, not where they live: a replayed
+     * frame makes both anew every time round (image_id). */
+    v[0] = g_b.vs ? g_b.vs->id : 0;
+    v[1] = t0 && t0->image ? t0->image->id : 0;
     v[2] = g_rs[D3DRS_ALPHABLENDENABLE];
     v[3] = g_rs[D3DRS_SRCBLEND];
     v[4] = g_rs[D3DRS_DESTBLEND];
