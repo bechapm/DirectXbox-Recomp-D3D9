@@ -288,6 +288,7 @@ static int     g_title_said_2d;       /* the title's own test said so (rhi_d3d9_
 static float   g_title_2d_w;          /* and the draw's clip w, or 0 */
 static float   g_dev_world[16], g_dev_view[16];  /* WORLD and VIEW as the device has them */
 static int     g_flat_applied;        /* the device holds a flat_2d draw's transforms */
+static int     g_draw_ui;             /* remix_draw marked the draw in hand UI */
 static DWORD   g_title_alpha_test;    /* its D3DRS_ALPHATESTENABLE */
 static float   g_ff_proj[16];
 static int     g_ff_proj_set, g_ff_proj_dirty;
@@ -2020,7 +2021,10 @@ static void apply_projection(void)
  * but Remix sees an orthographic draw. A whole frame of Max Payne's 2D --
  * its menus, its graphic novel -- drawn under its perspective camera came
  * out black under Remix when marked UI, and washed out or grey when traced.
- * Not under lighting (WORLD and VIEW place the lights) or fog (VIEW gives
+ * Only a draw marked UI (screen_draw_kind), so not in a frame that has drawn
+ * no 3D yet: Max Payne's menus, nothing but such draws, stay black under
+ * Remix flat or not, where its graphic novel, after one draw of its own
+ * camera's, comes out as in D3D11. Not under lighting (WORLD and VIEW place the lights) or fog (VIEW gives
  * the fog depth). RECOMP_D3D9_FLAT_2D=0 turns it off. */
 static int flat_2d(void)
 {
@@ -2030,7 +2034,7 @@ static int flat_2d(void)
         const char *e = getenv("RECOMP_D3D9_FLAT_2D");
         on = !(e && e[0] == '0');
     }
-    return on && g_remix_2d && g_title_draw && g_title_said_2d && g_title_2d_w > 0.0f && !g_b.vs &&
+    return on && g_remix_2d && g_title_draw && g_title_said_2d && g_draw_ui && g_title_2d_w > 0.0f && !g_b.vs &&
            g_ff_proj_set && g_rs_known[D3DRS_LIGHTING] && !g_rs[D3DRS_LIGHTING] &&
            !(g_rs_known[D3DRS_FOGENABLE] && g_rs[D3DRS_FOGENABLE]);
 }
@@ -2349,11 +2353,11 @@ static void draw_failed(const char *what, HRESULT hr)
  * screen-space (rhi_d3d9_title_says_2d): Max Payne draws its HUD, menus and
  * graphic novel as quads at one depth under the camera that draws the world,
  * which Remix traced as geometry far out in the level, behind its walls.
- * Such a draw is handed to Remix flat, orthographic (flat_2d), where it can
- * be; one that cannot is marked only once the frame has drawn some 3D: a
- * frame of nothing but such draws (Max Payne's menus), all marked UI under
- * the perspective camera, came out black under Remix, where the same draws
- * marked after 3D (its HUD) show. Unmarked, they are traced, as before.
+ * Such a draw is marked only once the frame has drawn some 3D: a frame of
+ * nothing but such draws (Max Payne's menus), all marked UI, came out black
+ * under Remix, where the same draws marked after 3D (its HUD) show.
+ * Unmarked, they are traced, as before. Marked, it is handed to Remix flat,
+ * orthographic (flat_2d), where it can be.
  * The sky is the frame's first draws, before any that writes depth, drawn
  * through the level's own program with depth always passing and not
  * written. As geometry it was a closed box around the level that kept out
@@ -2453,7 +2457,7 @@ static int screen_draw_kind(void)
     }
     if (!g_b.vs && !g_title_said_2d)
         return DRAW_PLAIN;      /* fixed function: Remix judges its 2D itself */
-    if (!g_b.vs && !g_frame_last_3d && !flat_2d())
+    if (!g_b.vs && !g_frame_last_3d)
         return DRAW_PLAIN;      /* title-declared, with no 3D yet this frame */
     if (t0 && t0->image && t0->image->screen_copy)
         return DRAW_SKIP;
@@ -2501,6 +2505,8 @@ static int remix_draw(void)
     int title_3d = g_title_draw && !g_title_2d;
     int sky = g_remix_2d && g_b.vs && title_3d && kind == DRAW_PLAIN && !g_frame_zwritten &&
               !zwrite && zalways;
+
+    g_draw_ui = ui;
 
     if (kind == DRAW_SKIP)
         return 0;
