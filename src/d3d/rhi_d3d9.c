@@ -99,6 +99,7 @@ static const int g_ps_slot_base[PS_SLOTS] = {
 };
 #define VS_ADJUST_REG 255   /* RHI_VP_ADJUST */
 #define VS_CLAMP_REG  254   /* its depth clamp flag */
+#define VS_CAMERA_REG 253   /* the camera Remix is given, read by no shader */
 
 /* What every shader is compiled with in front of it. */
 static const char kVsPrelude[] =
@@ -263,6 +264,8 @@ static struct {
     int              adjust_sent;
     float            clamp[4];           /* and its depth clamp flag */
     int              clamp_sent;
+    float            camera[4];          /* a key of the camera (rhi_d3d9_set_camera) */
+    int              camera_sent;
     int              vid_bound;
 } g_b;
 
@@ -1999,7 +2002,7 @@ static void apply_constants(void)
 
     for (st = 0; st < 2; st++) {
         const int *base = st == 0 ? g_vs_slot_base : g_ps_slot_base;
-        int limit = st == 0 ? VS_CLAMP_REG : 224;
+        int limit = st == 0 ? VS_CAMERA_REG : 224;
         RhiShader *bound = st == 0 ? g_b.vs : g_b.ps;
 
         if (!bound)
@@ -2032,6 +2035,10 @@ static void apply_constants(void)
     if (g_b.vs && !g_b.clamp_sent) {
         IDirect3DDevice9_SetVertexShaderConstantF(g_dev, VS_CLAMP_REG, g_b.clamp, 1);
         g_b.clamp_sent = 1;
+    }
+    if (g_b.vs && g_remix_2d && !g_b.camera_sent) {
+        IDirect3DDevice9_SetVertexShaderConstantF(g_dev, VS_CAMERA_REG, g_b.camera, 1);
+        g_b.camera_sent = 1;
     }
 }
 
@@ -2555,6 +2562,32 @@ void rhi_d3d9_set_camera(const float world[16], const float view[16], const floa
      * given too: the one transform serves both kinds of draw. */
     if (proj)
         rhi_d3d9_set_transform(D3DTS_PROJECTION, proj);
+
+    /* Remix places a program's draw in the world from the positions the
+     * program writes, through these transforms, and keeps what it placed
+     * for as long as the draw's vertices, indices, program and constant
+     * registers stay the same. A draw positioned relative to the camera (a
+     * first-person weapon, a sky dome, anything carried with the eye) keeps
+     * all of those while the camera moves, and Remix kept it where an
+     * earlier camera had put it. A key of the camera in a register no
+     * shader reads makes the camera part of what Remix compares. */
+    if (g_remix_2d && view && proj) {
+        uint64_t h = 1469598103934665603ull;
+        const uint8_t *b;
+        float key[4];
+        size_t i;
+
+        for (b = (const uint8_t *)view, i = 0; i < 64; i++)
+            h = (h ^ b[i]) * 1099511628211ull;
+        for (b = (const uint8_t *)proj, i = 0; i < 64; i++)
+            h = (h ^ b[i]) * 1099511628211ull;
+        for (i = 0; i < 4; i++)
+            key[i] = (float)((h >> (16 * i)) & 0xFFFF);   /* exact as a float */
+        if (memcmp(key, g_b.camera, sizeof key) != 0) {
+            memcpy(g_b.camera, key, sizeof key);
+            g_b.camera_sent = 0;
+        }
+    }
 }
 
 int rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h)
