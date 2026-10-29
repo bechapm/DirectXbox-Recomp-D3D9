@@ -1387,6 +1387,9 @@ static RhiVertexLayout *create_vsh_input_layout_decl(
         if (!in)
             fprintf(stderr, "D3D8 VSH: a program reads v%d, which its declaration "
                     "does not feed; it reads the register's current value\n", i);
+        /* D3D9 binds only what is fed, and its R8_UNORM is a real PBYTE1. */
+        if (!in && rhi_d3d9_active())
+            continue;
         elems[elem_count].semantic       = "ATTR";
         elems[elem_count].semantic_index = (UINT)i;
         elems[elem_count].format         = in ? in->format : RHI_FORMAT_R8_UNORM;

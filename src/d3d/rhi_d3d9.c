@@ -1334,7 +1334,7 @@ static int usage_of(const char *name, uint32_t index, BYTE *usage, BYTE *usage_i
 /* The declaration type for a DXGI vertex format, and its size. -1: none. */
 static int decl_type(RhiFormat f, BYTE *type, uint32_t *size)
 {
-    static int said_short1, said_byte2;
+    static int said_short1, said_byte2, said_byte1;
 
     switch (f) {
     case RHI_FORMAT_R32_FLOAT:          *type = D3DDECLTYPE_FLOAT1;    *size = 4;  return 0;
@@ -1358,6 +1358,14 @@ static int decl_type(RhiFormat f, BYTE *type, uint32_t *size)
         if (!said_byte2++)
             fprintf(stderr, "[RHI] d3d9: a two-byte attribute is read as four\n");
         *type = D3DDECLTYPE_UBYTE4N; *size = 2; return 0;
+    case RHI_FORMAT_R8_UNORM:
+        /* An Xbox PBYTE1 (one byte, 0..1): read as four, the rest being
+         * whatever follows. Not a register the vertex does not carry, which
+         * d3d8_vsh.c leaves out under D3D9; once that marker was this
+         * format, and dropping it dropped every real PBYTE1 too. */
+        if (!said_byte1++)
+            fprintf(stderr, "[RHI] d3d9: a one-byte attribute is read as four\n");
+        *type = D3DDECLTYPE_UBYTE4N; *size = 1; return 0;
     default:
         return -1;
     }
@@ -1379,13 +1387,9 @@ static RhiVertexLayout *d9_vertex_layout_create(const RhiVertexElement *e, uint3
         uint32_t off = e[i].offset == RHI_APPEND ? offset[slot] : e[i].offset;
 
         if (decl_type(e[i].format, &type, &size) != 0) {
-            /* R8_UNORM is how d3d8_vsh.c binds a register the vertex does not
-             * carry (D3D11 wants every input fed); D3D9 does not, and the
-             * program reads the register's current value instead. */
-            if (e[i].format != RHI_FORMAT_R8_UNORM)
-                fprintf(stderr, "[RHI] d3d9: vertex format %u has no declaration type; "
-                        "%s%u is left out\n", (unsigned)e[i].format, e[i].semantic,
-                        e[i].semantic_index);
+            fprintf(stderr, "[RHI] d3d9: vertex format %u has no declaration type; "
+                    "%s%u is left out\n", (unsigned)e[i].format, e[i].semantic,
+                    e[i].semantic_index);
             offset[slot] = off + 1;
             continue;
         }
