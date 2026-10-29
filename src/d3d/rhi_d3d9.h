@@ -85,8 +85,10 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index);
  * is kept for the title's own draws: see rhi_d3d9_title_draw. */
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value);
 /* The next draw is the title's, under the alpha test it set. Every other
- * draw -- the overlay, the display passes -- is drawn without one. */
-void rhi_d3d9_title_draw(void);
+ * draw -- the overlay, the display passes -- is drawn without one. `two_d`
+ * is the renderer's verdict that it is screen-space (d3d8_SetTwoDSqueeze),
+ * which decides what Remix is told it is. */
+void rhi_d3d9_title_draw(int two_d);
 void rhi_d3d9_set_texture_stage(uint32_t stage, uint32_t type, uint32_t value);
 /* A row-vector matrix, D3DMATRIX order (m[row * 4 + column]). */
 void rhi_d3d9_set_transform(uint32_t type, const float m[16]);

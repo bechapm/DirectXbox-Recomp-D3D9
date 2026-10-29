@@ -1834,19 +1834,22 @@ static void d9_shutdown(void)
  * D3D9's own under fixed function, d9_program_ps's under a program. */
 static void d9_prepare_draw(DWORD handle)
 {
+    int two_d;
+
     if (d3d8_vsh_prepare_draw(handle)) {
         g_draw_is_program = 1;
-        d3d8_SetTwoDSqueeze(!d3d8_vsh_bound_uses_projection()
-                            || d3d8_vsh_bound_projection_is_ortho());
+        two_d = !d3d8_vsh_bound_uses_projection() || d3d8_vsh_bound_projection_is_ortho();
+        d3d8_SetTwoDSqueeze(two_d);
         d9_title_states(0, 1);
         if (!d3d8_combiners_prepare_draw())
             d9_program_ps();
     } else {
         d9_ff_prepare_draw(handle);
-        d3d8_SetTwoDSqueeze(d3d8_fvf_transformed(handle));
+        two_d = d3d8_fvf_transformed(handle);
+        d3d8_SetTwoDSqueeze(two_d);
         d3d8_combiners_prepare_draw();
     }
-    rhi_d3d9_title_draw();
+    rhi_d3d9_title_draw(two_d);
 }
 
 void d3d8_shaders_prepare_draw(DWORD handle)

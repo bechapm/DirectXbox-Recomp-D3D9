@@ -276,6 +276,7 @@ static uint8_t g_samp_known[16][SAMP_COUNT];
 /* The fixed-function projection as the renderer gave it; the device gets
  * it with the viewport correction applied (apply_projection). */
 static int     g_title_draw;          /* rhi_d3d9_title_draw: the next draw is the title's */
+static int     g_title_2d;            /* and is screen-space */
 static DWORD   g_title_alpha_test;    /* its D3DRS_ALPHATESTENABLE */
 static float   g_ff_proj[16];
 static int     g_ff_proj_set, g_ff_proj_dirty;
@@ -334,8 +335,8 @@ int rhi_d3d9_active(void)
 /* The title's 2D and sky under Remix (remix_draw). */
 static IDirect3DTexture9 *g_ui_mark;
 static int g_ui_mark_bound, g_remix_2d;
-static int g_frame_copied, g_prev_frame_copied;    /* rhi_d3d9_copy_rect, this frame and the last */
 static int g_frame_zwritten;    /* a draw this frame has written depth */
+static void learn_2d(void);
 static int g_sky_viewport;      /* the viewport is set for a sky draw (remix_draw) */
 
 static void forget_state(void)
@@ -565,8 +566,8 @@ static int32_t d9_present(uint32_t interval)
         }
     }
     scene_end();
-    g_prev_frame_copied = g_frame_copied;
-    g_frame_copied = g_frame_zwritten = 0;
+    learn_2d();
+    g_frame_zwritten = 0;
     h = rhi_wait_begin();
     hr = IDirect3DDevice9_Present(g_dev, NULL, g_present_rect_set ? &g_present_rect : NULL,
                                   NULL, NULL);
@@ -2038,13 +2039,17 @@ static void draw_failed(const char *what, HRESULT hr)
  *
  * Remix rasterises a draw instead when a texture listed in rtx.uiTextures is
  * bound, and composites its ray-traced picture at the first such draw;
- * whatever comes after is rasterised on top. So under Remix a program draw
- * with an orthographic projection is
+ * whatever comes after is rasterised on top. So under Remix a title's program
+ * draw that the renderer judges screen-space (rhi_d3d9_title_draw: its
+ * program uses no projection, or an orthographic one) is
  *  - left out when it samples a copy of the screen (the blur passes: the copy
  *    holds the rasterised picture, which they would paste over the ray-traced
- *    one), or when it comes before the frame's first screen copy and the
- *    frame before had one (the muzzle flash's glow, drawn before the weapon:
- *    as UI it would composite the picture before the weapon was drawn);
+ *    one), or when the same kind of 2D draw was followed by 3D in the frame
+ *    before (TimeSplitters 2's muzzle glow, drawn before the weapon: as UI it
+ *    would composite the picture before the weapon was drawn). A kind is
+ *    the program, the texture, the blend and the topology; each frame
+ *    relearns which kinds come mid-frame (learn_2d), so a frame whose layout
+ *    changes is wrong for one frame at most;
  *  - marked as UI otherwise, by binding g_ui_mark to vertex sampler 3, which
  *    RHI_VP_ADJUST samples.
  * The sky is the frame's first draws, before any that writes depth, drawn
@@ -2057,28 +2062,104 @@ static void draw_failed(const char *what, HRESULT hr)
  *
  * RECOMP_D3D9_SKIP_ORTHO=1 is a test switch, not for play: every such draw is
  * left out, to see what the 2D does to Remix's picture. */
-static int g_cam_ortho, g_skip_next;
+static int g_skip_next;
 
 enum { DRAW_PLAIN, DRAW_SKIP, DRAW_UI };
+
+/* The kinds of 2D draw seen, and whether 3D came after one last frame. */
+#define KINDS_2D      256
+#define FRAME_2D_MAX  1024
+static struct { uint64_t kind; uint8_t used, mid; } g_kinds_2d[KINDS_2D];
+static uint64_t g_frame_2d[FRAME_2D_MAX];       /* this frame's 2D draws, in order */
+static uint32_t g_frame_2d_at[FRAME_2D_MAX];    /* and their draw numbers */
+static uint32_t g_frame_2d_n, g_frame_draws, g_frame_last_3d;
+
+static uint64_t kind_2d(void)
+{
+    RhiView *t0 = g_b.tex[0];
+    uint64_t h = 1469598103934665603ull, v[6];
+    int i;
+
+    v[0] = (uint64_t)(uintptr_t)g_b.vs;
+    v[1] = (uint64_t)(uintptr_t)(t0 ? t0->image : NULL);
+    v[2] = g_rs[D3DRS_ALPHABLENDENABLE];
+    v[3] = g_rs[D3DRS_SRCBLEND];
+    v[4] = g_rs[D3DRS_DESTBLEND];
+    v[5] = g_b.topology;
+    for (i = 0; i < 6; i++)
+        h = (h ^ v[i]) * 1099511628211ull;
+    return h ? h : 1;
+}
+
+static int kind_slot(uint64_t kind)
+{
+    uint32_t i = (uint32_t)(kind ^ (kind >> 32)) % KINDS_2D, n;
+
+    for (n = 0; n < KINDS_2D; n++, i = (i + 1) % KINDS_2D)
+        if (!g_kinds_2d[i].used || g_kinds_2d[i].kind == kind)
+            return (int)i;
+    return -1;
+}
+
+/* At the end of a frame: a kind of 2D draw is mid-frame if 3D followed one
+ * of its draws this frame. Kinds this frame did not draw keep what they were. */
+static void learn_2d(void)
+{
+    uint32_t i;
+
+    for (i = 0; i < g_frame_2d_n; i++) {
+        int s = kind_slot(g_frame_2d[i]);
+        if (s >= 0) {
+            g_kinds_2d[s].used = 1;
+            g_kinds_2d[s].kind = g_frame_2d[i];
+            g_kinds_2d[s].mid = 0;
+        }
+    }
+    /* Then any of a kind's draws before the last 3D draw makes it mid-frame. */
+    for (i = 0; i < g_frame_2d_n; i++) {
+        int s = kind_slot(g_frame_2d[i]);
+        if (s >= 0 && g_frame_2d_at[i] < g_frame_last_3d)
+            g_kinds_2d[s].mid = 1;
+    }
+    g_frame_2d_n = g_frame_draws = g_frame_last_3d = 0;
+}
+
 
 static int screen_draw_kind(void)
 {
     static int skip_all = -1;
-    int ortho = g_cam_ortho, skip = g_skip_next;
+    int title = g_title_draw, two_d = g_title_draw && g_title_2d, skip = g_skip_next;
     RhiView *t0 = g_b.tex[0];
 
     if (skip_all < 0) {
         const char *e = getenv("RECOMP_D3D9_SKIP_ORTHO");
         skip_all = e && e[0] == '1';
     }
-    g_cam_ortho = g_skip_next = 0;
-    if (skip || (skip_all && ortho))
+    g_skip_next = 0;
+    if (skip || (skip_all && two_d))
         return DRAW_SKIP;
-    if (!ortho || !g_b.vs || !g_remix_2d)
+    if (!g_remix_2d || !title)
+        return DRAW_PLAIN;      /* the overlay and the display passes */
+    g_frame_draws++;
+    if (!two_d) {
+        g_frame_last_3d = g_frame_draws;
         return DRAW_PLAIN;
-    if ((t0 && t0->image && t0->image->screen_copy) ||
-        (!g_frame_copied && g_prev_frame_copied))
+    }
+    if (!g_b.vs)
+        return DRAW_PLAIN;      /* fixed function: Remix judges its 2D itself */
+    if (t0 && t0->image && t0->image->screen_copy)
         return DRAW_SKIP;
+    {
+        uint64_t kind = kind_2d();
+        int s = kind_slot(kind);
+
+        if (g_frame_2d_n < FRAME_2D_MAX) {
+            g_frame_2d[g_frame_2d_n] = kind;
+            g_frame_2d_at[g_frame_2d_n++] = g_frame_draws;
+        }
+        if (s >= 0 && g_kinds_2d[s].used && g_kinds_2d[s].kind == kind && g_kinds_2d[s].mid)
+            return DRAW_SKIP;
+    }
     return DRAW_UI;
 }
 
@@ -2090,12 +2171,13 @@ static int remix_draw(void)
     int kind = screen_draw_kind(), ui = kind == DRAW_UI;
     int zwrite = d ? d->depth_enable && d->depth_write : 1;
     int zalways = d && (!d->depth_enable || d->depth_func == D3DCMP_ALWAYS);
-    int sky = g_remix_2d && g_b.vs && kind == DRAW_PLAIN && !g_frame_zwritten &&
+    int title_3d = g_title_draw && !g_title_2d;
+    int sky = g_remix_2d && g_b.vs && title_3d && kind == DRAW_PLAIN && !g_frame_zwritten &&
               !zwrite && zalways;
 
     if (kind == DRAW_SKIP)
         return 0;
-    if (zwrite)
+    if (zwrite && title_3d)
         g_frame_zwritten = 1;
     if (g_ui_mark && ui != g_ui_mark_bound) {
         IDirect3DDevice9_SetTexture(g_dev, D3DVERTEXTEXTURESAMPLER3,
@@ -2308,7 +2390,6 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
         return -1;
     if (dst->image)
         dst->image->screen_copy = 1;
-    g_frame_copied = 1;
     return 0;
 }
 
@@ -2324,9 +2405,10 @@ void rhi_d3d9_set_render_state(uint32_t state, uint32_t value)
         set_rs((D3DRENDERSTATETYPE)state, value);
 }
 
-void rhi_d3d9_title_draw(void)
+void rhi_d3d9_title_draw(int two_d)
 {
     g_title_draw = 1;
+    g_title_2d = two_d != 0;
 }
 
 void rhi_d3d9_set_texture_stage(uint32_t stage, uint32_t type, uint32_t value)
@@ -2370,7 +2452,6 @@ void rhi_d3d9_set_camera(const float world[16], const float view[16], const floa
 {
     if (!rhi_d3d9_active())
         return;
-    g_cam_ortho = proj && proj[11] == 0.0f && proj[15] == 1.0f;
     if (world)
         IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, (const D3DMATRIX *)world);
     if (view)
@@ -2454,7 +2535,7 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index)
     return "ATTR";
 }
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value) { (void)state; (void)value; }
-void rhi_d3d9_title_draw(void) {}
+void rhi_d3d9_title_draw(int two_d) { (void)two_d; }
 int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                        const RhiRect *dst_rect)
 {
