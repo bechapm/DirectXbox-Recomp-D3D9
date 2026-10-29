@@ -108,7 +108,7 @@ static const char kVsPrelude[] =
     "float4 rhi_vp_adjust : register(c255);\n"
     "float4 rhi_depth_clamp : register(c254);\n"
     /* Sampled so that Remix sees what is bound there (the UI marker,
-     * mark_ui_draw); c254.w is always 0, so it changes nothing. */
+     * remix_draw); c254.w is always 0, so it changes nothing. */
     "sampler2D rhi_ui_mark : register(s3);\n"
     "void rhi_vp_adjust_pos(inout float4 p)\n"
     "{\n"
@@ -331,10 +331,12 @@ int rhi_d3d9_active(void)
     return g_rhi == &rhi_d3d9_backend && g_dev != NULL;
 }
 
-/* The title's 2D under Remix (mark_ui_draw). */
+/* The title's 2D and sky under Remix (remix_draw). */
 static IDirect3DTexture9 *g_ui_mark;
 static int g_ui_mark_bound, g_remix_2d;
 static int g_frame_copied, g_prev_frame_copied;    /* rhi_d3d9_copy_rect, this frame and the last */
+static int g_frame_zwritten;    /* a draw this frame has written depth */
+static int g_sky_viewport;      /* the viewport is set for a sky draw (remix_draw) */
 
 static void forget_state(void)
 {
@@ -390,7 +392,7 @@ static int make_internal_streams(void)
     return 0;
 }
 
-/* The texture that tells Remix a draw is UI (mark_ui_draw). Remix knows a
+/* The texture that tells Remix a draw is UI (remix_draw). Remix knows a
  * texture by the XXH3 hash of its first level's texels, so these never
  * change: rtx.uiTextures = 0xA2F17C4A8F3E3CEA. Whether Remix is the d3d9.dll
  * loaded decides whether it is used: Remix exports its API's entry point. */
@@ -564,7 +566,7 @@ static int32_t d9_present(uint32_t interval)
     }
     scene_end();
     g_prev_frame_copied = g_frame_copied;
-    g_frame_copied = 0;
+    g_frame_copied = g_frame_zwritten = 0;
     h = rhi_wait_begin();
     hr = IDirect3DDevice9_Present(g_dev, NULL, g_present_rect_set ? &g_present_rect : NULL,
                                   NULL, NULL);
@@ -1752,8 +1754,8 @@ static void apply_viewport(void)
     vp.Y = (DWORD)y0;
     vp.Width = (DWORD)aw;
     vp.Height = (DWORD)ah;
-    vp.MinZ = g_b.vp.min_depth;
-    vp.MaxZ = g_b.vp.max_depth;
+    vp.MinZ = g_sky_viewport ? 1.0f : g_b.vp.min_depth;
+    vp.MaxZ = g_sky_viewport ? 1.0f : g_b.vp.max_depth;
     IDirect3DDevice9_SetViewport(g_dev, &vp);
 
     /* ndc' = ndc * (w / aw) + offset, so that a point lands on the pixel the
@@ -2045,7 +2047,13 @@ static void draw_failed(const char *what, HRESULT hr)
  *    as UI it would composite the picture before the weapon was drawn);
  *  - marked as UI otherwise, by binding g_ui_mark to vertex sampler 3, which
  *    RHI_VP_ADJUST samples.
- * RECOMP_D3D9_REMIX_2D=0 turns this off, =1 on without Remix.
+ * The sky is the frame's first draws, before any that writes depth, drawn
+ * through the level's own program with depth always passing and not
+ * written. As geometry it was a closed box around the level that kept out
+ * Remix's light (a dark picture, lit only for a moment after the camera
+ * moved). Remix takes a draw whose viewport's minimum depth is 1 for sky,
+ * and these draws' depth goes nowhere, so they get that viewport.
+ * RECOMP_D3D9_REMIX_2D=0 turns all of this off, =1 on without Remix.
  *
  * RECOMP_D3D9_SKIP_ORTHO=1 is a test switch, not for play: every such draw is
  * left out, to see what the 2D does to Remix's picture. */
@@ -2074,17 +2082,29 @@ static int screen_draw_kind(void)
     return DRAW_UI;
 }
 
-/* Whether the next draw is UI, to Remix; 0 if it is not to be drawn. */
-static int mark_ui_draw(void)
+/* Tells Remix what the next draw is (UI, sky or neither); 0 if it is not to
+ * be drawn. */
+static int remix_draw(void)
 {
+    const RhiDepthDesc *d = g_b.depth ? &g_b.depth->d : NULL;
     int kind = screen_draw_kind(), ui = kind == DRAW_UI;
+    int zwrite = d ? d->depth_enable && d->depth_write : 1;
+    int zalways = d && (!d->depth_enable || d->depth_func == D3DCMP_ALWAYS);
+    int sky = g_remix_2d && g_b.vs && kind == DRAW_PLAIN && !g_frame_zwritten &&
+              !zwrite && zalways;
 
     if (kind == DRAW_SKIP)
         return 0;
+    if (zwrite)
+        g_frame_zwritten = 1;
     if (g_ui_mark && ui != g_ui_mark_bound) {
         IDirect3DDevice9_SetTexture(g_dev, D3DVERTEXTEXTURESAMPLER3,
                                     ui ? (IDirect3DBaseTexture9 *)g_ui_mark : NULL);
         g_ui_mark_bound = ui;
+    }
+    if (sky != g_sky_viewport) {
+        g_sky_viewport = sky;
+        g_b.vp_dirty = 1;
     }
     return 1;
 }
@@ -2100,7 +2120,7 @@ static void d9_draw(uint32_t n, uint32_t first)
     UINT prims = prim_count(g_b.topology, n, &type);
     HRESULT hr;
 
-    if (!mark_ui_draw() || !prims || !prepare_draw())
+    if (!remix_draw() || !prims || !prepare_draw())
         return;
     if (!g_b.layout && first + n > VID_COUNT)
         return;
@@ -2120,7 +2140,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     DWORD flags = D3DLOCK_NOOVERWRITE;
     HRESULT hr;
 
-    if (!mark_ui_draw() || !prims || !g_b.ib || !prepare_draw())
+    if (!remix_draw() || !prims || !g_b.ib || !prepare_draw())
         return;
     src_off = g_b.ib_offset + first * isz;
     if (src_off + bytes > g_b.ib->desc.size || bytes > IRING_BYTES)
