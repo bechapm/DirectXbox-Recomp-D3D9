@@ -1980,13 +1980,32 @@ static void draw_failed(const char *what, HRESULT hr)
             g_b.layout ? "title's" : "vertex numbers", tw, th, g_in_scene);
 }
 
+/* RECOMP_D3D9_SKIP_ORTHO=1: a test switch, not for play. Program draws
+ * given an orthographic projection (the title's 2D: Remix ray traces a
+ * vertex program's draw as geometry whatever its projection) are left out,
+ * to see what they do to Remix's picture. */
+static int g_cam_ortho;
+
+static int skip_ortho_draw(void)
+{
+    static int on = -1;
+    int ortho = g_cam_ortho;
+
+    if (on < 0) {
+        const char *e = getenv("RECOMP_D3D9_SKIP_ORTHO");
+        on = e && e[0] == '1';
+    }
+    g_cam_ortho = 0;
+    return on && ortho;
+}
+
 static void d9_draw(uint32_t n, uint32_t first)
 {
     D3DPRIMITIVETYPE type;
     UINT prims = prim_count(g_b.topology, n, &type);
     HRESULT hr;
 
-    if (!prims || !prepare_draw())
+    if (skip_ortho_draw() || !prims || !prepare_draw())
         return;
     if (!g_b.layout && first + n > VID_COUNT)
         return;
@@ -2006,7 +2025,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     DWORD flags = D3DLOCK_NOOVERWRITE;
     HRESULT hr;
 
-    if (!prims || !g_b.ib || !prepare_draw())
+    if (skip_ortho_draw() || !prims || !g_b.ib || !prepare_draw())
         return;
     src_off = g_b.ib_offset + first * isz;
     if (src_off + bytes > g_b.ib->desc.size || bytes > IRING_BYTES)
@@ -2231,6 +2250,7 @@ void rhi_d3d9_set_camera(const float world[16], const float view[16], const floa
 {
     if (!rhi_d3d9_active())
         return;
+    g_cam_ortho = proj && proj[11] == 0.0f && proj[15] == 1.0f;
     if (world)
         IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, (const D3DMATRIX *)world);
     if (view)

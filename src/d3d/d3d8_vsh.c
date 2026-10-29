@@ -2136,11 +2136,18 @@ uint16_t d3d8_vsh_inputs_read(DWORD handle)
  * drawn under an identity projection. */
 static float g_remix_view[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 
+static int (*g_remix_view_source)(float view[16]);
+
 void xbox_D3D8SetRemixCamera(const float *view)
 {
     static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 
     memcpy(g_remix_view, view ? view : identity, sizeof g_remix_view);
+}
+
+void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]))
+{
+    g_remix_view_source = source;
 }
 
 static void d3d9_camera_for_draw(void)
@@ -2165,7 +2172,14 @@ static void d3d9_camera_for_draw(void)
                 proj[row * 4 + col] = v;
             }
     }
-    rhi_d3d9_set_camera(identity, g_remix_view, proj);
+    {
+        float view[16];
+
+        if (g_remix_view_source && g_remix_view_source(view))
+            rhi_d3d9_set_camera(identity, view, proj);
+        else
+            rhi_d3d9_set_camera(identity, g_remix_view, proj);
+    }
 }
 
 BOOL d3d8_vsh_prepare_draw(DWORD handle)

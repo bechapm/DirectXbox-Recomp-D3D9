@@ -1382,6 +1382,14 @@ void xbox_D3D8SetInterpRegisters(int projection, int affine_first, int affine_co
    sees is then the camera's own space. Does nothing under other backends. */
 void xbox_D3D8SetRemixCamera(const float *view);
 
+/* The same, asked for at each vertex-program draw: source fills view and
+   returns nonzero, or returns 0 for the last one xbox_D3D8SetRemixCamera
+   gave. For a title whose draws in one frame are made with more than one
+   camera state (TimeSplitters 2 draws part of a frame before the call that
+   would hand the view over), so each draw's VIEW is the one its own
+   model-view was made from. NULL stops asking. */
+void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
+
 /**
  * Present frame and pump window messages.
  * Called from recompiled game code (replaces RW driver Present path).
