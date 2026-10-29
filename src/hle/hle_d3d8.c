@@ -3002,7 +3002,9 @@ void hle_set_frame_cap(const char *name)
 }
 
 /* xbox_D3D8Notice: a title's line, shown under its own deadline whether or
- * not the counter is on. Written and read on the presenting thread. */
+ * not the counter is on. Written and read on the presenting thread. Not
+ * logged: a title may refresh it every frame, and says in its own log what
+ * is worth saying. */
 static char      g_notice[96];
 static ULONGLONG g_notice_until;
 
@@ -3014,8 +3016,6 @@ void xbox_D3D8Notice(const char *text, unsigned ms)
     }
     snprintf(g_notice, sizeof g_notice, "%s", text);
     g_notice_until = GetTickCount64() + (ms ? ms : 2000u);
-    fprintf(stderr, "[NOTICE] %s\n", g_notice);
-    fflush(stderr);
 }
 
 static void overlay_frame(void)
