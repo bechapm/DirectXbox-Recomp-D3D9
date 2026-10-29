@@ -2570,8 +2570,15 @@ void rhi_d3d9_set_camera(const float world[16], const float view[16], const floa
      * first-person weapon, a sky dome, anything carried with the eye) keeps
      * all of those while the camera moves, and Remix kept it where an
      * earlier camera had put it. A key of the camera in a register no
-     * shader reads makes the camera part of what Remix compares. */
-    if (g_remix_2d && view && proj) {
+     * shader reads makes the camera part of what Remix compares.
+     * RECOMP_D3D9_REMIX_CAMERA_KEY=0 leaves it out, for comparison. */
+    static int key_on = -1;
+
+    if (key_on < 0) {
+        const char *e = getenv("RECOMP_D3D9_REMIX_CAMERA_KEY");
+        key_on = !(e && e[0] == '0');
+    }
+    if (g_remix_2d && key_on && view && proj) {
         uint64_t h = 1469598103934665603ull;
         const uint8_t *b;
         float key[4];
