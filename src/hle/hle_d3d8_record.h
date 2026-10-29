@@ -26,6 +26,9 @@
  *                                  frame is recorded (a full snapshot each)
  *                                  and deleted while it looks, so it is slow,
  *                                  but it finds a title's rare 3D frames
+ *   RECOMP_D3D8_CAPTURE_AT=<from>:<count>:<every>[,...]  windows of swaps
+ *                                  instead of SWAP/EVERY/MAX: every frame
+ *                                  they hold, to <path>_<swap>.d3dcap
  *
  * Threads: guest threads are host threads, and the wrappers take no lock.
  * That is no worse than the host renderer itself, which takes none either;

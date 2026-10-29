@@ -34,7 +34,11 @@ it.
    `RECOMP_HLE_D3D8_DUMP_AT=<from>:<count>:<every>` with
    `RECOMP_HLE_D3D8_DUMP_SIZE=<w>x<h>` writes the same swaps from each run.
    Loads still take as many swaps as the disc does, so runs can sit a swap
-   or three apart; the comparison aligns them by content. Mean absolute difference
+   or three apart; the comparison aligns them by content. Scenes that do not
+   repeat at all (a title reading the time, bots, effects) are compared
+   from one run instead: `RECOMP_D3D8_CAPTURE_AT=<from>:<count>:<every>`
+   captures the frames, and `d3d8_replay` draws each through D3D11 and
+   through plain D3D9, so both pictures are of the very same frame. Mean absolute difference
    and the share of pixels past a small threshold, per frame. Anything real
    here is a **backend** difference.
 2. **Plain D3D9 against Remix, in the same run.** Under Remix every draw is

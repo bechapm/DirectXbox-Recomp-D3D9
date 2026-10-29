@@ -68,6 +68,9 @@ static unsigned long  g_every;       /* RECOMP_D3D8_CAPTURE_EVERY, 0 = once */
 static unsigned long  g_min_draws;   /* RECOMP_D3D8_CAPTURE_MINDRAWS, 0 = any */
 static unsigned       g_files;
 static char           g_file[1024];  /* the file being written */
+/* RECOMP_D3D8_CAPTURE_AT: windows of swaps, as RECOMP_HLE_D3D8_DUMP_AT. */
+static struct { unsigned long from, count, every; } g_windows[16];
+static int            g_window_count;
 
 /* Host texture objects whose contents are in this capture, and their ids. */
 static struct {
@@ -601,9 +604,29 @@ static void capture_snapshot(IDirect3DDevice8 *dev)
 
 /* ------------------------------------------------------------ frame boundary */
 
+/* The first swap at or after `from` that a capture window holds; 0 when no
+ * window has one left. */
+static unsigned long window_swap(unsigned long from)
+{
+    unsigned long best = 0;
+    int k;
+
+    for (k = 0; k < g_window_count; k++) {
+        unsigned long first = g_windows[k].from, step = g_windows[k].every;
+        unsigned long last = first + (g_windows[k].count - 1) * step, s;
+
+        if (from > last)
+            continue;
+        s = from <= first ? first : first + (from - first + step - 1) / step * step;
+        if (!best || s < best)
+            best = s;
+    }
+    return best;
+}
+
 static void capture_configure(void)
 {
-    const char *swap, *every, *min_draws;
+    const char *swap, *every, *min_draws, *at;
 
     g_configured = 1;
     g_path = getenv("RECOMP_D3D8_CAPTURE");
@@ -620,6 +643,34 @@ static void capture_configure(void)
     every = getenv("RECOMP_D3D8_CAPTURE_MAX");
     if (every && atoi(every) > 0)
         g_max_files = atoi(every);
+    /* RECOMP_D3D8_CAPTURE_AT=<from>:<count>:<every>[,...]: windows of swaps
+     * -- from swap <from>, <count> frames, one every <every> swaps -- each
+     * frame to <path>_<swap>, as many as the windows hold. One run then
+     * captures every moment a comparison needs, for d3d8_replay to draw
+     * through each backend. Replaces SWAP, EVERY and MAX. */
+    at = getenv("RECOMP_D3D8_CAPTURE_AT");
+    while (at && *at && g_window_count < 16) {
+        unsigned long a, c, v;
+
+        if (sscanf(at, "%lu:%lu:%lu", &a, &c, &v) == 3 && c && v) {
+            g_windows[g_window_count].from = a;
+            g_windows[g_window_count].count = c;
+            g_windows[g_window_count].every = v;
+            g_window_count++;
+        }
+        at = strchr(at, ',');
+        if (at)
+            at++;
+    }
+    if (g_window_count) {
+        g_every = 0;
+        g_target_swap = window_swap(0);
+        if (g_path && *g_path)
+            fprintf(stderr, "[HLE-D3D8] capture armed: %d swap window(s) from swap %lu -> "
+                    "%s (host calls, format v%u)\n", g_window_count, g_target_swap,
+                    g_path, D3D8CAP_VERSION);
+        return;
+    }
     if (g_path && *g_path)
         fprintf(stderr, "[HLE-D3D8] capture armed: swap %lu%s%s -> %s (host calls, "
                 "format v%u)\n", g_target_swap,
@@ -645,6 +696,7 @@ void hle_d3d8_capture_next_frame(void)
         g_path = fallback;
         g_every = 0;
         g_min_draws = 0;
+        g_window_count = 0;
     }
     g_capture_asap = 1;                  /* whichever swap comes next */
     fprintf(stderr, "[HLE-D3D8] capturing the next frame to %s\n", g_path);
@@ -671,8 +723,12 @@ void hle_d3d8_capture_swap(unsigned long swaps, uint32_t width, uint32_t height)
             /* Too few draws: dropped, and this swap starts the next try. */
             remove(g_file);
             g_unrecorded_targets = g_unrecorded_binds = 0;
-            g_target_swap = swaps;
-            goto start;
+            g_target_swap = g_window_count ? window_swap(swaps) : swaps;
+            if (!g_target_swap)
+                g_path = NULL;
+            if (g_path && g_target_swap == swaps)
+                goto start;
+            return;
         }
         fprintf(stderr, "[HLE-D3D8] capture: frame %lu written to %s -- %u chunks, "
                 "%lu draws, %lu textures (%llu bytes), %lu level refills%s\n",
@@ -689,10 +745,15 @@ void hle_d3d8_capture_swap(unsigned long swaps, uint32_t width, uint32_t height)
                     g_unrecorded_binds);
         fflush(stderr);
         g_files++;
-        if (g_every && g_files < g_max_files)
+        if (g_window_count) {
+            g_target_swap = window_swap(g_frame + 1);
+            if (!g_target_swap)
+                g_path = NULL;           /* done: the last window's last frame */
+        } else if (g_every && g_files < g_max_files) {
             g_target_swap = g_frame + g_every;
-        else
+        } else {
             g_path = NULL;               /* done: one frame, or the file cap */
+        }
         /* EVERY=1: the next frame starts at this very swap. Consecutive
          * frames are what frame interpolation is measured on -- two frames
          * and the one between them. */
@@ -720,7 +781,7 @@ start:
     g_draws = g_texture_writes = g_level_writes = g_unrecorded_binds = 0;
     g_unrecorded_targets = 0;
     g_texture_bytes = 0;
-    if (g_every) {
+    if (g_every || g_window_count) {
         /* <path>_<swap><extension>, with the extension moved to the end. */
         size_t n = strlen(g_path), e = strlen(D3D8CAP_EXTENSION);
 
