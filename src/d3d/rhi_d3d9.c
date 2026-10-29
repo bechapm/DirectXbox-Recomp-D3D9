@@ -734,7 +734,8 @@ static void d9_buffer_destroy(RhiBuffer *b)
     for (i = 0; i < 16; i++)
         if (g_b.vb[i] == b) {
             g_b.vb[i] = NULL;
-            IDirect3DDevice9_SetStreamSource(g_dev, i, NULL, 0, 0);
+            if (!(i == 0 && g_b.vid_bound))
+                IDirect3DDevice9_SetStreamSource(g_dev, i, NULL, 0, 0);
         }
     if (g_b.ib == b)
         g_b.ib = NULL;
@@ -1891,13 +1892,25 @@ static int prepare_draw(void)
     g_title_draw = 0;
     apply_constants();
     if (g_b.layout) {
+        /* Stream 0 back from the vertex numbers to what rhi.h bound there:
+         * a title binds its vertex buffer once and draws from it many times,
+         * across the passes drawn between (the overlay, at least once a
+         * frame). Left on the numbers, its level geometry was read from them
+         * -- walls gone, stray triangles across the sky -- while its menus,
+         * which rebind for every draw, came out right. */
+        if (g_b.vid_bound) {
+            RhiBuffer *b = g_b.vb[0];
+            IDirect3DDevice9_SetStreamSource(g_dev, 0, b ? b->vb : NULL,
+                                             b ? g_b.vb_offset[0] : 0,
+                                             b ? g_b.vb_stride[0] : 0);
+            g_b.vid_bound = 0;
+        }
         IDirect3DDevice9_SetVertexDeclaration(g_dev, g_b.layout->decl);
     } else {
         /* A pass with no vertices of its own: the vertex number stream. */
         IDirect3DDevice9_SetVertexDeclaration(g_dev, g_vid_decl);
         IDirect3DDevice9_SetStreamSource(g_dev, 0, g_vid_vb, 0, 4);
         g_b.vid_bound = 1;
-        g_b.vb[0] = NULL;
     }
     return 1;
 }
