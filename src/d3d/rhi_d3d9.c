@@ -31,6 +31,10 @@
  *    a viewport that must lie inside its target. Both are corrected in clip
  *    space, by a constant every vertex shader applies (RHI_VP_ADJUST, at
  *    c255) and by the projection a fixed-function draw is given.
+ *  - No depth clamp: D3D9 always clips to 0 <= z <= w. Where the raster
+ *    state asks for clamping (depth_clip 0, the title's draws by default)
+ *    RHI_VP_ADJUST clamps each vertex's z into that range instead (flag at
+ *    c254), so geometry past the far plane is drawn at it, not cut away.
  *  - Formats D3D9 has no equal of are converted on the way in (R8G8B8A8 to
  *    A8R8G8B8, R8G8 and the 16-bit one- and two-channel formats widened), so
  *    every image samples as it does under D3D11.
@@ -87,6 +91,7 @@ static const int g_ps_slot_base[PS_SLOTS] = {
     32,     /* b7: the self-contained passes */
 };
 #define VS_ADJUST_REG 255   /* RHI_VP_ADJUST */
+#define VS_CLAMP_REG  254   /* its depth clamp flag */
 
 /* What every shader is compiled with in front of it. */
 static const char kVsPrelude[] =
@@ -94,7 +99,14 @@ static const char kVsPrelude[] =
     "#define RHI_D3D9_VS 1\n"
     "#define RHI_VERTEX_ID TEXCOORD15\n"
     "float4 rhi_vp_adjust : register(c255);\n"
-    "#define RHI_VP_ADJUST(p) ((p).xy = (p).xy * rhi_vp_adjust.xy + rhi_vp_adjust.zw * (p).w)\n"
+    "float4 rhi_depth_clamp : register(c254);\n"
+    "void rhi_vp_adjust_pos(inout float4 p)\n"
+    "{\n"
+    "    p.xy = p.xy * rhi_vp_adjust.xy + rhi_vp_adjust.zw * p.w;\n"
+    "    if (rhi_depth_clamp.x != 0 && p.w > 0)\n"
+    "        p.z = clamp(p.z, 0, p.w);\n"
+    "}\n"
+    "#define RHI_VP_ADJUST(p) rhi_vp_adjust_pos(p)\n"
     "#line 1\n";
 static const char kPsPrelude[] =
     "#define RHI_D3D9 1\n"
@@ -232,6 +244,8 @@ static struct {
     int              ds_dirty;
     float            adjust[4];          /* RHI_VP_ADJUST for the current viewport */
     int              adjust_sent;
+    float            clamp[4];           /* and its depth clamp flag */
+    int              clamp_sent;
     int              vid_bound;
 } g_b;
 
@@ -1762,6 +1776,10 @@ static void apply_depth_raster(void)
     set_rs(D3DRS_SCISSORTESTENABLE, r->scissor ? TRUE : FALSE);
     set_rs(D3DRS_MULTISAMPLEANTIALIAS, r->multisample ? TRUE : FALSE);
     set_rs(D3DRS_ANTIALIASEDLINEENABLE, r->antialiased_lines ? TRUE : FALSE);
+    if (g_b.clamp[0] != (r->depth_clip ? 0.0f : 1.0f)) {
+        g_b.clamp[0] = r->depth_clip ? 0.0f : 1.0f;
+        g_b.clamp_sent = 0;
+    }
 
     if (g_b.depth) {
         const RhiDepthDesc *d = &g_b.depth->d;
@@ -1832,7 +1850,7 @@ static void apply_constants(void)
 
     for (st = 0; st < 2; st++) {
         const int *base = st == 0 ? g_vs_slot_base : g_ps_slot_base;
-        int limit = st == 0 ? 256 : 224;
+        int limit = st == 0 ? VS_CLAMP_REG : 224;
         RhiShader *bound = st == 0 ? g_b.vs : g_b.ps;
 
         if (!bound)
@@ -1861,6 +1879,10 @@ static void apply_constants(void)
     if (g_b.vs && !g_b.adjust_sent) {
         IDirect3DDevice9_SetVertexShaderConstantF(g_dev, VS_ADJUST_REG, g_b.adjust, 1);
         g_b.adjust_sent = 1;
+    }
+    if (g_b.vs && !g_b.clamp_sent) {
+        IDirect3DDevice9_SetVertexShaderConstantF(g_dev, VS_CLAMP_REG, g_b.clamp, 1);
+        g_b.clamp_sent = 1;
     }
 }
 

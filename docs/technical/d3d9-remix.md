@@ -61,6 +61,11 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
   and corrects clip space with `RHI_VP_ADJUST` (c255) in every vertex shader,
   and folds the same correction into `PROJECTION`, so what Remix inverts is
   exactly what was rasterised.
+- **No depth clamp.** D3D9 always clips to `0 <= z <= w`; D3D11 runs the
+  title's draws with depth clip off. Where the raster state asks for that,
+  `RHI_VP_ADJUST` clamps each vertex's z into range (flag at c254), so a
+  w-buffered level's far walls and sky are drawn at the far plane rather than
+  cut away.
 - **The back buffer is the scene's size**, because Remix takes only draws into
   a target of the back buffer's size for the scene. The window is filled by
   `Present`'s destination rectangle.
