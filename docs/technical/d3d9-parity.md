@@ -92,7 +92,7 @@ title's own data.
 | 2D as UI | A title's program draw the renderer judges screen-space (its program uses no projection, or an orthographic one: the same verdict widescreen uses) is marked UI with a fixed texture in `rtx.uiTextures` | Remix composites at the first UI draw, so UI must come after the frame's 3D | Fixed-function 2D is left to Remix's own rule (orthographic, no depth write); 2D a title draws through its 3D camera (Max Payne's HUD) is not caught |
 | Mid-frame 2D | A kind of 2D draw (program, texture, blend, topology) that was followed by 3D in the previous frame is left out | Frame structure changes slowly | One wrong frame when it changes; such 2D (TS2's muzzle glow) is not shown under Remix |
 | Screen-copy passes | 2D that samples a copy of the screen is left out | The copy holds the rasterised picture, not Remix's | Post effects built on screen copies (blur, glow) are lost under Remix |
-| Sky | A title's 3D program draw before any depth-writing draw in the frame, with depth not written and always passing, gets a viewport with minimum depth 1 (Remix's `rtx.skyMinZThreshold`) | Sky is drawn first, with depth off | A sky drawn after the world, or with a depth test, is ray traced as a box and blocks Remix's light |
+| Sky | A title's 3D program draw before any depth-writing draw in the frame, with depth not written and a test every depth passes (off, ALWAYS, or LESSEQUAL against a buffer cleared to 1 this frame: Planet X's backdrop), gets a viewport with minimum depth 1 (Remix's `rtx.skyMinZThreshold`) | Sky is drawn first, with depth off | A sky drawn after the world, or with a depth test, is ray traced as a box and blocks Remix's light |
 
 ## Remix settings a title needs (Remix side)
 

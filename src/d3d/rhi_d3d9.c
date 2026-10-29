@@ -341,6 +341,7 @@ int rhi_d3d9_active(void)
 static IDirect3DTexture9 *g_ui_mark;
 static int g_ui_mark_bound, g_remix_2d;
 static int g_frame_zwritten;    /* a draw this frame has written depth */
+static float g_frame_zclear = -1.0f; /* what depth was cleared to this frame, or -1 */
 static void learn_2d(void);
 static int g_sky_viewport;      /* the viewport is set for a sky draw (remix_draw) */
 
@@ -573,6 +574,7 @@ static int32_t d9_present(uint32_t interval)
     scene_end();
     learn_2d();
     g_frame_zwritten = 0;
+    g_frame_zclear = -1.0f;
     h = rhi_wait_begin();
     hr = IDirect3DDevice9_Present(g_dev, NULL, g_present_rect_set ? &g_present_rect : NULL,
                                   NULL, NULL);
@@ -2257,14 +2259,33 @@ static int screen_draw_kind(void)
     return DRAW_UI;
 }
 
+/* Whether every depth, 1 (the sky viewport) among them, passes a depth test
+ * against a buffer cleared to c and not yet written, so that moving the draw
+ * to depth 1 changes nothing in the picture. */
+static int passes_at_far(uint32_t func, float c)
+{
+    if (func == D3DCMP_ALWAYS)
+        return 1;
+    if (c < 0.0f)
+        return 0;                       /* not cleared this frame: unknown */
+    if (func == D3DCMP_LESSEQUAL)
+        return c >= 1.0f;
+    if (func == D3DCMP_GREATEREQUAL)
+        return c <= 0.0f;               /* a reversed depth range */
+    return 0;
+}
+
 /* Tells Remix what the next draw is (UI, sky or neither); 0 if it is not to
- * be drawn. */
+ * be drawn. A sky is drawn before anything writes depth, and writes none:
+ * with depth off or always passing, or tested against a buffer just cleared,
+ * where it passes as it would at depth 1 (Planet X's backdrop tests with
+ * LESSEQUAL against a buffer cleared to 1). */
 static int remix_draw(void)
 {
     const RhiDepthDesc *d = g_b.depth ? &g_b.depth->d : NULL;
     int kind = screen_draw_kind(), ui = kind == DRAW_UI;
     int zwrite = d ? d->depth_enable && d->depth_write : 1;
-    int zalways = d && (!d->depth_enable || d->depth_func == D3DCMP_ALWAYS);
+    int zalways = d && (!d->depth_enable || passes_at_far(d->depth_func, g_frame_zclear));
     int title_3d = g_title_draw && !g_title_2d;
     int sky = g_remix_2d && g_b.vs && title_3d && kind == DRAW_PLAIN && !g_frame_zwritten &&
               !zwrite && zalways;
@@ -2379,6 +2400,8 @@ static void d9_clear_depth(RhiView *v, uint32_t flags, float z, uint8_t s)
     if (flags & RHI_CLEAR_STENCIL) f |= D3DCLEAR_STENCIL;
     if (!f)
         return;
+    if (f & D3DCLEAR_ZBUFFER)
+        g_frame_zclear = z;
     /* Clear works on what is bound, and clips to the viewport: bind the
      * surface, clear it whole, and put things back. */
     IDirect3DDevice9_GetDepthStencilSurface(g_dev, &cur);
