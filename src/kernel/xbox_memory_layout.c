@@ -686,6 +686,7 @@ static void frame_counters_tick(void)
  * Burnout 2's front end, 1 ms of work a frame, holds 60.0 under either. */
 static HANDLE        g_flip_gate_event;
 static volatile LONG g_flip_gate_vblanks;
+static volatile LONG g_flip_gate_swaps;     /* xbox_Nv2aSwapCount */
 static int           g_flip_gate_divisor = -1;      /* -1: not configured */
 static int           g_flip_gate_strict;            /* RECOMP_FPS_CAP given */
 static int           g_flip_gate_user;              /* a cap other than adaptive */
@@ -2453,10 +2454,18 @@ static void flip_gate_hold_suspended(void)
     xbox_GuestLockRestore(guest_held);
 }
 
+unsigned long xbox_Nv2aSwapCount(void)
+{
+    return (unsigned long)InterlockedCompareExchange(&g_flip_gate_swaps, 0, 0);
+}
+
 void xbox_Nv2aFlipGateArm(void)
 {
     static int said;
 
+    /* Counted before any wait: a vblank held for the next Swap
+     * (RECOMP_VBLANK_LOCKSTEP) must see this one. */
+    InterlockedIncrement(&g_flip_gate_swaps);
     flip_gate_hold_suspended();
     if (flip_gate_divisor() == 0)
         return;

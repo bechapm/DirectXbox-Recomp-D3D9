@@ -21,9 +21,20 @@ it.
 ## How a difference is found
 
 1. **D3D11 against plain D3D9.** The same title, the same scripted input and
-   save, frame interpolation off (`RECOMP_FRAME_INTERP=1`), frames matched by
-   present index, plain D3D9 being `RECOMP_D3D8_BACKEND=d3d9` with the
-   system's `d3d9.dll` and `RECOMP_D3D9_REMIX_2D=0`. Mean absolute difference
+   save, at the console's own settings, so that no enhancement is mistaken
+   for a backend difference: `RECOMP_RES_SCALE=1`, `RECOMP_WIDESCREEN=0`,
+   `RECOMP_ANISO=1`, `RECOMP_FRAME_INTERP=1` (off), no FPS overlay. Each
+   enhancement is then checked on its own, one backend at 1x against the
+   same with it on. Plain D3D9 is `RECOMP_D3D8_BACKEND=d3d9` with the
+   system's `d3d9.dll` and `RECOMP_D3D9_REMIX_2D=0`. Frames are matched by
+   number: the input script runs on the title's Swaps
+   (`RECOMP_INPUT_SEQ_SWAPS=1`), the title's clock waits for them
+   (`RECOMP_VBLANK_LOCKSTEP=1`, since a renderer that presents slower would
+   otherwise see the title catch up in bursts of vblanks), and
+   `RECOMP_HLE_D3D8_DUMP_AT=<from>:<count>:<every>` with
+   `RECOMP_HLE_D3D8_DUMP_SIZE=<w>x<h>` writes the same swaps from each run.
+   Loads still take as many swaps as the disc does, so runs can sit a swap
+   or three apart; the comparison aligns them by content. Mean absolute difference
    and the share of pixels past a small threshold, per frame. Anything real
    here is a **backend** difference.
 2. **Plain D3D9 against Remix, in the same run.** Under Remix every draw is

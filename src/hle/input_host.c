@@ -25,6 +25,7 @@
 
 /* <windows.h> on Windows, the POSIX shim (GetTickCount64) elsewhere. */
 #include "platform/xbox_winnt.h"
+#include "../kernel/xbox_memory_layout.h"  /* xbox_Nv2aSwapCount: the script's frame clock */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,6 +227,42 @@ static int seq_owns_pad(void)
     return !with_pad;
 }
 
+/* The script's clock. The wall clock by default; RECOMP_INPUT_SEQ_SWAPS=1
+ * reads it from the title's Swaps instead, at 60 a second (=<n> for a title
+ * that swaps n times a second), counted from the first poll. Two runs, on
+ * two renderers that present at different speeds, then press the same
+ * buttons on the same frames, so their frames can be compared by number;
+ * RECOMP_VBLANK_LOCKSTEP (kernel_bridge.c) keeps the title's own clock on
+ * the same frames. */
+static unsigned long long seq_time(void)
+{
+    static int per_second = -1;
+    static unsigned long swap0;
+
+    if (per_second < 0) {
+        const char *v = getenv("RECOMP_INPUT_SEQ_SWAPS");
+
+        per_second = v && *v ? atoi(v) : 0;
+        if (per_second == 1)
+            per_second = 60;
+        if (per_second < 0)
+            per_second = 0;
+    }
+    if (!per_second) {
+        if (!s_seq_t0)
+            s_seq_t0 = GetTickCount64();
+        return GetTickCount64() - s_seq_t0;
+    }
+    if (!s_seq_t0) {
+        s_seq_t0 = 1;
+        swap0 = xbox_Nv2aSwapCount();
+        fprintf(stderr, "  [PAD] input script on the frame clock: %d swaps a second, "
+                "from swap %lu\n", per_second, swap0);
+    }
+    return (unsigned long long)(xbox_Nv2aSwapCount() - swap0) * 1000ull /
+           (unsigned long long)per_second;
+}
+
 static void seq_input(RecompInputGamepad *g)
 {
     unsigned long long t;
@@ -233,9 +270,7 @@ static void seq_input(RecompInputGamepad *g)
 
     if (!seq_active())
         return;
-    if (!s_seq_t0)
-        s_seq_t0 = GetTickCount64();
-    t = GetTickCount64() - s_seq_t0;
+    t = seq_time();
     for (i = 0; i < s_seq_count; i++) {
         if (t < s_seq[i].at || t >= (unsigned long long)s_seq[i].at + s_seq[i].hold)
             continue;

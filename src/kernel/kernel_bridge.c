@@ -3176,6 +3176,24 @@ static LONGLONG vblank_clock_wait_us(void)
     return (s_vblank_clock.next - now.QuadPart) * 1000000 / s_vblank_clock.qpf;
 }
 
+/* RECOMP_VBLANK_LOCKSTEP=1: at most one vblank per Swap (kernel_vblank_tick).
+ * A test tool: it slows a title whose host frames are slow, as a console
+ * never would. */
+static int vblank_lockstep(void)
+{
+    static int on = -1;
+
+    if (on < 0) {
+        const char *v = getenv("RECOMP_VBLANK_LOCKSTEP");
+
+        on = v && *v && strcmp(v, "0") != 0;
+        if (on)
+            fprintf(stderr, "  [NV2A] vblank lockstep: at most one vblank per Swap "
+                    "(a test tool, RECOMP_VBLANK_LOCKSTEP)\n");
+    }
+    return on;
+}
+
 static void kernel_vblank_tick(void)
 {
     if (!s_vblank_clock.configured)
@@ -3193,13 +3211,38 @@ static void kernel_vblank_tick(void)
         QueryPerformanceCounter(&now);
         if (now.QuadPart < s_vblank_clock.next)
             return;
-        /* Advance from the deadline, not from now, so late wake-ups do not
-         * accumulate into a slower clock. A thread that fell more than a
-         * whole period behind -- a long ISR, a debugger -- resynchronises
-         * rather than delivering a burst. */
-        s_vblank_clock.next += s_vblank_clock.period;
-        if (s_vblank_clock.next <= now.QuadPart)
+        if (vblank_lockstep()) {
+            /* RECOMP_VBLANK_LOCKSTEP=1, for comparing renderers: a vblank
+             * waits until the title has swapped since the last one, so a
+             * frame the host was slow to present holds the title's clock
+             * back instead of being caught up in a run of vblanks. The
+             * title's logic then steps once a Swap on any renderer, and two
+             * runs (with RECOMP_INPUT_SEQ_SWAPS) reach the same frames.
+             * A title waiting on vblanks without swapping (a load) gets one
+             * every two seconds. Timed from now: a held clock is not caught
+             * up. */
+            static unsigned long last_swaps;
+            static LONGLONG held_since;
+            unsigned long swaps = xbox_Nv2aSwapCount();
+
+            if (swaps == last_swaps) {
+                if (!held_since)
+                    held_since = now.QuadPart;
+                if (now.QuadPart - held_since < 2 * s_vblank_clock.qpf)
+                    return;
+            }
+            held_since = 0;
+            last_swaps = swaps;
             s_vblank_clock.next = now.QuadPart + s_vblank_clock.period;
+        } else {
+            /* Advance from the deadline, not from now, so late wake-ups do
+             * not accumulate into a slower clock. A thread that fell more
+             * than a whole period behind -- a long ISR, a debugger --
+             * resynchronises rather than delivering a burst. */
+            s_vblank_clock.next += s_vblank_clock.period;
+            if (s_vblank_clock.next <= now.QuadPart)
+                s_vblank_clock.next = now.QuadPart + s_vblank_clock.period;
+        }
     }
 
     /* A vblank: the flip a Swap submitted completes now. Before the ISR

@@ -2120,13 +2120,20 @@ static void shadow_frame_brightness(void)
     fflush(stderr);
 }
 
+/* RECOMP_HLE_D3D8_DUMP_SIZE=<w>x<h> (shadow_dump_frame): the size dumps are
+ * written at, each pixel the mean of the back buffer's pixels it covers, so a
+ * run can dump many frames for comparison without writing gigabytes. 0 keeps
+ * the back buffer's own size. */
+static UINT g_dump_out_w, g_dump_out_h;
+
 /* The back buffer as it is now, to a 24-bit BMP at path. 0 on success. */
 static int dump_back_buffer(const char *path)
 {
     IDirect3DSurface8 *surf = NULL;
     D3DLOCKED_RECT lr;
     uint8_t hdr[54];
-    UINT w, h, y, x, pad;
+    uint8_t *line;
+    UINT w, h, ow, oh, y, x, pad;
     uint32_t filesz;
     FILE *f;
     int ok = -1;
@@ -2155,32 +2162,54 @@ static int dump_back_buffer(const char *path)
             h = g_shadow_height;
         }
     }
-    pad = (4 - ((w * 3) & 3)) & 3;
-    filesz = 54 + (w * 3 + pad) * h;
-    f = fopen(path, "wb");
+    ow = g_dump_out_w && g_dump_out_h ? g_dump_out_w : w;
+    oh = g_dump_out_w && g_dump_out_h ? g_dump_out_h : h;
+    pad = (4 - ((ow * 3) & 3)) & 3;
+    filesz = 54 + (ow * 3 + pad) * oh;
+    line = (uint8_t *)malloc((size_t)ow * 3 + 3);
+    f = line ? fopen(path, "wb") : NULL;
     if (f) {
         memset(hdr, 0, sizeof hdr);
         hdr[0] = 'B'; hdr[1] = 'M';
         memcpy(hdr + 2, &filesz, 4);
         hdr[10] = 54;
         hdr[14] = 40;
-        memcpy(hdr + 18, &w, 4);
-        memcpy(hdr + 22, &h, 4);
+        memcpy(hdr + 18, &ow, 4);
+        memcpy(hdr + 22, &oh, 4);
         hdr[26] = 1;
         hdr[28] = 24;
         fwrite(hdr, 1, sizeof hdr, f);
-        for (y = h; y-- > 0; ) {         /* BMP rows run bottom-up */
-            const uint8_t *row = (const uint8_t *)lr.pBits + (size_t)y * (size_t)lr.Pitch;
-            for (x = 0; x < w; x++) {
-                const uint8_t *p = row + x * 4;
-                uint8_t bgr[3] = { p[2], p[1], p[0] };
-                fwrite(bgr, 1, 3, f);
+        memset(line + (size_t)ow * 3, 0, 3);
+        for (y = oh; y-- > 0; ) {        /* BMP rows run bottom-up */
+            UINT y0 = (UINT)((uint64_t)y * h / oh), y1 = (UINT)((uint64_t)(y + 1) * h / oh);
+
+            if (y1 <= y0)
+                y1 = y0 + 1;
+            for (x = 0; x < ow; x++) {
+                UINT x0 = (UINT)((uint64_t)x * w / ow), x1 = (UINT)((uint64_t)(x + 1) * w / ow);
+                uint32_t sum[3] = { 0, 0, 0 }, n = 0;
+                UINT sy, sx;
+
+                if (x1 <= x0)
+                    x1 = x0 + 1;
+                for (sy = y0; sy < y1; sy++) {
+                    const uint8_t *row = (const uint8_t *)lr.pBits + (size_t)sy * (size_t)lr.Pitch;
+                    for (sx = x0; sx < x1; sx++, n++) {
+                        sum[0] += row[sx * 4 + 2];
+                        sum[1] += row[sx * 4 + 1];
+                        sum[2] += row[sx * 4 + 0];
+                    }
+                }
+                line[x * 3 + 0] = (uint8_t)(sum[0] / n);
+                line[x * 3 + 1] = (uint8_t)(sum[1] / n);
+                line[x * 3 + 2] = (uint8_t)(sum[2] / n);
             }
-            fwrite("\0\0\0", 1, pad, f);
+            fwrite(line, 1, (size_t)ow * 3 + pad, f);
         }
         fclose(f);
         ok = 0;
     }
+    free(line);
     surf->lpVtbl->UnlockRect(surf);
     surf->lpVtbl->Release(surf);
     return ok;
@@ -2251,6 +2280,8 @@ static void shadow_dump_frame(void)
     static ULONGLONG next_ms;
     static char ring[24][512];
     static char asked_prefix[1024];
+    static struct { unsigned long from, count, every; } windows[16];
+    static int n_windows;
     int asked;
     char path[512];
 
@@ -2293,6 +2324,36 @@ static void shadow_dump_frame(void)
         e = getenv("RECOMP_HLE_D3D8_DUMP_EVERY_MS");
         if (e && atoi(e) > 0)
             every_ms = (unsigned)atoi(e);
+        /* RECOMP_HLE_D3D8_DUMP_AT=<from>:<count>:<every>[,...]: windows of
+         * swaps -- from swap <from>, <count> frames, one every <every> swaps
+         * -- written as <prefix>_s<swap>.bmp, as many as the windows hold.
+         * With the input script and the title's clock on the frame count
+         * (RECOMP_INPUT_SEQ_SWAPS, RECOMP_VBLANK_LOCKSTEP), runs on two
+         * renderers dump the same moments, frame for frame. Replaces the
+         * interval, the 24-file cap and the other choices above. */
+        e = getenv("RECOMP_HLE_D3D8_DUMP_AT");
+        while (e && *e && n_windows < 16) {
+            unsigned long a, c, v;
+
+            if (sscanf(e, "%lu:%lu:%lu", &a, &c, &v) == 3 && c && v) {
+                windows[n_windows].from = a;
+                windows[n_windows].count = c;
+                windows[n_windows].every = v;
+                n_windows++;
+            }
+            e = strchr(e, ',');
+            if (e)
+                e++;
+        }
+        e = getenv("RECOMP_HLE_D3D8_DUMP_SIZE");
+        if (e) {
+            unsigned dw = 0, dh = 0;
+
+            if (sscanf(e, "%ux%u", &dw, &dh) == 2 && dw && dh) {
+                g_dump_out_w = dw;
+                g_dump_out_h = dh;
+            }
+        }
     }
     /* Asked for by hand: this frame, wherever the run has got to, whatever
      * the interval and the 24-file cap say, and beside the executable when
@@ -2302,6 +2363,24 @@ static void shadow_dump_frame(void)
     if (asked && (!prefix || !*prefix)) {
         hle_d3d8_beside_exe(asked_prefix, sizeof asked_prefix, "frame");
         prefix = asked_prefix;
+    }
+    if (!asked && n_windows) {
+        int k, in = 0;
+
+        if (!prefix || !*prefix)
+            return;
+        for (k = 0; k < n_windows && !in; k++) {
+            unsigned long d = g_shadow_swaps - windows[k].from;
+
+            in = g_shadow_swaps >= windows[k].from && d % windows[k].every == 0 &&
+                 d / windows[k].every < windows[k].count;
+        }
+        if (!in)
+            return;
+        snprintf(path, sizeof path, "%s_s%08lu.bmp", prefix, g_shadow_swaps);
+        if (dump_back_buffer(path) == 0)
+            fprintf(stderr, "[HLE-D3D8] shadow frame %lu -> %s\n", g_shadow_swaps, path);
+        return;
     }
     if (!asked) {
         if (!prefix || !*prefix || g_shadow_swaps < from_swap)

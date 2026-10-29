@@ -302,6 +302,10 @@ void xbox_GuestConcurrencyReport(void);
 
 void xbox_Nv2aFlipGateArm(void);
 void xbox_Nv2aFlipGateRelease(void);
+/* The title's Swaps and Presents so far (each arms the gate once): the
+ * frame clock the test tools run on, RECOMP_INPUT_SEQ_SWAPS (input_host.c)
+ * and RECOMP_VBLANK_LOCKSTEP (kernel_bridge.c). */
+unsigned long xbox_Nv2aSwapCount(void);
 
 /* The presentation interval the title gave CreateDevice
  * (D3DPRESENT_PARAMETERS.FullScreen_PresentationInterval). With the gate at
