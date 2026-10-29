@@ -3005,7 +3005,7 @@ void hle_set_frame_cap(const char *name)
  * not the counter is on. Written and read on the presenting thread. Not
  * logged: a title may refresh it every frame, and says in its own log what
  * is worth saying. */
-static char      g_notice[400];
+static char      g_notice[1400];
 static ULONGLONG g_notice_until;
 
 void xbox_D3D8Notice(const char *text, unsigned ms)

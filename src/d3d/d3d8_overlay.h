@@ -32,7 +32,7 @@
 extern "C" {
 #endif
 
-/* The text to draw from now on, up to five lines separated by '\n'; NULL
+/* The text to draw from now on, up to eighteen lines separated by '\n'; NULL
  * or "" for none. It is drawn by every
  * present (d3d8_overlay_present), not into the title's frame, so a frame
  * presented again -- an in-between frame, or a held frame redrawn behind a

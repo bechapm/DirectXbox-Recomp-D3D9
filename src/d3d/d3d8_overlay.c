@@ -25,7 +25,7 @@
 /* Up to OVERLAY_LINES lines ('\n' between them), each OVERLAY_LINE_H
  * pixels: one line is the 28-pixel strip the frame-rate counter always was. */
 #define OVERLAY_W         640
-#define OVERLAY_LINES       5
+#define OVERLAY_LINES      18
 #define OVERLAY_LINE_H     22
 #define OVERLAY_TOP         4
 #define OVERLAY_H        (6 + OVERLAY_LINES * OVERLAY_LINE_H)
@@ -50,7 +50,7 @@ static struct {
     void           *bits;      /* the DIB's pixels, BGRA top-down */
     int             text_w;    /* what the last render measured */
     int             text_h;
-    char            text[512];
+    char            text[1536];
 } g;
 
 /* b7 in both stages: the four texture stages a title can use are b0..b3 and
@@ -375,7 +375,7 @@ static int overlay_create(void)
 static int overlay_set_text(const char *text)
 {
 #if defined(_WIN32)
-    wchar_t wide[512];
+    wchar_t wide[1536];
     RECT rect;
     SIZE extent;
     int i, start;
@@ -422,7 +422,7 @@ static int overlay_set_text(const char *text)
     return g.text_w > 0;
 }
 
-static char g_want[512];       /* the text asked for, drawn by each present */
+static char g_want[1536];       /* the text asked for, drawn by each present */
 
 void d3d8_overlay_set_text(const char *text)
 {

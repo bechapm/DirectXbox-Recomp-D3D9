@@ -1405,7 +1405,8 @@ int  xbox_D3D8KeyDown(int vk);
 
 /* Text of the title's on the overlay for `ms` milliseconds (0: two
    seconds), whether or not the frame-rate counter is shown (under it when
-   it is): up to four lines separated by '\n', about 60 characters each. NULL or "" takes it down. Not logged, since a title may refresh
+   it is): up to seventeen lines separated by '\n', about 60 characters
+   each -- a title's debugging menu fits. NULL or "" takes it down. Not logged, since a title may refresh
    it every frame. For a title's debugging tools to say what a key did, or
    to show a readout. Call it on the thread that presents. */
 void xbox_D3D8Notice(const char *text, unsigned ms);
