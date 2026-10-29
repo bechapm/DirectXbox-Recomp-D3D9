@@ -1,8 +1,9 @@
 # A Direct3D 9 backend for RTX Remix
 
 **Status, October 2026:** runs TimeSplitters 2 at full speed under Windows'
-own D3D9 and under RTX Remix 1.6.1, which path-traces it once a 3D scene
-gives it a camera. `RECOMP_D3D8_BACKEND=d3d9` chooses it. This note is the design
+own D3D9 and under RTX Remix 1.6.1, which path-traces its levels in the
+game's own world space (the USA release hands its camera over; see below).
+A captured Siberia frame replays pixel for pixel the same as D3D11. `RECOMP_D3D8_BACKEND=d3d9` chooses it. This note is the design
 and what is left; `src/d3d/rhi_d3d9.c` and `rhi_d3d9.h` are the reference.
 
 ## Why D3D9
@@ -50,12 +51,21 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
   `PROJECTION` (Hor+ applied to the projection as the D3D11 path applies it).
 - **Program draws** carry `PROJECTION` = the program's own projection
   register (`proj_reg`, as uploaded: Hor+ and camera zoom applied) transposed
-  to row-vector form, `WORLD` = identity, and `VIEW` = what the title last
-  gave `xbox_D3D8SetRemixCamera`, identity until it does. With identity the
-  world Remix sees is the camera's own space: it renders, but the world moves
-  with the camera, which defeats temporal accumulation and anchors
-  replacements to the screen. TimeSplitters 2's next step is to hand its view
-  matrix over from `ts2_camera_setup`.
+  to row-vector form, `WORLD` = identity, and `VIEW` = the title's view. A
+  title gives it with `xbox_D3D8SetRemixCamera` once a frame, or, when one
+  frame is drawn under more than one camera state, with
+  `xbox_D3D8SetRemixViewSource`, asked at every program draw. Identity until
+  it does: the world Remix sees is then the camera's own space, which renders
+  but moves with the camera, defeating temporal accumulation and anchoring
+  replacements to the screen. TimeSplitters 2 (split2's `ts2_draw_world`)
+  reads the view pointer in its render context at each draw: most of its
+  frame is drawn before the function that would hand the view over, and
+  given the view there those draws carried the frame before's.
+- **A `POSITION` element.** Remix takes a draw's vertices from the
+  declaration's `POSITION` and leaves out a draw without one. v0 is
+  `POSITION`, but a program need not keep its position there (TimeSplitters 2
+  keeps its level's in v1), so a declaration without v0 also declares its
+  first three- or four-float register as `POSITION0`, unread by the program.
 - **The viewport correction.** D3D9 needs the viewport inside the target and
   puts pixel centres half a pixel off D3D10's. The backend clamps the viewport
   and corrects clip space with `RHI_VP_ADJUST` (c255) in every vertex shader,
@@ -64,8 +74,11 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
 - **No depth clamp.** D3D9 always clips to `0 <= z <= w`; D3D11 runs the
   title's draws with depth clip off. Where the raster state asks for that,
   `RHI_VP_ADJUST` clamps each vertex's z into range (flag at c254), so a
-  w-buffered level's far walls and sky are drawn at the far plane rather than
-  cut away.
+  level's far walls and sky are drawn at the far plane rather than cut away.
+- **The screen-space undo branches.** Flattened by fxc for Shader Model 3, the
+  end of every generated vertex program blended the clip position with the
+  raw screen position, whose z is in depth-buffer units (~1.6e7), and lost
+  every clip z below 1 in fp32. It is `[branch]` under D3D9.
 - **The back buffer is the scene's size**, because Remix takes only draws into
   a target of the back buffer's size for the scene. The window is filled by
   `Present`'s destination rectangle.
@@ -94,6 +107,12 @@ lost, and the back buffer keeps its size.
    there and save `rtx.conf` beside the executable.
 
 ## Known gaps
+
+- The title's 2D drawn by vertex programs is ray traced as geometry: Remix
+  recognises orthographic 2D as UI only under fixed function. It does no harm
+  in TimeSplitters 2's levels, but its textures belong in `rtx.uiTextures`.
+  `RECOMP_D3D9_SKIP_ORTHO=1` leaves such draws out, for testing.
+- The PAL release of TimeSplitters 2 does not hand its camera over yet.
 
 - A register combiner program too long for ps_2_a, under fixed function, is
   approximated (stage 0's texture times diffuse). Under fixed function the
