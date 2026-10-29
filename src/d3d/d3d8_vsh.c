@@ -54,8 +54,12 @@ static BOOL           g_vsh_screen_dirty;
 /* The NV2A's current value of each input register, at register(b3). A
  * program that reads a register its vertex does not carry reads this
  * instead: the value SetVertexData4f / SetVertexDataColor last set, as on
- * the hardware. fed[r / 4][r % 4] is 1 for a register the bound layout reads
- * from the vertex. 320 bytes: a multiple of 16. */
+ * the hardware. fed[r / 4][r % 4] is nonzero for a register the bound layout
+ * reads from the vertex: how many components its format has (4 for an FVF
+ * layout). D3D9 reads the short formats it has no exact type for as wider
+ * ones (rhi_d3d9.c, decl_type), so there the program puts back the (0, 0, 1)
+ * a narrower format gives the components past its own. 320 bytes: a
+ * multiple of 16. */
 typedef struct {
     float value[NV2A_VS_MAX_INPUTS][4];
     float fed[4][4];
@@ -64,7 +68,6 @@ typedef struct {
 static VshVertexData  g_vsh_vdata;
 static RhiBuffer     *g_vsh_vdata_cb;
 static BOOL           g_vsh_vdata_dirty;
-static uint16_t       g_vsh_vdata_fed;     /* the mask g_vsh_vdata.fed holds */
 
 /* Constant registers (192 float4) */
 static NV2AVSConstants g_vsh_constants;
@@ -776,6 +779,10 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "    return i >= 0 && i < %d ? c[i] : float4(0, 0, 0, 0);\n"
         "}\n"
         "\n"
+        "float4 xboxFedInput(float4 v, float n) {\n"
+        "    return float4(v.x, n > 1 ? v.y : 0, n > 2 ? v.z : 0, n > 3 ? v.w : 1);\n"
+        "}\n"
+        "\n"
         "float4 xboxScreenspaceScale  : register(c%d);\n"
         "float4 xboxScreenspaceOffset : register(c%d);\n"
         "float4 xboxScreenspaceEnable : register(c%d);\n"
@@ -914,8 +921,16 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
     sb_append(&sb, "    /* Input registers */\n");
     for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
         if (inputs & (1u << i)) {
-            sb_append(&sb, "    float4 v%d = xboxVertexFed[%d][%d] != 0 ? input.v%d : "
-                      "xboxVertexData[%d];\n", i, i / 4, i % 4, i, i);
+            sb_append(&sb,
+                      "#ifdef RHI_D3D9\n"
+                      "    float4 v%d = xboxVertexFed[%d][%d] != 0 ? "
+                      "xboxFedInput(input.v%d, xboxVertexFed[%d][%d]) : xboxVertexData[%d];\n"
+                      "#else\n"
+                      "    float4 v%d = xboxVertexFed[%d][%d] != 0 ? input.v%d : "
+                      "xboxVertexData[%d];\n"
+                      "#endif\n",
+                      i, i / 4, i % 4, i, i / 4, i % 4, i,
+                      i, i / 4, i % 4, i, i);
         }
     }
     sb_append(&sb, "\n");
@@ -1365,6 +1380,22 @@ static VshCacheEntry *compile_shader(const DWORD *microcode, int num_insns,
  * reads that the declaration does not feed takes its current value
  * (VSH_VertexData) in the shader; D3D11 still requires every shader input
  * bound, so the layout gives it the vertex's first byte, which is unused. */
+/* How many components a vertex format carries (VshVertexData.fed). */
+static int vertex_format_components(RhiFormat f)
+{
+    switch (f) {
+    case RHI_FORMAT_R32_FLOAT: case RHI_FORMAT_R16_SNORM: case RHI_FORMAT_R8_UNORM:
+        return 1;
+    case RHI_FORMAT_R32G32_FLOAT: case RHI_FORMAT_R16G16_SNORM: case RHI_FORMAT_R8G8_UNORM:
+    case RHI_FORMAT_R16G16_UNORM: case RHI_FORMAT_R16G16_FLOAT:
+        return 2;
+    case RHI_FORMAT_R32G32B32_FLOAT:
+        return 3;
+    default:
+        return 4;
+    }
+}
+
 static RhiVertexLayout *create_vsh_input_layout_decl(
     uint16_t inputs_read, const NV2AVshSlot *vsh, const RhiShader *vs)
 {
@@ -1501,7 +1532,6 @@ HRESULT d3d8_vsh_init(void)
         g_vsh_vdata.value[r][3] = 1.0f;
     for (int k = 0; k < 3; k++)
         g_vsh_vdata.value[3][k] = 1.0f;
-    g_vsh_vdata_fed = 0;
     cbd.size = sizeof(VshVertexData);
     g_vsh_vdata_cb = rhi_buffer_create(&cbd, NULL);
     if (!g_vsh_vdata_cb) {
@@ -2113,7 +2143,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
     VshCacheEntry *entry;
     RhiVertexLayout *layout;
     void *mapped;
-    uint16_t fed;
+    float fed[NV2A_VS_MAX_INPUTS];
 
     if (!d3d8_vsh_is_programmable(handle) || !g_vsh_cb || !g_vsh_vdata_cb)
         return FALSE;
@@ -2170,22 +2200,21 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
          * nothing. */
         layout = get_cached_layout_decl(entry, vsh);
         rhi_set_vertex_layout(layout);
-        fed = 0;
+        memset(fed, 0, sizeof fed);
         for (int j = 0; j < vsh->decl_count; j++)
             if (vsh->decl[j].reg >= 0 && vsh->decl[j].reg < NV2A_VS_MAX_INPUTS)
-                fed |= (uint16_t)(1u << vsh->decl[j].reg);
+                fed[vsh->decl[j].reg] = (float)vertex_format_components(vsh->decl[j].format);
     } else {
         /* The FVF layout gives every register it reads a place in the
          * vertex, so all count as fed, as before current values existed. */
         layout = get_cached_layout(entry, d3d8_GetCurrentFVF());
         if (layout)
             rhi_set_vertex_layout(layout);
-        fed = 0xFFFF;
-    }
-    if (fed != g_vsh_vdata_fed) {
         for (int r = 0; r < NV2A_VS_MAX_INPUTS; r++)
-            g_vsh_vdata.fed[r / 4][r % 4] = (fed & (1u << r)) ? 1.0f : 0.0f;
-        g_vsh_vdata_fed = fed;
+            fed[r] = 4.0f;
+    }
+    if (memcmp(fed, g_vsh_vdata.fed, sizeof fed) != 0) {
+        memcpy(g_vsh_vdata.fed, fed, sizeof fed);
         g_vsh_vdata_dirty = TRUE;
     }
 

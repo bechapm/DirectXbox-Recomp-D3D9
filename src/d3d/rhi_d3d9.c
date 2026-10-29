@@ -34,7 +34,10 @@
  *  - No depth clamp: D3D9 always clips to 0 <= z <= w. Where the raster
  *    state asks for clamping (depth_clip 0, the title's draws by default)
  *    RHI_VP_ADJUST clamps each vertex's z into that range instead (flag at
- *    c254), so geometry past the far plane is drawn at it, not cut away.
+ *    c254), so geometry past the far plane is drawn at it, not cut away. A
+ *    vertex behind the eye (w <= 0) gets z = w / 2, so along an edge to it
+ *    z stays between 0 and w until w reaches 0: what remains is the w > 0
+ *    clip D3D11 makes anyway, not a near plane D3D11 has switched off.
  *  - Formats D3D9 has no equal of are converted on the way in (R8G8B8A8 to
  *    A8R8G8B8, R8G8 and the 16-bit one- and two-channel formats widened), so
  *    every image samples as it does under D3D11.
@@ -75,7 +78,11 @@ void d3d8_hlsl_note(const char *src, size_t len, const char *name,
 #define VS_SLOTS 8
 #define PS_SLOTS 8
 static const int g_vs_slot_base[VS_SLOTS] = {
-    232,    /* b0: unused by any vertex shader drawn here */
+    /* b0: read by no vertex shader drawn here. The fixed-function setup
+     * binds its transforms there all the same, and uploading them at c232
+     * once ran over RHI_VP_ADJUST at c255, without it being sent again:
+     * programs after a fixed-function draw were placed by its matrices. */
+    -1,
     RHI_D3D9_VSH_CONST_REG,         /* b1: a vertex program's c0-c191 */
     RHI_D3D9_VSH_SCREENSPACE_REG,   /* b2: its screen-space undo (3 registers) */
     RHI_D3D9_VSH_VERTEXDATA_REG,    /* b3: its input registers' current values (20) */
@@ -103,8 +110,8 @@ static const char kVsPrelude[] =
     "void rhi_vp_adjust_pos(inout float4 p)\n"
     "{\n"
     "    p.xy = p.xy * rhi_vp_adjust.xy + rhi_vp_adjust.zw * p.w;\n"
-    "    if (rhi_depth_clamp.x != 0 && p.w > 0)\n"
-    "        p.z = clamp(p.z, 0, p.w);\n"
+    "    if (rhi_depth_clamp.x != 0)\n"
+    "        p.z = p.w > 0 ? clamp(p.z, 0, p.w) : 0.5 * p.w;\n"
     "}\n"
     "#define RHI_VP_ADJUST(p) rhi_vp_adjust_pos(p)\n"
     "#line 1\n";
