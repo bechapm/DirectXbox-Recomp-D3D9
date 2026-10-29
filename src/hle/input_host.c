@@ -65,6 +65,9 @@ static const struct { const char *name; int kind; unsigned value; int sign; } FA
     { "x",     FAKE_ANALOG, HOST_ANALOG_X, 0 },   { "y",     FAKE_ANALOG, HOST_ANALOG_Y, 0 },
     { "white", FAKE_ANALOG, HOST_ANALOG_WHITE, 0 }, { "black", FAKE_ANALOG, HOST_ANALOG_BLACK, 0 },
     { "lt",    FAKE_ANALOG, HOST_ANALOG_LTRIG, 0 }, { "rt",    FAKE_ANALOG, HOST_ANALOG_RTRIG, 0 },
+    /* The binding config's names for the triggers, likewise: a script that
+     * fired with "rtrigger" stopped there, and every later step with it. */
+    { "ltrigger", FAKE_ANALOG, HOST_ANALOG_LTRIG, 0 }, { "rtrigger", FAKE_ANALOG, HOST_ANALOG_RTRIG, 0 },
     { "lthumb", FAKE_BUTTON, XBOX_LTHUMB, 0 },    { "rthumb", FAKE_BUTTON, XBOX_RTHUMB, 0 },
     { "lstick_up",    FAKE_STICK, STICK_LY,  1 }, { "lstick_down",  FAKE_STICK, STICK_LY, -1 },
     { "lstick_left",  FAKE_STICK, STICK_LX, -1 }, { "lstick_right", FAKE_STICK, STICK_LX,  1 },
@@ -350,8 +353,9 @@ static void record_input(const RecompInputGamepad *g)
     for (i = 0; i < (int)(sizeof FAKE / sizeof FAKE[0]); i++) {
         int on;
 
-        if (strncmp(FAKE[i].name, "dpad_", 5) == 0)
-            continue;                       /* aliases of up/down/left/right */
+        if (strncmp(FAKE[i].name, "dpad_", 5) == 0 ||
+            strcmp(FAKE[i].name, "ltrigger") == 0 || strcmp(FAKE[i].name, "rtrigger") == 0)
+            continue;                       /* aliases: up/down/left/right, lt/rt */
         on = record_pressed(g, i);
         if (on && !s_rec_on[i]) {
             s_rec_down[i] = t;
