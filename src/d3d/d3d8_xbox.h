@@ -1390,6 +1390,13 @@ void xbox_D3D8SetRemixCamera(const float *view);
    model-view was made from. NULL stops asking. */
 void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
 
+/* Every draw as lines (the fill mode forced to wireframe), on or off: a
+   debugging view, for a title's own key. RECOMP_WIREFRAME=1 starts with it
+   on. Clears are untouched, so the lines are drawn over each frame's clear
+   colour. */
+void xbox_D3D8SetWireframe(int on);
+int  xbox_D3D8Wireframe(void);
+
 /* A title's own debugging keys: whether the key with this Windows
    virtual-key code is held, and the game's window is in front (keys pressed
    in another application are never the game's). Off Windows the code is
