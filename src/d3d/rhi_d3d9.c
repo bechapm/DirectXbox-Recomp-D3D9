@@ -172,6 +172,25 @@ static RhiView          *g_bb_view;          /* the back buffer */
 static int               g_vrr;
 static RECT              g_present_rect;     /* where Present puts the back buffer */
 static int               g_present_rect_set;
+static int               g_in_scene;         /* between BeginScene and EndScene */
+
+/* D3D9 draws only inside BeginScene/EndScene, and refuses a draw outside one
+ * (D3DERR_INVALIDCALL). The first draw opens a scene; Present, and the
+ * copies and readbacks, close it first (StretchRect involving a depth
+ * surface must be outside one, and a readback wants the frame's draws). */
+static void scene_begin(void)
+{
+    if (!g_in_scene && g_dev && SUCCEEDED(IDirect3DDevice9_BeginScene(g_dev)))
+        g_in_scene = 1;
+}
+
+static void scene_end(void)
+{
+    if (g_in_scene) {
+        IDirect3DDevice9_EndScene(g_dev);
+        g_in_scene = 0;
+    }
+}
 
 /* The internal streams: vertex numbers for draws with no layout, and the
  * index ring each indexed draw copies its indices into. */
@@ -417,6 +436,7 @@ static void d9_device_destroy(void)
 {
     int i;
 
+    scene_end();
     if (g_bb_view) {
         if (g_bb_view->surf) IDirect3DSurface9_Release(g_bb_view->surf);
         free(g_bb_view);
@@ -472,6 +492,7 @@ static int32_t d9_present(uint32_t interval)
             }
         }
     }
+    scene_end();
     h = rhi_wait_begin();
     hr = IDirect3DDevice9_Present(g_dev, NULL, g_present_rect_set ? &g_present_rect : NULL,
                                   NULL, NULL);
@@ -1004,6 +1025,7 @@ static int d9_image_copy(RhiImage *dst, RhiImage *src)
         dst->desc.height != src->desc.height || dst->fmt != src->fmt ||
         !(dst->desc.bind & RHI_BIND_RENDER_TARGET))
         return -1;
+    scene_end();
     a = subresource_surface(dst, 0);
     b = subresource_surface(src, 0);
     hr = (a && b) ? IDirect3DDevice9_StretchRect(g_dev, b, NULL, a, NULL, D3DTEXF_NONE) : E_FAIL;
@@ -1050,6 +1072,7 @@ static int read_surface(const RhiImage *img, IDirect3DSurface9 *s, void *dst, ui
 
     if (FAILED(IDirect3DSurface9_GetDesc(s, &sd)))
         return -1;
+    scene_end();
     if (sd.Pool == D3DPOOL_DEFAULT) {
         if (!(sd.Usage & D3DUSAGE_RENDERTARGET) && sd.Type != D3DRTYPE_SURFACE)
             return -1;
@@ -1832,6 +1855,7 @@ static int prepare_draw(void)
 {
     if (!g_dev)
         return 0;
+    scene_begin();
     if (g_b.vp_dirty) {
         apply_viewport();
         g_b.vp_dirty = 0;
@@ -1885,16 +1909,36 @@ static UINT prim_count(uint32_t topology, uint32_t n, D3DPRIMITIVETYPE *type)
     }
 }
 
+/* A refused draw, said for the first few: what was bound, which is what
+ * D3D9 checks a draw against. */
+static void draw_failed(const char *what, HRESULT hr)
+{
+    static int said;
+    uint32_t tw, th;
+
+    if (said >= 8)
+        return;
+    said++;
+    target_size(&tw, &th);
+    fprintf(stderr, "[RHI] d3d9: %s refused (0x%08lX): vs %s, ps %s, layout %s, "
+            "target %ux%u, in scene %d\n", what, (unsigned long)hr,
+            g_b.vs ? "program" : "fixed", g_b.ps ? "program" : "fixed",
+            g_b.layout ? "title's" : "vertex numbers", tw, th, g_in_scene);
+}
+
 static void d9_draw(uint32_t n, uint32_t first)
 {
     D3DPRIMITIVETYPE type;
     UINT prims = prim_count(g_b.topology, n, &type);
+    HRESULT hr;
 
     if (!prims || !prepare_draw())
         return;
     if (!g_b.layout && first + n > VID_COUNT)
         return;
-    IDirect3DDevice9_DrawPrimitive(g_dev, type, first, prims);
+    hr = IDirect3DDevice9_DrawPrimitive(g_dev, type, first, prims);
+    if (FAILED(hr))
+        draw_failed("DrawPrimitive", hr);
 }
 
 static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
@@ -1906,6 +1950,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     const uint8_t *src;
     void *dst;
     DWORD flags = D3DLOCK_NOOVERWRITE;
+    HRESULT hr;
 
     if (!prims || !g_b.ib || !prepare_draw())
         return;
@@ -1932,8 +1977,10 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     memcpy(dst, src, bytes);
     IDirect3DIndexBuffer9_Unlock(g_iring[which]);
     IDirect3DDevice9_SetIndices(g_dev, g_iring[which]);
-    IDirect3DDevice9_DrawIndexedPrimitive(g_dev, type, base, lo, hi - lo + 1,
-                                          g_iring_pos[which] / isz, prims);
+    hr = IDirect3DDevice9_DrawIndexedPrimitive(g_dev, type, base, lo, hi - lo + 1,
+                                               g_iring_pos[which] / isz, prims);
+    if (FAILED(hr))
+        draw_failed("DrawIndexedPrimitive", hr);
     g_iring_pos[which] += (bytes + 15u) & ~15u;
 }
 
@@ -2057,6 +2104,7 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     from = subresource_surface(src->image, 0);
     if (!from)
         return -1;
+    scene_end();
     if (src_rect) {
         sr.left = src_rect->left; sr.top = src_rect->top;
         sr.right = src_rect->right; sr.bottom = src_rect->bottom;
@@ -2151,6 +2199,7 @@ int rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h)
     src = subresource_surface(scene->image, 0);
     if (!src)
         return -1;
+    scene_end();
     hr = IDirect3DDevice9_StretchRect(g_dev, src, NULL, g_bb_view->surf, NULL, D3DTEXF_NONE);
     IDirect3DSurface9_Release(src);
     if (FAILED(hr))
