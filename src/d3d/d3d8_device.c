@@ -2620,6 +2620,7 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
             g_title_2d_lo = lo;
             g_title_2d_hi = hi;
             d3d8_SetTwoDSqueeze(TRUE);
+            rhi_d3d9_title_says_2d();
         }
     }
     if (!g_2d_screen_space) {

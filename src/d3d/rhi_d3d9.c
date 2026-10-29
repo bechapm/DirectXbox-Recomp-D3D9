@@ -162,6 +162,7 @@ struct RhiImage {
     IDirect3DSurface9     *surf;    /* a depth image that is not sampled */
     int      screen_copy;           /* rhi_d3d9_copy_rect has copied the screen into it */
     uint64_t id;                    /* what it holds, for kind_2d (image_id) */
+    int      drawn;                 /* a draw has used it since it was made (remix_fresh_texture) */
 };
 
 struct RhiView {
@@ -282,6 +283,7 @@ static uint8_t g_samp_known[16][SAMP_COUNT];
  * it with the viewport correction applied (apply_projection). */
 static int     g_title_draw;          /* rhi_d3d9_title_draw: the next draw is the title's */
 static int     g_title_2d;            /* and is screen-space */
+static int     g_title_said_2d;       /* the title's own test said so (rhi_d3d9_title_says_2d) */
 static DWORD   g_title_alpha_test;    /* its D3DRS_ALPHATESTENABLE */
 static float   g_ff_proj[16];
 static int     g_ff_proj_set, g_ff_proj_dirty;
@@ -1042,6 +1044,79 @@ static uint64_t image_id(const RhiImage *img, const void *data, size_t bytes)
     return h;
 }
 
+/* A level of a 2D or cube texture. AddRef'd. */
+static IDirect3DSurface9 *level_surface(IDirect3DBaseTexture9 *t, int cube, uint32_t face,
+                                        uint32_t mip)
+{
+    IDirect3DSurface9 *s = NULL;
+
+    if (cube)
+        IDirect3DCubeTexture9_GetCubeMapSurface((IDirect3DCubeTexture9 *)t,
+                                                (D3DCUBEMAP_FACES)face, mip, &s);
+    else
+        IDirect3DTexture9_GetSurfaceLevel((IDirect3DTexture9 *)t, mip, &s);
+    return s;
+}
+
+/* Under Remix, a texture whose texels change after a draw has used it is
+ * made anew first. Remix knows a texture by the hash of its first level,
+ * taken once, when a draw first uses it (D3D9CommonTexture::SetupForRtxFrom),
+ * and not again when the texels change unless rtx.recomputeTextureHashOnWrite
+ * is set: Max Payne fills its graphic novel's pages after their first use,
+ * and Remix kept them blank. A new D3D9 texture is hashed afresh. What the
+ * old one held is copied over, so a write of a part lands on the rest as
+ * before. Managed 2D and cube textures only: what a title fills from the CPU.
+ * At most once between draws that use it, however many writes come between. */
+static void remix_fresh_texture(RhiImage *img)
+{
+    const RhiImageDesc *d = &img->desc;
+    uint32_t levels = d->mip_levels ? d->mip_levels : 1, faces = d->cube ? 6 : 1, f, m, i;
+    IDirect3DBaseTexture9 *old = img->tex, *nt = NULL;
+    HRESULT hr;
+
+    img->drawn = 0;
+    if (!g_remix_2d || img->pool != D3DPOOL_MANAGED || !old || d->type == RHI_IMAGE_3D)
+        return;
+    if (d->cube)
+        hr = IDirect3DDevice9_CreateCubeTexture(g_dev, d->width, levels, 0, img->fmt,
+                                                D3DPOOL_MANAGED,
+                                                (IDirect3DCubeTexture9 **)&nt, NULL);
+    else
+        hr = IDirect3DDevice9_CreateTexture(g_dev, d->width, d->height, levels, 0, img->fmt,
+                                            D3DPOOL_MANAGED, (IDirect3DTexture9 **)&nt, NULL);
+    if (FAILED(hr))
+        return;
+    for (f = 0; f < faces; f++)
+        for (m = 0; m < levels; m++) {
+            IDirect3DSurface9 *from = level_surface(old, d->cube, f, m);
+            IDirect3DSurface9 *to = level_surface(nt, d->cube, f, m);
+            D3DLOCKED_RECT a, b;
+            uint32_t h = d->height >> m, rows, y;
+
+            if (!h) h = 1;
+            rows = img->block ? (h + 3) / 4 : h;
+            if (from && to &&
+                SUCCEEDED(IDirect3DSurface9_LockRect(from, &a, NULL, D3DLOCK_READONLY))) {
+                if (SUCCEEDED(IDirect3DSurface9_LockRect(to, &b, NULL, 0))) {
+                    size_t n = (size_t)(a.Pitch < b.Pitch ? a.Pitch : b.Pitch);
+
+                    for (y = 0; y < rows; y++)
+                        memcpy((uint8_t *)b.pBits + (size_t)y * (uint32_t)b.Pitch,
+                               (const uint8_t *)a.pBits + (size_t)y * (uint32_t)a.Pitch, n);
+                    IDirect3DSurface9_UnlockRect(to);
+                }
+                IDirect3DSurface9_UnlockRect(from);
+            }
+            if (from) IDirect3DSurface9_Release(from);
+            if (to) IDirect3DSurface9_Release(to);
+        }
+    img->tex = nt;
+    for (i = 0; i < 16; i++)
+        if (g_b.tex[i] && g_b.tex[i]->image == img)
+            IDirect3DDevice9_SetTexture(g_dev, i, nt);
+    IDirect3DBaseTexture9_Release(old);
+}
+
 static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
                             const void *data, uint32_t row_pitch, uint32_t slice_pitch)
 {
@@ -1060,6 +1135,8 @@ static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
     rows = img->block ? (h + 3) / 4 : h;
     if (sub == 0 && !box && data)
         img->id = image_id(img, data, (size_t)row_pitch * rows);
+    if (img->drawn)
+        remix_fresh_texture(img);
 
     if (img->desc.type == RHI_IMAGE_3D) {
         IDirect3DVolumeTexture9 *vt = (IDirect3DVolumeTexture9 *)img->tex;
@@ -2039,9 +2116,15 @@ static void apply_constants(void)
 
 static int prepare_draw(void)
 {
+    int i;
+
     if (!g_dev)
         return 0;
     scene_begin();
+    if (g_remix_2d)
+        for (i = 0; i < 16; i++)
+            if (g_b.tex[i] && g_b.tex[i]->image)
+                g_b.tex[i]->image->drawn = 1;   /* remix_fresh_texture */
     if (g_b.vp_dirty) {
         apply_viewport();
         g_b.vp_dirty = 0;
@@ -2145,7 +2228,17 @@ static void draw_failed(const char *what, HRESULT hr)
  *    relearns which kinds come mid-frame (learn_2d), so a frame whose layout
  *    changes is wrong for one frame at most;
  *  - marked as UI otherwise, by binding g_ui_mark to vertex sampler 3, which
- *    RHI_VP_ADJUST samples.
+ *    RHI_VP_ADJUST samples, and to pixel stage 6. Remix looks for it among
+ *    the samplers the draw's shaders use, and a fixed-function draw has no
+ *    vertex shader: its pixel stages 0 to 6 are what counts. An Xbox title
+ *    has four stages, so stage 6 is never one it uses. (Under a register
+ *    combiner program the pixel shader's own samplers count instead, and
+ *    the mark is not among them: such a draw is not marked.)
+ * A fixed-function draw Remix judges by itself (pre-transformed, or under an
+ * orthographic projection), unless the title's own test said it is
+ * screen-space (rhi_d3d9_title_says_2d): Max Payne draws its HUD, menus and
+ * graphic novel as quads at one depth under the camera that draws the world,
+ * which Remix traced as geometry far out in the level, behind its walls.
  * The sky is the frame's first draws, before any that writes depth, drawn
  * through the level's own program with depth always passing and not
  * written. As geometry it was a closed box around the level that kept out
@@ -2157,6 +2250,8 @@ static void draw_failed(const char *what, HRESULT hr)
  * RECOMP_D3D9_SKIP_ORTHO=1 is a test switch, not for play: every such draw is
  * left out, to see what the 2D does to Remix's picture. */
 static int g_skip_next;
+
+#define UI_MARK_STAGE 6
 
 enum { DRAW_PLAIN, DRAW_SKIP, DRAW_UI };
 
@@ -2241,7 +2336,7 @@ static int screen_draw_kind(void)
         g_frame_last_3d = g_frame_draws;
         return DRAW_PLAIN;
     }
-    if (!g_b.vs)
+    if (!g_b.vs && !g_title_said_2d)
         return DRAW_PLAIN;      /* fixed function: Remix judges its 2D itself */
     if (t0 && t0->image && t0->image->screen_copy)
         return DRAW_SKIP;
@@ -2295,8 +2390,10 @@ static int remix_draw(void)
     if (zwrite && title_3d)
         g_frame_zwritten = 1;
     if (g_ui_mark && ui != g_ui_mark_bound) {
-        IDirect3DDevice9_SetTexture(g_dev, D3DVERTEXTEXTURESAMPLER3,
-                                    ui ? (IDirect3DBaseTexture9 *)g_ui_mark : NULL);
+        IDirect3DBaseTexture9 *t = ui ? (IDirect3DBaseTexture9 *)g_ui_mark : NULL;
+
+        IDirect3DDevice9_SetTexture(g_dev, D3DVERTEXTEXTURESAMPLER3, t);
+        IDirect3DDevice9_SetTexture(g_dev, UI_MARK_STAGE, t);
         g_ui_mark_bound = ui;
     }
     if (sky != g_sky_viewport) {
@@ -2526,6 +2623,14 @@ void rhi_d3d9_title_draw(int two_d)
 {
     g_title_draw = 1;
     g_title_2d = two_d != 0;
+    g_title_said_2d = 0;
+}
+
+void rhi_d3d9_title_says_2d(void)
+{
+    if (!g_title_draw || g_b.vs)
+        return;
+    g_title_2d = g_title_said_2d = 1;
 }
 
 void rhi_d3d9_set_texture_stage(uint32_t stage, uint32_t type, uint32_t value)
@@ -2653,6 +2758,7 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index)
 }
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value) { (void)state; (void)value; }
 void rhi_d3d9_title_draw(int two_d) { (void)two_d; }
+void rhi_d3d9_title_says_2d(void) {}
 int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                        const RhiRect *dst_rect)
 {

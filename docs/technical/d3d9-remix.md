@@ -113,8 +113,9 @@ lost, and the back buffer keeps its size.
 
 [d3d9-parity.md](d3d9-parity.md) lists every place this backend draws
 differently from D3D11, and what Remix is told about the title's 2D and sky
-(`remix_draw` in `rhi_d3d9.c`: 2D drawn by programs is marked as UI with a
-fixed texture, `rtx.uiTextures = 0xA2F17C4A8F3E3CEA`; the sky gets a viewport
+(`remix_draw` in `rhi_d3d9.c`: 2D drawn by programs, and fixed-function 2D
+the title's own test calls screen-space, is marked as UI with a fixed
+texture, `rtx.uiTextures = 0xA2F17C4A8F3E3CEA`; the sky gets a viewport
 Remix takes for sky). `RECOMP_D3D9_SKIP_ORTHO=1` leaves the 2D out, for
 testing.
 
