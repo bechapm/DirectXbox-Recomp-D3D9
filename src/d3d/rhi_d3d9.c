@@ -163,6 +163,7 @@ struct RhiImage {
     int      screen_copy;           /* rhi_d3d9_copy_rect has copied the screen into it */
     uint64_t id;                    /* what it holds, for kind_2d (image_id) */
     int      drawn;                 /* a draw has used it since it was made (remix_fresh_texture) */
+    uint64_t texels;                /* a hash of all of level 0 as last written whole */
 };
 
 struct RhiView {
@@ -1066,7 +1067,11 @@ static IDirect3DSurface9 *level_surface(IDirect3DBaseTexture9 *t, int cube, uint
  * and Remix kept them blank. A new D3D9 texture is hashed afresh. What the
  * old one held is copied over, so a write of a part lands on the rest as
  * before. Managed 2D and cube textures only: what a title fills from the CPU.
- * At most once between draws that use it, however many writes come between. */
+ * Only for writes to the level Remix hashes (subresource 0), and not for one
+ * that writes it whole with what it already held: a title that uploads the
+ * same texels every frame would otherwise get a new texture every frame,
+ * which Remix would load again every frame. At most once between draws that
+ * use it, however many writes come between. Each one is counted on stderr. */
 static void remix_fresh_texture(RhiImage *img)
 {
     const RhiImageDesc *d = &img->desc;
@@ -1115,6 +1120,30 @@ static void remix_fresh_texture(RhiImage *img)
         if (g_b.tex[i] && g_b.tex[i]->image == img)
             IDirect3DDevice9_SetTexture(g_dev, i, nt);
     IDirect3DBaseTexture9_Release(old);
+    {
+        static unsigned made;
+
+        if (++made <= 16 || !(made & 255))
+            fprintf(stderr, "[RHI] d3d9: Remix: a %ux%u texture (D3D9 format %u) written "
+                    "after use is made anew (%u so far)\n", d->width, d->height,
+                    (unsigned)img->fmt, made);
+    }
+}
+
+/* All of a level's bytes, for remix_fresh_texture. */
+static uint64_t texels_hash(const void *data, size_t bytes)
+{
+    const uint8_t *p = data;
+    uint64_t h = 1469598103934665603ull, w;
+    size_t i;
+
+    for (i = 0; i + 8 <= bytes; i += 8) {
+        memcpy(&w, p + i, 8);
+        h = (h ^ w) * 1099511628211ull;
+    }
+    for (; i < bytes; i++)
+        h = (h ^ p[i]) * 1099511628211ull;
+    return h;
 }
 
 static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
@@ -1135,8 +1164,13 @@ static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
     rows = img->block ? (h + 3) / 4 : h;
     if (sub == 0 && !box && data)
         img->id = image_id(img, data, (size_t)row_pitch * rows);
-    if (img->drawn)
-        remix_fresh_texture(img);
+    if (g_remix_2d && sub == 0 && data) {
+        uint64_t t = box ? 0 : texels_hash(data, (size_t)row_pitch * rows);
+
+        if (img->drawn && (box || t != img->texels))
+            remix_fresh_texture(img);
+        img->texels = t;                /* 0 after a part: not known */
+    }
 
     if (img->desc.type == RHI_IMAGE_3D) {
         IDirect3DVolumeTexture9 *vt = (IDirect3DVolumeTexture9 *)img->tex;
@@ -2239,6 +2273,10 @@ static void draw_failed(const char *what, HRESULT hr)
  * screen-space (rhi_d3d9_title_says_2d): Max Payne draws its HUD, menus and
  * graphic novel as quads at one depth under the camera that draws the world,
  * which Remix traced as geometry far out in the level, behind its walls.
+ * Only once the frame has drawn some 3D: a frame of nothing but such draws
+ * (Max Payne's menus), all marked UI, came out black under Remix, where the
+ * same draws marked after 3D (its HUD) show. Unmarked, they are traced, as
+ * before.
  * The sky is the frame's first draws, before any that writes depth, drawn
  * through the level's own program with depth always passing and not
  * written. As geometry it was a closed box around the level that kept out
@@ -2338,6 +2376,8 @@ static int screen_draw_kind(void)
     }
     if (!g_b.vs && !g_title_said_2d)
         return DRAW_PLAIN;      /* fixed function: Remix judges its 2D itself */
+    if (!g_b.vs && !g_frame_last_3d)
+        return DRAW_PLAIN;      /* title-declared, with no 3D yet this frame */
     if (t0 && t0->image && t0->image->screen_copy)
         return DRAW_SKIP;
     {
