@@ -1390,6 +1390,18 @@ void xbox_D3D8SetRemixCamera(const float *view);
    model-view was made from. NULL stops asking. */
 void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
 
+/* A title's own debugging keys: whether the key with this Windows
+   virtual-key code is held, and the game's window is in front (keys pressed
+   in another application are never the game's). Off Windows the code is
+   translated to SDL's scancode. Any thread; read it once a frame. */
+int  xbox_D3D8KeyDown(int vk);
+
+/* A line of the title's on the overlay for `ms` milliseconds (0: two
+   seconds), whether or not the frame-rate counter is shown, and on stderr
+   as "[NOTICE] ...". NULL or "" takes it down. For a title's debugging
+   tools to say what a key did. Call it on the thread that presents. */
+void xbox_D3D8Notice(const char *text, unsigned ms);
+
 /* The view the next vertex-program draw would hand Remix: the source's, or
    the last xbox_D3D8SetRemixCamera gave. For frame capture, which records
    it so a replay has it (D3D8CAP_REMIX_VIEW). */

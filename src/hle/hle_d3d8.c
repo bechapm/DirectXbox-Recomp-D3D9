@@ -845,6 +845,19 @@ static int shadow_key_down(int key)
 #define SHADOW_KEY_F11  HOST_KEY_F11
 #endif
 
+/* d3d8_xbox.h: a title's own keys (its debugging tools), read only while
+ * the game's window is in front, as F9-F11 are. */
+int xbox_D3D8KeyDown(int vk)
+{
+#if defined(_WIN32)
+    return g_shadow_hwnd && GetForegroundWindow() == g_shadow_hwnd &&
+           recomp_key_down(vk);
+#else
+    return g_shadow_host && host_window_has_focus(g_shadow_host) &&
+           recomp_key_down(vk);
+#endif
+}
+
 /* The surfaces the XDK sets as target and depth inside CreateDevice -- the
  * frame buffer and the automatic depth buffer, 0 until seen -- and the host
  * device's own depth surface (shadow_set_render_target). */
@@ -2988,6 +3001,23 @@ void hle_set_frame_cap(const char *name)
         xbox_Nv2aFlipGateCycle();
 }
 
+/* xbox_D3D8Notice: a title's line, shown under its own deadline whether or
+ * not the counter is on. Written and read on the presenting thread. */
+static char      g_notice[96];
+static ULONGLONG g_notice_until;
+
+void xbox_D3D8Notice(const char *text, unsigned ms)
+{
+    if (!text || !*text) {
+        g_notice_until = 0;
+        return;
+    }
+    snprintf(g_notice, sizeof g_notice, "%s", text);
+    g_notice_until = GetTickCount64() + (ms ? ms : 2000u);
+    fprintf(stderr, "[NOTICE] %s\n", g_notice);
+    fflush(stderr);
+}
+
 static void overlay_frame(void)
 {
     static int configured, f9_was_down, f10_was_down, f11_was_down;
@@ -3063,6 +3093,17 @@ static void overlay_frame(void)
     }
 
     g_overlay_shown = enabled;
+    if (g_notice_until && GetTickCount64() < g_notice_until) {
+        static char both[sizeof g_overlay_line + sizeof g_notice + 4];
+
+        if (enabled)
+            snprintf(both, sizeof both, "%s   %s", line, g_notice);
+        else
+            snprintf(both, sizeof both, "%s", g_notice);
+        d3d8_overlay_set_text(both);
+        return;
+    }
+    g_notice_until = 0;
     d3d8_overlay_set_text(enabled ? line : NULL);
 }
 

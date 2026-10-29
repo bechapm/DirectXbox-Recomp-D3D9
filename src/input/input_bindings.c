@@ -872,6 +872,20 @@ static int key_down(KeyCache *kc, int vk)
 #endif
 }
 
+/* input_bindings.h: one key, now, for a title's own keys (through
+ * xbox_D3D8KeyDown, which adds whether the game's window is in front). Not
+ * cached: a title asks once a frame, not per pad read. */
+int recomp_key_down(int vk)
+{
+    if (vk <= 0 || vk > 255)
+        return 0;
+#if defined(_WIN32)
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+#else
+    return sdl_key_down(vk);
+#endif
+}
+
 /* Start of a sample: drop answers older than the window above. */
 static void key_cache_tick(void)
 {
