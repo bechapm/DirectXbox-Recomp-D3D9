@@ -248,8 +248,11 @@ static struct {
     RhiView         *rt, *ds;
     RhiViewport      vp;
     int              vp_dirty;
+    RECT             vp_pixels;          /* the pixels D3D11 would draw in vp */
+    int              vp_clip;            /* and D3D9's viewport covers more */
     RhiRect          scissor;
     int              scissor_dirty;
+    int              raster_scissor;     /* the raster state's scissor test */
     RhiDepthState   *depth;
     uint32_t         stencil_ref;
     RhiRasterState  *raster;
@@ -1738,16 +1741,40 @@ static void apply_viewport(void)
         g_b.vp.x = g_b.vp.y = 0.0f;
         g_b.vp.max_depth = 1.0f;
     }
-    x0 = floorf(g_b.vp.x + 0.5f);
-    y0 = floorf(g_b.vp.y + 0.5f);
-    x1 = floorf(g_b.vp.x + w + 0.5f);
-    y1 = floorf(g_b.vp.y + h + 0.5f);
+    /* Rounded out, never in: a viewport at a fraction of a pixel (every
+     * title's, from the console's pixel offset, d3d8_device.c) rounded to
+     * the nearest started at pixel 1, and nothing was ever drawn in the
+     * target's first column and row (two of each at three times the
+     * resolution). The pixels D3D11 would draw are those whose centres lie
+     * in the rectangle, left and top inclusive; where the rounded viewport
+     * covers more, apply_scissor cuts it back to them. */
+    x0 = floorf(g_b.vp.x);
+    y0 = floorf(g_b.vp.y);
+    x1 = ceilf(g_b.vp.x + w);
+    y1 = ceilf(g_b.vp.y + h);
     if (x0 < 0.0f) x0 = 0.0f;
     if (y0 < 0.0f) y0 = 0.0f;
     if (x1 > (float)tw) x1 = (float)tw;
     if (y1 > (float)th) y1 = (float)th;
     if (x1 <= x0) x1 = x0 + 1.0f;
     if (y1 <= y0) y1 = y0 + 1.0f;
+    {
+        float px0 = ceilf(g_b.vp.x - 0.5f), py0 = ceilf(g_b.vp.y - 0.5f);
+        float px1 = ceilf(g_b.vp.x + w - 0.5f), py1 = ceilf(g_b.vp.y + h - 0.5f);
+
+        if (px0 < x0) px0 = x0;
+        if (py0 < y0) py0 = y0;
+        if (px1 > x1) px1 = x1;
+        if (py1 > y1) py1 = y1;
+        if (px1 < px0) px1 = px0;
+        if (py1 < py0) py1 = py0;
+        g_b.vp_pixels.left = (LONG)px0;
+        g_b.vp_pixels.top = (LONG)py0;
+        g_b.vp_pixels.right = (LONG)px1;
+        g_b.vp_pixels.bottom = (LONG)py1;
+        g_b.vp_clip = px0 > x0 || py0 > y0 || px1 < x1 || py1 < y1;
+        g_b.scissor_dirty = 1;
+    }
     aw = x1 - x0;
     ah = y1 - y0;
 
@@ -1770,16 +1797,34 @@ static void apply_viewport(void)
     g_ff_proj_dirty = 1;
 }
 
+/* The title's scissor when its raster state asks for one, cut to the
+ * viewport's pixels when D3D9's whole-pixel viewport covers more of them
+ * (apply_viewport). */
 static void apply_scissor(void)
 {
     uint32_t tw, th;
     RECT r;
 
+    set_rs(D3DRS_SCISSORTESTENABLE, g_b.raster_scissor || g_b.vp_clip);
+    if (!g_b.raster_scissor && !g_b.vp_clip)
+        return;
     target_size(&tw, &th);
-    r.left = g_b.scissor.left < 0 ? 0 : g_b.scissor.left;
-    r.top = g_b.scissor.top < 0 ? 0 : g_b.scissor.top;
-    r.right = g_b.scissor.right > (int32_t)tw ? (LONG)tw : g_b.scissor.right;
-    r.bottom = g_b.scissor.bottom > (int32_t)th ? (LONG)th : g_b.scissor.bottom;
+    if (g_b.raster_scissor) {
+        r.left = g_b.scissor.left < 0 ? 0 : g_b.scissor.left;
+        r.top = g_b.scissor.top < 0 ? 0 : g_b.scissor.top;
+        r.right = g_b.scissor.right > (int32_t)tw ? (LONG)tw : g_b.scissor.right;
+        r.bottom = g_b.scissor.bottom > (int32_t)th ? (LONG)th : g_b.scissor.bottom;
+    } else {
+        r.left = r.top = 0;
+        r.right = (LONG)tw;
+        r.bottom = (LONG)th;
+    }
+    if (g_b.vp_clip) {
+        if (r.left < g_b.vp_pixels.left) r.left = g_b.vp_pixels.left;
+        if (r.top < g_b.vp_pixels.top) r.top = g_b.vp_pixels.top;
+        if (r.right > g_b.vp_pixels.right) r.right = g_b.vp_pixels.right;
+        if (r.bottom > g_b.vp_pixels.bottom) r.bottom = g_b.vp_pixels.bottom;
+    }
     if (r.right < r.left) r.right = r.left;
     if (r.bottom < r.top) r.bottom = r.top;
     IDirect3DDevice9_SetScissorRect(g_dev, &r);
@@ -1831,7 +1876,10 @@ static void apply_depth_raster(void)
      * a depth. Every depth buffer here is 24-bit. */
     set_rs(D3DRS_DEPTHBIAS, f2dw((float)r->depth_bias / 16777216.0f));
     set_rs(D3DRS_SLOPESCALEDEPTHBIAS, f2dw(r->slope_scaled_depth_bias));
-    set_rs(D3DRS_SCISSORTESTENABLE, r->scissor ? TRUE : FALSE);
+    if (g_b.raster_scissor != (r->scissor != 0)) {
+        g_b.raster_scissor = r->scissor != 0;
+        g_b.scissor_dirty = 1;
+    }
     set_rs(D3DRS_MULTISAMPLEANTIALIAS, r->multisample ? TRUE : FALSE);
     set_rs(D3DRS_ANTIALIASEDLINEENABLE, r->antialiased_lines ? TRUE : FALSE);
     if (g_b.clamp[0] != (r->depth_clip ? 0.0f : 1.0f)) {
@@ -1953,13 +2001,14 @@ static int prepare_draw(void)
         apply_viewport();
         g_b.vp_dirty = 0;
     }
-    if (g_b.scissor_dirty) {
-        apply_scissor();
-        g_b.scissor_dirty = 0;
-    }
     if (g_b.ds_dirty) {
         apply_depth_raster();
         g_b.ds_dirty = 0;
+    }
+    /* After the raster state, which says whether the title's scissor is on. */
+    if (g_b.scissor_dirty) {
+        apply_scissor();
+        g_b.scissor_dirty = 0;
     }
     if (g_b.samp_dirty) {
         apply_samplers();
@@ -2306,7 +2355,7 @@ static void d9_clear_depth(RhiView *v, uint32_t flags, float z, uint8_t s)
     IDirect3DDevice9_Clear(g_dev, 0, NULL, f, 0, z, s);
     IDirect3DDevice9_SetDepthStencilSurface(g_dev, cur);
     if (cur) IDirect3DSurface9_Release(cur);
-    g_b.vp_dirty = g_b.ds_dirty = 1;
+    g_b.vp_dirty = g_b.ds_dirty = g_b.scissor_dirty = 1;
 }
 
 int rhi_d3d9_clear_rects(RhiView *color, RhiView *depth, uint32_t width, uint32_t height,
