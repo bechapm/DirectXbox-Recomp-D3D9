@@ -783,6 +783,8 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "    return float4(v.x, n > 1 ? v.y : 0, n > 2 ? v.z : 0, n > 3 ? v.w : 1);\n"
         "}\n"
         "\n"
+        "#define XBOX_BRANCH [branch]\n"
+        "\n"
         "float4 xboxScreenspaceScale  : register(c%d);\n"
         "float4 xboxScreenspaceOffset : register(c%d);\n"
         "float4 xboxScreenspaceEnable : register(c%d);\n"
@@ -807,6 +809,9 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "    float4 xboxVertexData[%d];\n"
         "    float4 xboxVertexFed[4];\n"
         "};\n"
+        "#endif\n"
+        "#ifndef XBOX_BRANCH\n"
+        "#define XBOX_BRANCH\n"
         "#endif\n"
         "\n",
         NV2A_VS_MAX_CONSTANTS, RHI_D3D9_VSH_CONST_REG, NV2A_VS_MAX_CONSTANTS,
@@ -1055,13 +1060,18 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
      * filled the screen's top-right quarter from the centre outwards, one
      * flat colour. Such a vertex is now dropped (all zero), so a triangle of
      * them has no area. */
+    /* XBOX_BRANCH: Shader Model 3 (D3D9) has to branch here. Flattened, fxc
+     * made the undo a lerp from the raw screen position, whose z is in the
+     * depth buffer's units (~1.6e7): undone + (raw - raw) in fp32 kept
+     * nothing of a clip z below 1, and the Siberia tunnel's walls and sky
+     * landed at the far plane or the near one. */
     sb_append(&sb,
         "    /* Undo the Xbox screen-space transform */\n"
-        "    if (xboxScreenspaceEnable.x != 0) {\n"
+        "    XBOX_BRANCH if (xboxScreenspaceEnable.x != 0) {\n"
         "        float xboxW = oPos.w;\n"
         "        oPos -= xboxScreenspaceOffset;\n"
         "        oPos /= xboxScreenspaceScale;\n"
-        "        if (xboxScreenspaceEnable.y != 0 && xboxScreenspaceScale.z != 0)\n"
+        "        XBOX_BRANCH if (xboxScreenspaceEnable.y != 0 && xboxScreenspaceScale.z != 0)\n"
         "            oPos.z = xboxW / xboxScreenspaceScale.z;\n"
         "        if (oPos.w == 0) {\n"
         "            if (abs(oPos.x) > 1.0e4 || abs(oPos.y) > 1.0e4)\n"
