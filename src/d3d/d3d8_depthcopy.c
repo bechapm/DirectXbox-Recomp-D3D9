@@ -25,6 +25,8 @@
  *
  * Built the way d3d8_screencopy.c is: one oversized triangle, Load at integer
  * pixels so no sampler is bound, the output state put back afterwards.
+ * Under D3D9, which has no Load, the depth (an INTZ texture there) is
+ * sampled at the texel's centre with a point sampler instead: the same texel.
  */
 #include "d3d8_internal.h"
 #include "d3d8_xbox.h"
@@ -42,6 +44,7 @@ static struct {
     RhiBlendState  *blend;
     RhiDepthState  *depth;
     RhiRasterState *raster;
+    RhiSampler     *point;      /* D3D9's sampling of the depth */
     unsigned long   copies;
 } g;
 
@@ -50,10 +53,31 @@ static struct {
 typedef struct {
     float scale_x, scale_y, wbuffer, pad0;
     float m33, m34, m43, m44;   /* the W-buffered projection, when wbuffer */
+    float inv_w, inv_h, pad1, pad2;     /* 1 / the depth's size, for D3D9's sampling */
 } DepthCopyConstants;
 
 static const char kSource[] =
-    "cbuffer DepthCopy : register(b7) { float4 scale; float4 proj; };\n"
+    /* Direct3D 9 (rhi_d3d9.c): b7 is the pixel stage's c32, the vertex
+     * number comes from a stream, and VPOS is the pixel's corner, half a
+     * pixel from SV_Position's centre. */
+    "#ifdef RHI_D3D9\n"
+    "float4 scale : register(c32);\n"
+    "float4 proj : register(c33);\n"
+    "float4 inv_size : register(c34);\n"
+    "struct VSOut { float4 pos : POSITION; };\n"
+    "VSOut vs_main(float id : RHI_VERTEX_ID) {\n"
+    "    float2 c = float2(id == 1 ? 2.0 : 0.0, id == 2 ? 2.0 : 0.0);\n"
+    "    VSOut o;\n"
+    "    o.pos = float4(c * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+    "    RHI_VP_ADJUST(o.pos);\n"
+    "    return o;\n"
+    "}\n"
+    "sampler2D depth : register(s9);\n"
+    "float4 ps_main(float2 vpos : VPOS) : COLOR0 {\n"
+    "    float2 p = floor((vpos + 0.5) * scale.xy);\n"
+    "    float d = tex2Dlod(depth, float4((p + 0.5) * inv_size.xy, 0, 0)).r;\n"
+    "#else\n"
+    "cbuffer DepthCopy : register(b7) { float4 scale; float4 proj; float4 inv_size; };\n"
     "struct VSOut { float4 pos : SV_Position; };\n"
     "VSOut vs_main(uint id : SV_VertexID) {\n"
     "    float2 c = float2((id << 1) & 2, id & 2);\n"
@@ -65,6 +89,7 @@ static const char kSource[] =
     "float4 ps_main(VSOut i) : SV_Target {\n"
     "    int2 p = int2(i.pos.xy * scale.xy);\n"
     "    float d = depth.Load(int3(p, 0));\n"
+    "#endif\n"
     /* Z back to W: the eye distance ze from z = (ze*_33 + _43) / (ze*_34 +
      * _44), then w = ze*_34 + _44 over the far W the XDK scales the W-buffer
      * by, (_44 - _43) / (_33 - _34) * _34 + _44 -- the D3D formula. */
@@ -73,10 +98,20 @@ static const char kSource[] =
     "        float wfar = (proj.w - proj.z) / (proj.x - proj.y) * proj.y + proj.w;\n"
     "        d = (ze * proj.y + proj.w) / wfar;\n"
     "    }\n"
+    /* Z24S8 read as B8G8R8A8: B = stencil, G = bits 0-7, R = 8-15, A = 16-23.
+     * Shader Model 3 has no integers, so the bytes are split arithmetically:
+     * exact, since a float holds every 24-bit integer. */
+    "#ifdef RHI_D3D9\n"
+    "    float z = round(saturate(d) * 16777215.0);\n"
+    "    float hi = floor(z / 65536.0);\n"
+    "    float mid = floor((z - hi * 65536.0) / 256.0);\n"
+    "    float lo = z - hi * 65536.0 - mid * 256.0;\n"
+    "    return float4(mid, lo, 0.0, hi) / 255.0;\n"
+    "#else\n"
     "    uint z = (uint)round(saturate(d) * 16777215.0);\n"
-    /* Z24S8 read as B8G8R8A8: B = stencil, G = bits 0-7, R = 8-15, A = 16-23. */
     "    return float4(float((z >> 8) & 255u), float(z & 255u), 0.0,\n"
     "                  float((z >> 16) & 255u)) / 255.0;\n"
+    "#endif\n"
     "}\n";
 
 static void fail(const char *what)
@@ -140,6 +175,15 @@ static int create(void)
     rd.cull = RHI_CULL_NONE;
     rd.depth_clip = 1;
     if (!(g.raster = rhi_raster_state_create(&rd))) { fail("CreateRasterizerState"); return 0; }
+    if (rhi_d3d9_active()) {
+        RhiSamplerDesc sd;
+
+        memset(&sd, 0, sizeof sd);
+        sd.filter = RHI_FILTER_POINT;
+        sd.address_u = sd.address_v = sd.address_w = RHI_ADDRESS_CLAMP;
+        sd.max_lod = 0.0f;
+        if (!(g.point = rhi_sampler_create(&sd))) { fail("CreateSamplerState"); return 0; }
+    }
     return 1;
 }
 
@@ -157,16 +201,6 @@ HRESULT xbox_D3D8CopyDepthToTexture(IDirect3DTexture8 *dst)
 
     if (!rhi_device_ready() || !tex || !tex->image || !d3d8_GetDepthImage())
         return E_INVALIDARG;
-    /* Not under D3D9: Shader Model 3 has no Load, and the copy would be a
-     * full-screen draw that RTX Remix took for the scene's. The texture
-     * keeps what it held. */
-    if (rhi_d3d9_active()) {
-        static int said;
-        if (!said++)
-            fprintf(stderr, "D3D8 depth copy: not done under the D3D9 backend; an effect "
-                    "that reads the depth as a texture will not see it\n");
-        return S_OK;
-    }
     if (!create())
         return E_FAIL;
     src = d3d8_GetDepthSampledView();
@@ -205,7 +239,9 @@ HRESULT xbox_D3D8CopyDepthToTexture(IDirect3DTexture8 *dst)
         if (c.wbuffer == 0.0f)
             c.m33 = c.m34 = c.m43 = c.m44 = 0.0f;
     }
-    c.pad0 = 0.0f;
+    c.pad0 = c.pad1 = c.pad2 = 0.0f;
+    c.inv_w = dd.width ? 1.0f / (float)dd.width : 0.0f;
+    c.inv_h = dd.height ? 1.0f / (float)dd.height : 0.0f;
     if ((mapped = rhi_buffer_map(g.cb, RHI_MAP_WRITE_DISCARD)) != NULL) {
         memcpy(mapped, &c, sizeof c);
         rhi_buffer_unmap(g.cb);
@@ -219,6 +255,8 @@ HRESULT xbox_D3D8CopyDepthToTexture(IDirect3DTexture8 *dst)
     rhi_set_shader(RHI_STAGE_PIXEL, g.ps);
     rhi_set_uniform_buffers(RHI_STAGE_PIXEL, 7, 1, &g.cb);
     rhi_set_textures(9, 1, &src);
+    if (g.point)
+        rhi_set_samplers(9, 1, &g.point);
     rhi_set_blend_state(g.blend, blend_factor, 0xFFFFFFFF);
     rhi_set_depth_state(g.depth, 0);
     rhi_set_raster_state(g.raster);
@@ -240,5 +278,6 @@ void xbox_D3D8DepthCopyShutdown(void)
     rhi_blend_state_destroy(g.blend);    g.blend = NULL;
     rhi_depth_state_destroy(g.depth);    g.depth = NULL;
     rhi_raster_state_destroy(g.raster);  g.raster = NULL;
+    if (g.point) { rhi_sampler_destroy(g.point); g.point = NULL; }
     g.tried = 0;
 }

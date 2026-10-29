@@ -51,7 +51,7 @@ it.
 | Formats | DXGI | Converted where D3D9 has no equal (RGBA swapped, R8/R8G8/16-bit widened, A8 stored white, R11G11B10 widened to half float); sampled depth is `INTZ` | All RHI colour formats mapped | Low; costs upload time and memory |
 | Screen copies | A draw | `StretchRect` with point filtering (a draw would be taken by Remix for the scene) | Matches on TS2 | Low; a scaled copy filters as point, not as a draw would |
 | Clears with rectangles | A draw | D3D9's `Clear` with rectangles | Matches on TS2 | Low |
-| Depth copy to a texture | A draw reading depth | **Not done**: the texture keeps what it held | **Gap.** Effects that read depth (soft particles, fog volumes, depth of field) lose it | Medium; fixable by sampling `INTZ` in a pixel shader |
+| Depth copy to a texture | A draw that Loads the depth | The same draw in Shader Model 3: the `INTZ` depth sampled at texel centres with a point sampler, the bytes split arithmetically | New, untested. Under Remix a copy into a texture the back buffer's size may be dropped: Remix ignores a draw with no position into its primary target | Medium: Rainbow Six 3's depth of field and bloom read it |
 | Shadow-map compare | Comparison sampler, four texels filtered | One texel compared | **Gap** | Medium for titles with shadow buffers |
 | Multisampling | Supported | None (`d9_sample_count_supported` is 1x only) | **Gap** | Low: titles that ask for it draw at 1x |
 | 2D array images | Supported | First layer only | **Gap** | Low |

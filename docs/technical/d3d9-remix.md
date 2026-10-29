@@ -41,7 +41,7 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
 | Alpha test | in the pixel shader | D3D9's own render state, title draws only (`rhi_d3d9_title_draw`) |
 | Clear with rectangles | a quad per rectangle | D3D9 `Clear` with rectangles |
 | Screen copy | a draw | `StretchRect` |
-| Depth copy | a draw | not done (said once) |
+| Depth copy | a draw | the same draw in Shader Model 3, sampling `INTZ` |
 | Display resolve | a box-filter draw to the swap chain | `StretchRect` to a back buffer the scene's size; `Present` stretches it into the window, bars drawn with GDI |
 | Touch controls | drawn | not drawn |
 
@@ -99,8 +99,8 @@ lost, and the back buffer keeps its size.
 1. Build as usual (MSVC). Nothing links `d3d9.lib`: `d3d9.dll` is loaded at
    run time, so Remix's is found before the system's.
 2. Without Remix first: `RECOMP_D3D8_BACKEND=d3d9`, with the system's D3D9.
-   The picture should match D3D11's apart from register-combiner effects and
-   the depth copy.
+   The picture should match D3D11's apart from long register-combiner
+   programs under fixed function ([d3d9-parity.md](d3d9-parity.md)).
 3. With Remix: copy the 64-bit runtime (`d3d9.dll`, `.trex/` and the rest of
    the runtime package) beside the executable, and run with the same setting.
    Alt+X opens Remix's menu. Mark the HUD and font textures as UI textures
