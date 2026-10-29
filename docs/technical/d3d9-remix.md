@@ -104,7 +104,10 @@ lost, and the back buffer keeps its size.
 3. With Remix: copy the 64-bit runtime (`d3d9.dll`, `.trex/` and the rest of
    the runtime package) beside the executable, and run with the same setting.
    Alt+X opens Remix's menu. Mark the HUD and font textures as UI textures
-   there and save `rtx.conf` beside the executable.
+   there and save `rtx.conf` beside the executable. Add
+   `rtx.minimizeBlasMerging = True`, or first-person weapons and other
+   geometry carried with the camera are misplaced while it turns
+   ([d3d9-parity.md](d3d9-parity.md)).
 
 ## Known gaps
 
