@@ -1396,9 +1396,9 @@ void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
    translated to SDL's scancode. Any thread; read it once a frame. */
 int  xbox_D3D8KeyDown(int vk);
 
-/* A line of the title's on the overlay for `ms` milliseconds (0: two
-   seconds), whether or not the frame-rate counter is shown; after it when
-   it is. NULL or "" takes it down. Not logged, since a title may refresh
+/* Text of the title's on the overlay for `ms` milliseconds (0: two
+   seconds), whether or not the frame-rate counter is shown (under it when
+   it is): up to four lines separated by '\n', about 60 characters each. NULL or "" takes it down. Not logged, since a title may refresh
    it every frame. For a title's debugging tools to say what a key did, or
    to show a readout. Call it on the thread that presents. */
 void xbox_D3D8Notice(const char *text, unsigned ms);

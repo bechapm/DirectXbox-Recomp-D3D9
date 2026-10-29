@@ -1,5 +1,5 @@
 /*
- * d3d8_overlay.c -- one line of text over the finished frame.
+ * d3d8_overlay.c -- a few lines of text over the finished frame.
  *
  * See d3d8_overlay.h for what this touches on the device and what it
  * deliberately does not. The short version: no sampler, no vertex buffer, no
@@ -22,8 +22,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define OVERLAY_W    512
-#define OVERLAY_H     28
+/* Up to OVERLAY_LINES lines ('\n' between them), each OVERLAY_LINE_H
+ * pixels: one line is the 28-pixel strip the frame-rate counter always was. */
+#define OVERLAY_W         640
+#define OVERLAY_LINES       5
+#define OVERLAY_LINE_H     22
+#define OVERLAY_TOP         4
+#define OVERLAY_H        (6 + OVERLAY_LINES * OVERLAY_LINE_H)
 #define OVERLAY_PAD    8      /* from the picture's top-left corner, in 480-line pixels */
 
 static struct {
@@ -44,7 +49,8 @@ static struct {
 #endif
     void           *bits;      /* the DIB's pixels, BGRA top-down */
     int             text_w;    /* what the last render measured */
-    char            text[128];
+    int             text_h;
+    char            text[512];
 } g;
 
 /* b7 in both stages: the four texture stages a title can use are b0..b3 and
@@ -202,28 +208,42 @@ static const uint8_t kGlyphs[94 * 8] = {
 };
 
 /* Fill the bitmap with `text`, white on black, each glyph at 2x: 14 pixels
- * across (the glyphs leave their eighth column blank) and 16 down. Returns
- * the width drawn, padding included. */
-static int glyph_render(uint32_t *bits, const char *text, int len)
+ * across (the glyphs leave their eighth column blank) and 16 down, a line
+ * every OVERLAY_LINE_H. Returns the widest line drawn, padding included;
+ * *lines_out the number of lines. */
+static int glyph_render(uint32_t *bits, const char *text, int len, int *lines_out)
 {
-    const int scale = 2, advance = 7 * scale, left = 6, top = (OVERLAY_H - 8 * scale) / 2;
-    int i, row, col, x = left;
+    const int scale = 2, advance = 7 * scale, left = 6;
+    const int first = OVERLAY_TOP + (OVERLAY_LINE_H - 8 * scale) / 2;
+    int i, row, col, x = left, line = 0, widest = 0;
 
     for (i = 0; i < OVERLAY_W * OVERLAY_H; i++)
         bits[i] = 0xFF000000u;                  /* opaque black, as ETO_OPAQUE */
-    for (i = 0; i < len && x + advance <= OVERLAY_W; i++, x += advance) {
+    for (i = 0; i < len; i++) {
         unsigned char c = (unsigned char)text[i];
+        const int top = first + line * OVERLAY_LINE_H;
         const uint8_t *g;
 
+        if (c == '\n') {
+            if (x > widest) widest = x;
+            if (++line >= OVERLAY_LINES) break;
+            x = left;
+            continue;
+        }
+        if (x + advance > OVERLAY_W)
+            continue;                           /* past the edge: clipped */
+        x += advance;
         if (c < 33 || c > 126)
             continue;                           /* space, or nothing to draw */
         g = &kGlyphs[(c - 33) * 8];
         for (row = 0; row < 8 * scale; row++)
             for (col = 0; col < 8 * scale; col++)
-                if (g[row / scale] & (1u << (col / scale)) && x + col < OVERLAY_W)
-                    bits[(top + row) * OVERLAY_W + x + col] = 0xFFFFFFFFu;
+                if (g[row / scale] & (1u << (col / scale)) && x - advance + col < OVERLAY_W)
+                    bits[(top + row) * OVERLAY_W + x - advance + col] = 0xFFFFFFFFu;
     }
-    return x + left > OVERLAY_W ? OVERLAY_W : x + left;
+    if (x > widest) widest = x;
+    *lines_out = line < OVERLAY_LINES ? line + 1 : OVERLAY_LINES;
+    return widest + left > OVERLAY_W ? OVERLAY_W : widest + left;
 }
 #endif
 
@@ -355,12 +375,12 @@ static int overlay_create(void)
 static int overlay_set_text(const char *text)
 {
 #if defined(_WIN32)
-    wchar_t wide[128];
+    wchar_t wide[512];
     RECT rect;
     SIZE extent;
-    int i;
+    int i, start;
 #endif
-    int len;
+    int len, lines = 0;
 
     if (strcmp(text, g.text) == 0)
         return g.text_w > 0;
@@ -373,24 +393,36 @@ static int overlay_set_text(const char *text)
     for (i = 0; i < len; i++)
         wide[i] = (wchar_t)(unsigned char)g.text[i];
 
-    rect.left = rect.top = 0;
-    rect.right = OVERLAY_W;
-    rect.bottom = OVERLAY_H;
     memset(g.bits, 0, (size_t)OVERLAY_W * OVERLAY_H * 4);
-    if (!GetTextExtentPoint32W(g.dc, wide, len, &extent))
-        extent.cx = OVERLAY_W;
-    g.text_w = extent.cx + 12 > OVERLAY_W ? OVERLAY_W : (int)extent.cx + 12;
-    ExtTextOutW(g.dc, 6, 4, ETO_OPAQUE, &rect, wide, (UINT)len, NULL);
+    g.text_w = 0;
+    for (start = 0; start <= len && lines < OVERLAY_LINES; lines++) {
+        int end = start;
+
+        while (end < len && wide[end] != L'\n')
+            end++;
+        rect.left = 0;
+        rect.top = lines ? OVERLAY_TOP + lines * OVERLAY_LINE_H : 0;
+        rect.right = OVERLAY_W;
+        rect.bottom = OVERLAY_TOP + (lines + 1) * OVERLAY_LINE_H + 2;
+        if (!GetTextExtentPoint32W(g.dc, wide + start, end - start, &extent))
+            extent.cx = OVERLAY_W;
+        if ((int)extent.cx + 12 > g.text_w)
+            g.text_w = extent.cx + 12 > OVERLAY_W ? OVERLAY_W : (int)extent.cx + 12;
+        ExtTextOutW(g.dc, 6, OVERLAY_TOP + lines * OVERLAY_LINE_H, ETO_OPAQUE, &rect,
+                    wide + start, (UINT)(end - start), NULL);
+        start = end + 1;
+    }
     GdiFlush();
 #else
-    g.text_w = glyph_render((uint32_t *)g.bits, g.text, len);
+    g.text_w = glyph_render((uint32_t *)g.bits, g.text, len, &lines);
 #endif
+    g.text_h = 6 + lines * OVERLAY_LINE_H;
 
     rhi_image_update(g.texture, 0, NULL, g.bits, OVERLAY_W * 4, 0);
     return g.text_w > 0;
 }
 
-static char g_want[128];       /* the line asked for, drawn by each present */
+static char g_want[512];       /* the text asked for, drawn by each present */
 
 void d3d8_overlay_set_text(const char *text)
 {
@@ -423,9 +455,9 @@ void d3d8_overlay_present(RhiView *out, unsigned width, unsigned height,
     c.x = -1.0f + 2.0f * (float)(pic_x + OVERLAY_PAD * scale) / (float)width;
     c.y =  1.0f - 2.0f * (float)(pic_y + OVERLAY_PAD * scale) / (float)height;
     c.w =  2.0f * (float)(g.text_w * scale) / (float)width;
-    c.h =  2.0f * (float)(OVERLAY_H * scale) / (float)height;
+    c.h =  2.0f * (float)(g.text_h * scale) / (float)height;
     c.tex_w = (float)g.text_w;
-    c.tex_h = (float)OVERLAY_H;
+    c.tex_h = (float)g.text_h;
     c.pad0 = (float)OVERLAY_W;     /* the texture's own size, for D3D9's shader */
     c.pad1 = (float)OVERLAY_H;
     memcpy(mapped, &c, sizeof c);

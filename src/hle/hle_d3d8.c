@@ -3005,7 +3005,7 @@ void hle_set_frame_cap(const char *name)
  * not the counter is on. Written and read on the presenting thread. Not
  * logged: a title may refresh it every frame, and says in its own log what
  * is worth saying. */
-static char      g_notice[96];
+static char      g_notice[400];
 static ULONGLONG g_notice_until;
 
 void xbox_D3D8Notice(const char *text, unsigned ms)
@@ -3097,7 +3097,7 @@ static void overlay_frame(void)
         static char both[sizeof g_overlay_line + sizeof g_notice + 4];
 
         if (enabled)
-            snprintf(both, sizeof both, "%s   %s", line, g_notice);
+            snprintf(both, sizeof both, "%s\n%s", line, g_notice);
         else
             snprintf(both, sizeof both, "%s", g_notice);
         d3d8_overlay_set_text(both);
