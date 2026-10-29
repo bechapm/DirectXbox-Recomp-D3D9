@@ -38,7 +38,11 @@ it.
    repeat at all (a title reading the time, bots, effects) are compared
    from one run instead: `RECOMP_D3D8_CAPTURE_AT=<from>:<count>:<every>`
    captures the frames, and `d3d8_replay` draws each through D3D11 and
-   through plain D3D9, so both pictures are of the very same frame. Mean absolute difference
+   through plain D3D9, so both pictures are of the very same frame.
+   Captures also hold the camera handed to Remix (`D3D8CAP_REMIX_VIEW`,
+   format 11), so the same capture replayed from Remix's folder gives a
+   repeatable frame for comparing one Remix setting or hint against
+   another. Mean absolute difference
    and the share of pixels past a small threshold, per frame. Anything real
    here is a **backend** difference.
 2. **Plain D3D9 against Remix, in the same run.** Under Remix every draw is

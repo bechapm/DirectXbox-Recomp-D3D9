@@ -1655,6 +1655,18 @@ static void replay_chunk(Replay *r, const D3D8CapChunk *c)
     case D3D8CAP_DEPTH_COPY:
         do_depth_copy(r, c);
         break;
+    case D3D8CAP_REMIX_VIEW: {
+        /* The title's camera, for Remix under the D3D9 backend: a replay
+         * has no guest memory for the title's view source to read. */
+        const D3D8CapRemixView *p = c->data;
+
+        if (c->bytes < sizeof *p) {
+            r->malformed++;
+            break;
+        }
+        xbox_D3D8SetRemixCamera(p->m);
+        break;
+    }
     case D3D8CAP_DEPTH_SURFACE:
         do_depth_surface(r, c);
         break;

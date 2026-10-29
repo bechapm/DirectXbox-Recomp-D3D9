@@ -2150,6 +2150,12 @@ void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]))
     g_remix_view_source = source;
 }
 
+void xbox_D3D8RemixView(float view[16])
+{
+    if (!g_remix_view_source || !g_remix_view_source(view))
+        memcpy(view, g_remix_view, sizeof g_remix_view);
+}
+
 /* RECOMP_D3D9_SKIP_VS=<hash>[,<hash>...]: a test switch. Under D3D9, draws
  * through those programs (hex, as the logs print them) are left out, to
  * find which draws a fault in Remix's picture comes with. */

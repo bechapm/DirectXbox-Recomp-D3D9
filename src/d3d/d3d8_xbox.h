@@ -1390,6 +1390,11 @@ void xbox_D3D8SetRemixCamera(const float *view);
    model-view was made from. NULL stops asking. */
 void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
 
+/* The view the next vertex-program draw would hand Remix: the source's, or
+   the last xbox_D3D8SetRemixCamera gave. For frame capture, which records
+   it so a replay has it (D3D8CAP_REMIX_VIEW). */
+void xbox_D3D8RemixView(float view[16]);
+
 /**
  * Present frame and pump window messages.
  * Called from recompiled game code (replaces RW driver Present path).

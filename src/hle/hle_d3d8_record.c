@@ -68,6 +68,8 @@ static unsigned long  g_every;       /* RECOMP_D3D8_CAPTURE_EVERY, 0 = once */
 static unsigned long  g_min_draws;   /* RECOMP_D3D8_CAPTURE_MINDRAWS, 0 = any */
 static unsigned       g_files;
 static char           g_file[1024];  /* the file being written */
+static float          g_cap_view[16];   /* the Remix view last recorded */
+static int            g_cap_view_set;   /* ...in this capture */
 /* RECOMP_D3D8_CAPTURE_AT: windows of swaps, as RECOMP_HLE_D3D8_DUMP_AT. */
 static struct { unsigned long from, count, every; } g_windows[16];
 static int            g_window_count;
@@ -792,6 +794,7 @@ start:
     } else {
         snprintf(g_file, sizeof g_file, "%s", g_path);
     }
+    g_cap_view_set = 0;
     g_cap = d3d8cap_create(g_file, (uint32_t)swaps, width, height);
     if (!g_cap) {
         fprintf(stderr, "[HLE-D3D8] capture: cannot write %s; capture off\n", g_file);
@@ -1399,6 +1402,19 @@ static void op_draw_indexed_up(const void *arg)
                                 p->stride);
 }
 
+/* Before a recorded draw: the view Remix gets with it, when it changed. */
+static void rec_remix_view(void)
+{
+    D3D8CapRemixView c;
+
+    xbox_D3D8RemixView(c.m);
+    if (g_cap_view_set && memcmp(c.m, g_cap_view, sizeof g_cap_view) == 0)
+        return;
+    memcpy(g_cap_view, c.m, sizeof g_cap_view);
+    g_cap_view_set = 1;
+    chunk(D3D8CAP_REMIX_VIEW, &c, sizeof c, NULL, 0, NULL, 0);
+}
+
 HRESULT host_DrawPrimitiveUP(IDirect3DDevice8 *dev, D3DPRIMITIVETYPE type,
                              UINT prims, const void *vertices, UINT stride)
 {
@@ -1418,6 +1434,7 @@ HRESULT host_DrawPrimitiveUP(IDirect3DDevice8 *dev, D3DPRIMITIVETYPE type,
         uint64_t bytes = (uint64_t)d3d8_up_vertices_read(type, prims) * stride;
 
         if (bytes <= 0xFFFFFFFFu) {
+            rec_remix_view();
             c.prim_type    = (uint32_t)type;
             c.prim_count   = prims;
             c.stride       = stride;
@@ -1476,6 +1493,7 @@ HRESULT host_DrawIndexedPrimitiveUP(IDirect3DDevice8 *dev, D3DPRIMITIVETYPE type
         uint64_t vbytes = (uint64_t)num_vertices * stride;
 
         if (ibytes <= 0xFFFFFFFFu && vbytes <= 0xFFFFFFFFu) {
+            rec_remix_view();
             c.prim_type    = (uint32_t)type;
             c.min_index    = min_index;
             c.num_vertices = num_vertices;
