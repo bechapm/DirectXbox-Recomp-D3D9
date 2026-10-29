@@ -107,11 +107,15 @@ static const char kVsPrelude[] =
     "#define RHI_VERTEX_ID TEXCOORD15\n"
     "float4 rhi_vp_adjust : register(c255);\n"
     "float4 rhi_depth_clamp : register(c254);\n"
+    /* Sampled so that Remix sees what is bound there (the UI marker,
+     * mark_ui_draw); c254.w is always 0, so it changes nothing. */
+    "sampler2D rhi_ui_mark : register(s3);\n"
     "void rhi_vp_adjust_pos(inout float4 p)\n"
     "{\n"
     "    p.xy = p.xy * rhi_vp_adjust.xy + rhi_vp_adjust.zw * p.w;\n"
     "    if (rhi_depth_clamp.x != 0 && p.w > 0)\n"
     "        p.z = clamp(p.z, 0, p.w);\n"
+    "    p.z += tex2Dlod(rhi_ui_mark, float4(0, 0, 0, 0)).x * rhi_depth_clamp.w;\n"
     "}\n"
     "#define RHI_VP_ADJUST(p) rhi_vp_adjust_pos(p)\n"
     "#line 1\n";
@@ -156,6 +160,7 @@ struct RhiImage {
     D3DPOOL  pool;
     IDirect3DBaseTexture9 *tex;     /* 2D, cube or volume */
     IDirect3DSurface9     *surf;    /* a depth image that is not sampled */
+    int      screen_copy;           /* rhi_d3d9_copy_rect has copied the screen into it */
 };
 
 struct RhiView {
@@ -326,6 +331,11 @@ int rhi_d3d9_active(void)
     return g_rhi == &rhi_d3d9_backend && g_dev != NULL;
 }
 
+/* The title's 2D under Remix (mark_ui_draw). */
+static IDirect3DTexture9 *g_ui_mark;
+static int g_ui_mark_bound, g_remix_2d;
+static int g_frame_copied, g_prev_frame_copied;    /* rhi_d3d9_copy_rect, this frame and the last */
+
 static void forget_state(void)
 {
     memset(g_rs_known, 0, sizeof g_rs_known);
@@ -334,6 +344,7 @@ static void forget_state(void)
     memset(&g_b, 0, sizeof g_b);
     g_b.vp_dirty = g_b.scissor_dirty = g_b.ds_dirty = g_b.samp_dirty = 1;
     g_ff_proj_set = g_ff_proj_dirty = 0;
+    g_ui_mark_bound = 0;
 }
 
 static RhiView *wrap_surface(IDirect3DSurface9 *s, uint32_t kind)
@@ -377,6 +388,39 @@ static int make_internal_streams(void)
         return -1;
     g_iring_pos[0] = g_iring_pos[1] = IRING_BYTES;    /* the first use discards */
     return 0;
+}
+
+/* The texture that tells Remix a draw is UI (mark_ui_draw). Remix knows a
+ * texture by the XXH3 hash of its first level's texels, so these never
+ * change: rtx.uiTextures = 0xA2F17C4A8F3E3CEA. Whether Remix is the d3d9.dll
+ * loaded decides whether it is used: Remix exports its API's entry point. */
+static void make_ui_mark(void)
+{
+    D3DLOCKED_RECT lr;
+    const char *e = getenv("RECOMP_D3D9_REMIX_2D");
+    uint32_t x, y;
+
+    g_remix_2d = e && e[0] ? e[0] == '1'
+               : GetProcAddress(g_dll, "remixapi_InitializeLibrary") != NULL;
+    if (!g_remix_2d)
+        return;
+    if (FAILED(IDirect3DDevice9_CreateTexture(g_dev, 16, 16, 1, 0, D3DFMT_A8R8G8B8,
+                                              D3DPOOL_MANAGED, &g_ui_mark, NULL))) {
+        g_ui_mark = NULL;
+        g_remix_2d = 0;
+        return;
+    }
+    if (SUCCEEDED(IDirect3DTexture9_LockRect(g_ui_mark, 0, &lr, NULL, 0))) {
+        for (y = 0; y < 16; y++)
+            for (x = 0; x < 16; x++) {
+                uint32_t v = 0xFF000000u | (x * 16u + 1u) << 16 | (y * 16u + 2u) << 8 |
+                             (((x ^ y) * 16u + 3u) & 0xFFu);
+                memcpy((uint8_t *)lr.pBits + y * (uint32_t)lr.Pitch + x * 4u, &v, 4);
+            }
+        IDirect3DTexture9_UnlockRect(g_ui_mark, 0);
+    }
+    fprintf(stderr, "[RHI] d3d9: Remix: the title's 2D is drawn as UI "
+            "(rtx.uiTextures = 0xA2F17C4A8F3E3CEA)\n");
 }
 
 static int d9_device_create(const RhiDeviceDesc *dd)
@@ -448,6 +492,7 @@ static int d9_device_create(const RhiDeviceDesc *dd)
         fprintf(stderr, "[RHI] d3d9: the internal streams could not be made\n");
         return -1;
     }
+    make_ui_mark();
     /* D3D9's defaults that differ from what the renderer assumes: lighting
      * on, and no separate alpha blend. */
     set_rs(D3DRS_LIGHTING, FALSE);
@@ -470,6 +515,7 @@ static void d9_device_destroy(void)
         if (g_iring[i]) { IDirect3DIndexBuffer9_Release(g_iring[i]); g_iring[i] = NULL; }
     if (g_vid_decl) { IDirect3DVertexDeclaration9_Release(g_vid_decl); g_vid_decl = NULL; }
     if (g_vid_vb)   { IDirect3DVertexBuffer9_Release(g_vid_vb); g_vid_vb = NULL; }
+    if (g_ui_mark)  { IDirect3DTexture9_Release(g_ui_mark); g_ui_mark = NULL; }
     if (g_dev) { IDirect3DDevice9_Release(g_dev); g_dev = NULL; }
     if (g_d3d) { IDirect3D9_Release(g_d3d); g_d3d = NULL; }
     /* d3d9.dll stays loaded: Remix does not expect to be unloaded. */
@@ -517,6 +563,8 @@ static int32_t d9_present(uint32_t interval)
         }
     }
     scene_end();
+    g_prev_frame_copied = g_frame_copied;
+    g_frame_copied = 0;
     h = rhi_wait_begin();
     hr = IDirect3DDevice9_Present(g_dev, NULL, g_present_rect_set ? &g_present_rect : NULL,
                                   NULL, NULL);
@@ -1980,23 +2028,65 @@ static void draw_failed(const char *what, HRESULT hr)
             g_b.layout ? "title's" : "vertex numbers", tw, th, g_in_scene);
 }
 
-/* RECOMP_D3D9_SKIP_ORTHO=1: a test switch, not for play. Program draws
- * given an orthographic projection (the title's 2D: Remix ray traces a
- * vertex program's draw as geometry whatever its projection) are left out,
- * to see what they do to Remix's picture. */
+/* Remix ray traces every program draw as geometry. The title draws its 2D
+ * (HUD, text, sprites, the screen glow and blur passes) with programs too,
+ * in 640x480 pixels just in front of the camera under an orthographic
+ * projection, and Remix took that for a wall across the view: black, grey
+ * and garbage frames, and a dark scene until the 2D stopped.
+ *
+ * Remix rasterises a draw instead when a texture listed in rtx.uiTextures is
+ * bound, and composites its ray-traced picture at the first such draw;
+ * whatever comes after is rasterised on top. So under Remix a program draw
+ * with an orthographic projection is
+ *  - left out when it samples a copy of the screen (the blur passes: the copy
+ *    holds the rasterised picture, which they would paste over the ray-traced
+ *    one), or when it comes before the frame's first screen copy and the
+ *    frame before had one (the muzzle flash's glow, drawn before the weapon:
+ *    as UI it would composite the picture before the weapon was drawn);
+ *  - marked as UI otherwise, by binding g_ui_mark to vertex sampler 3, which
+ *    RHI_VP_ADJUST samples.
+ * RECOMP_D3D9_REMIX_2D=0 turns this off, =1 on without Remix.
+ *
+ * RECOMP_D3D9_SKIP_ORTHO=1 is a test switch, not for play: every such draw is
+ * left out, to see what the 2D does to Remix's picture. */
 static int g_cam_ortho, g_skip_next;
 
-static int skip_ortho_draw(void)
-{
-    static int on = -1;
-    int ortho = g_cam_ortho, skip = g_skip_next;
+enum { DRAW_PLAIN, DRAW_SKIP, DRAW_UI };
 
-    if (on < 0) {
+static int screen_draw_kind(void)
+{
+    static int skip_all = -1;
+    int ortho = g_cam_ortho, skip = g_skip_next;
+    RhiView *t0 = g_b.tex[0];
+
+    if (skip_all < 0) {
         const char *e = getenv("RECOMP_D3D9_SKIP_ORTHO");
-        on = e && e[0] == '1';
+        skip_all = e && e[0] == '1';
     }
     g_cam_ortho = g_skip_next = 0;
-    return skip || (on && ortho);
+    if (skip || (skip_all && ortho))
+        return DRAW_SKIP;
+    if (!ortho || !g_b.vs || !g_remix_2d)
+        return DRAW_PLAIN;
+    if ((t0 && t0->image && t0->image->screen_copy) ||
+        (!g_frame_copied && g_prev_frame_copied))
+        return DRAW_SKIP;
+    return DRAW_UI;
+}
+
+/* Whether the next draw is UI, to Remix; 0 if it is not to be drawn. */
+static int mark_ui_draw(void)
+{
+    int kind = screen_draw_kind(), ui = kind == DRAW_UI;
+
+    if (kind == DRAW_SKIP)
+        return 0;
+    if (g_ui_mark && ui != g_ui_mark_bound) {
+        IDirect3DDevice9_SetTexture(g_dev, D3DVERTEXTEXTURESAMPLER3,
+                                    ui ? (IDirect3DBaseTexture9 *)g_ui_mark : NULL);
+        g_ui_mark_bound = ui;
+    }
+    return 1;
 }
 
 void rhi_d3d9_skip_next_draw(void)
@@ -2010,7 +2100,7 @@ static void d9_draw(uint32_t n, uint32_t first)
     UINT prims = prim_count(g_b.topology, n, &type);
     HRESULT hr;
 
-    if (skip_ortho_draw() || !prims || !prepare_draw())
+    if (!mark_ui_draw() || !prims || !prepare_draw())
         return;
     if (!g_b.layout && first + n > VID_COUNT)
         return;
@@ -2030,7 +2120,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     DWORD flags = D3DLOCK_NOOVERWRITE;
     HRESULT hr;
 
-    if (skip_ortho_draw() || !prims || !g_b.ib || !prepare_draw())
+    if (!mark_ui_draw() || !prims || !g_b.ib || !prepare_draw())
         return;
     src_off = g_b.ib_offset + first * isz;
     if (src_off + bytes > g_b.ib->desc.size || bytes > IRING_BYTES)
@@ -2194,7 +2284,12 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     hr = IDirect3DDevice9_StretchRect(g_dev, from, src_rect ? &sr : NULL, dst->surf,
                                       dst_rect ? &dr : NULL, D3DTEXF_POINT);
     IDirect3DSurface9_Release(from);
-    return SUCCEEDED(hr) ? 0 : -1;
+    if (FAILED(hr))
+        return -1;
+    if (dst->image)
+        dst->image->screen_copy = 1;
+    g_frame_copied = 1;
+    return 0;
 }
 
 /* ---- fixed function and Remix --------------------------------------------------------- */
