@@ -1373,6 +1373,15 @@ void xbox_D3D8InterpEnd(void);
    register and nothing is taken for affine. */
 void xbox_D3D8SetInterpRegisters(int projection, int affine_first, int affine_count);
 
+/* The D3D9 backend's camera for RTX Remix (docs/technical/d3d9-remix.md):
+   the title's world-to-view transform, a row-vector D3DMATRIX, given each
+   frame before its vertex-program draws by a title that knows where its
+   camera is. Remix carries what a program draws back through the program's
+   projection and this into the world, so lights and replacements stay put
+   as the camera moves. NULL, or never called, is identity: the world Remix
+   sees is then the camera's own space. Does nothing under other backends. */
+void xbox_D3D8SetRemixCamera(const float *view);
+
 /**
  * Present frame and pump window messages.
  * Called from recompiled game code (replaces RW driver Present path).

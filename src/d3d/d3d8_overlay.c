@@ -55,6 +55,29 @@ typedef struct {
 } OverlayConstants;
 
 static const char kShaderSource[] =
+    /* Direct3D 9 (rhi_d3d9.c): b7 is the vertex stage's c216, the vertex
+     * number comes from a stream, and the glyphs are fetched with the
+     * sampler's default point filter at the texel, which size.zw (the
+     * texture's own size) turns the coordinate into. */
+    "#ifdef RHI_D3D9\n"
+    "float4 rect : register(c216);\n"
+    "float4 size : register(c217);\n"
+    "struct VSOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };\n"
+    "VSOut vs_main(float id : RHI_VERTEX_ID) {\n"
+    "    float2 c = float2(fmod(id, 2.0), floor(id * 0.5));\n"
+    "    VSOut o;\n"
+    "    o.pos = float4(rect.x + c.x * rect.z, rect.y - c.y * rect.w, 0, 1);\n"
+    "    o.uv  = c * size.xy / size.zw;\n"
+    "    RHI_VP_ADJUST(o.pos);\n"
+    "    return o;\n"
+    "}\n"
+    "sampler2D tex : register(s8);\n"
+    "float4 ps_main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+    "    float a = tex2D(tex, uv).r;\n"
+    "    float3 rgb = lerp(float3(0, 0, 0), float3(1, 1, 1), a);\n"
+    "    return float4(rgb, max(a, 0.45));\n"
+    "}\n"
+    "#else\n"
     "cbuffer Overlay : register(b7) {\n"
     "    float4 rect;        // x, y, w, h in clip space\n"
     "    float4 size;        // texture width, height\n"
@@ -75,7 +98,8 @@ static const char kShaderSource[] =
      * panel under them keeps the text readable over a bright frame. */
     "    float3 rgb = lerp(float3(0, 0, 0), float3(1, 1, 1), a);\n"
     "    return float4(rgb, max(a, 0.45));\n"
-    "}\n";
+    "}\n"
+    "#endif\n";
 
 #if !defined(_WIN32)
 /* ASCII 33..126, eight rows each, the least significant bit leftmost.
@@ -402,7 +426,8 @@ void d3d8_overlay_present(RhiView *out, unsigned width, unsigned height,
     c.h =  2.0f * (float)(OVERLAY_H * scale) / (float)height;
     c.tex_w = (float)g.text_w;
     c.tex_h = (float)OVERLAY_H;
-    c.pad0 = c.pad1 = 0.0f;
+    c.pad0 = (float)OVERLAY_W;     /* the texture's own size, for D3D9's shader */
+    c.pad1 = (float)OVERLAY_H;
     memcpy(mapped, &c, sizeof c);
     rhi_buffer_unmap(g.cb);
 

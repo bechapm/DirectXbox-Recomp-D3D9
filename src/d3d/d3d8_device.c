@@ -18,6 +18,7 @@
 #include "d3d8_internal.h"
 #include "d3d8_display.h"
 #include "d3d8_fvf.h"         /* d3d8_fvf_transformed: draw_extent */
+#include "rhi_d3d9.h"
 #include "recomp_config.h"   /* RECOMP_VRR */
 #include <stdio.h>
 #include <string.h>
@@ -535,6 +536,22 @@ static void present_scene(void)
     if (!rhi_swapchain_view() || !s->rhi_scene_srv)
         return;
 
+    /* D3D9 (RTX Remix): the scene is copied to a back buffer of its own
+     * size, which Present puts in the window at the picture's shape, so the
+     * overlay is drawn over the whole of it. */
+    if (rhi_d3d9_active()) {
+        UINT shape_w, shape_h;
+
+        d3d8_display_output_shape(s->width, s->height, &shape_w, &shape_h);
+        if (rhi_d3d9_present_scene(s->rhi_scene_srv, shape_w, shape_h) != 0)
+            return;
+        d3d8_overlay_present(rhi_swapchain_view(), s->swap_width, s->swap_height, 0, 0,
+                             s->swap_height);
+        d3d8_touch_draw(rhi_swapchain_view(), s->swap_width, s->swap_height);
+        keep_presented();
+        return;
+    }
+
     /* Follow the window. DXGI stretches the back buffer to the client
      * rectangle whatever shape it is, which is the one way a scene that is
      * right all the way through still reaches the screen distorted. Keep
@@ -674,16 +691,24 @@ static HRESULT create_device_and_swap_chain(
 {
     RhiDeviceDesc dd;
 
+    UINT guest_w = pp->BackBufferWidth ? pp->BackBufferWidth : 640;
+    UINT guest_h = pp->BackBufferHeight ? pp->BackBufferHeight : 480;
+
     rhi_select_backend(NULL);
     memset(&dd, 0, sizeof(dd));
     dd.window = pp->hDeviceWindow;
-    dd.width = pp->BackBufferWidth ? pp->BackBufferWidth : 640;
-    dd.height = pp->BackBufferHeight ? pp->BackBufferHeight : 480;
+    dd.width = guest_w;
+    dd.height = guest_h;
     dd.buffer_count = pp->BackBufferCount ? pp->BackBufferCount : 1;
     dd.windowed = pp->Windowed ? 1 : 0;
 #ifdef _DEBUG
     dd.debug = 1;
 #endif
+    /* D3D9, for RTX Remix: the back buffer is the scene's size and stays
+     * so (rhi_d3d9_present_scene), since Remix takes only the draws into a
+     * target of the back buffer's size for the scene's. */
+    if (strcmp(rhi_backend_name(), "d3d9") == 0)
+        d3d8_display_scene_size(guest_w, guest_h, &dd.width, &dd.height);
     if (rhi_device_create(&dd) != 0)
         return E_FAIL;
 
@@ -691,8 +716,8 @@ static HRESULT create_device_and_swap_chain(
 
     /* The swap chain matches the window and the guest's presentation size;
      * the scene is whatever the display policy makes of it. */
-    state->present_width = dd.width;
-    state->present_height = dd.height;
+    state->present_width = guest_w;
+    state->present_height = guest_h;
     state->swap_width = dd.width;
     state->swap_height = dd.height;
     d3d8_display_scene_size(state->present_width, state->present_height,

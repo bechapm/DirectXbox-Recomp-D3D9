@@ -22,6 +22,7 @@
 #include <float.h>
 #include <math.h>
 #include "d3d8_vsh.h"
+#include "rhi_d3d9.h"
 #include "recomp_config.h"
 #include <string.h>
 #include <stdio.h>
@@ -761,10 +762,26 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
 
     sb_init(&sb, buf, bufsize);
 
-    /* Constant buffer: 192 float4 constants */
+    /* Constant buffer: 192 float4 constants. Direct3D 9 has no constant
+     * buffers: under it (RHI_D3D9, Shader Model 3) the same values are
+     * plain constant registers, at the ones rhi_d3d9.c uploads buffers
+     * b1-b3 to (rhi_d3d9.h), and an int is no uint. */
     sb_append(&sb,
         "/* Auto-generated NV2A vertex shader */\n"
         "\n"
+        "#ifdef RHI_D3D9\n"
+        "float4 c[%d] : register(c%d);\n"
+        "\n"
+        "float4 crel(int i) {\n"
+        "    return i >= 0 && i < %d ? c[i] : float4(0, 0, 0, 0);\n"
+        "}\n"
+        "\n"
+        "float4 xboxScreenspaceScale  : register(c%d);\n"
+        "float4 xboxScreenspaceOffset : register(c%d);\n"
+        "float4 xboxScreenspaceEnable : register(c%d);\n"
+        "float4 xboxVertexData[%d] : register(c%d);\n"
+        "float4 xboxVertexFed[4] : register(c%d);\n"
+        "#else\n"
         "cbuffer VSH_Constants : register(b1) {\n"
         "    float4 c[%d];\n"
         "};\n"
@@ -783,13 +800,32 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "    float4 xboxVertexData[%d];\n"
         "    float4 xboxVertexFed[4];\n"
         "};\n"
-        "\n", NV2A_VS_MAX_CONSTANTS, NV2A_VS_MAX_CONSTANTS, NV2A_VS_MAX_INPUTS);
+        "#endif\n"
+        "\n",
+        NV2A_VS_MAX_CONSTANTS, RHI_D3D9_VSH_CONST_REG, NV2A_VS_MAX_CONSTANTS,
+        RHI_D3D9_VSH_SCREENSPACE_REG, RHI_D3D9_VSH_SCREENSPACE_REG + 1,
+        RHI_D3D9_VSH_SCREENSPACE_REG + 2,
+        NV2A_VS_MAX_INPUTS, RHI_D3D9_VSH_VERTEXDATA_REG,
+        RHI_D3D9_VSH_VERTEXDATA_REG + NV2A_VS_MAX_INPUTS,
+        NV2A_VS_MAX_CONSTANTS, NV2A_VS_MAX_CONSTANTS, NV2A_VS_MAX_INPUTS);
 
-    /* Input structure - only declare used inputs */
+    /* Input structure - only declare used inputs. Direct3D 9 matches a
+     * vertex declaration to a shader by usage, which has no generic one, so
+     * there each register takes the semantic rhi_d3d9_attr_semantic gives it
+     * -- POSITION, NORMAL, TEXCOORD0 -- which is also what tells RTX Remix
+     * what each one holds. */
     sb_append(&sb, "struct VS_IN {\n");
     for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
         if (inputs & (1u << i)) {
-            sb_append(&sb, "    float4 v%d : ATTR%d;\n", i, i);
+            int sem_index;
+            const char *sem = rhi_d3d9_attr_semantic(i, &sem_index);
+
+            sb_append(&sb,
+                "#ifdef RHI_D3D9\n"
+                "    float4 v%d : %s%d;\n"
+                "#else\n"
+                "    float4 v%d : ATTR%d;\n"
+                "#endif\n", i, sem, sem_index, i, i);
         }
     }
     sb_append(&sb, "};\n\n");
@@ -807,9 +843,16 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
      * The pixel shaders used to declare float3 coordinates, which packed
      * their `fog` into TEXCOORD3's spare w, so under a program every one of
      * them read oT3.w as its fog factor. */
+    /* Shader Model 3 names the position POSITION, and has no point size
+     * here: under D3D11 oPts goes nowhere and every point is one pixel,
+     * which D3D9 gives a vertex stage that does not write one. */
     sb_append(&sb,
         "struct VS_OUT {\n"
+        "#ifdef RHI_D3D9\n"
+        "    float4 oPos : POSITION;\n"
+        "#else\n"
         "    float4 oPos : SV_POSITION;\n"
+        "#endif\n"
         "    float4 oD0  : COLOR0;\n"
         "    float4 oD1  : COLOR1;\n"
         "    float4 oT0  : TEXCOORD0;\n"
@@ -818,7 +861,9 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "    float4 oT3  : TEXCOORD3;\n"
         "    float  oFog : TEXCOORD4;\n"
         "    float4 oViewPos : TEXCOORD5;\n"
+        "#ifndef RHI_D3D9\n"
         "    float  oPts : PSIZE;\n"
+        "#endif\n"
         "    float4 oB0  : TEXCOORD6;\n"
         "    float4 oB1  : TEXCOORD7;\n"
         /* Vulkan: a vertex stage feeding a point list must write the point
@@ -1027,11 +1072,17 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         /* Table fog reads -viewpos.z (or its length, for range fog) as the
          * distance; on the Xbox that distance is the program's oFog. */
         "    o.oViewPos = float4(0, 0, -oFog.x, 1);\n"
+        "#ifndef RHI_D3D9\n"
         "    o.oPts = oPts.x;\n"
+        "#endif\n"
         "    o.oB0  = saturate(oB0);\n"
         "    o.oB1  = saturate(oB1);\n"
         "#ifdef __spirv__\n"
         "    o.vk_point_size = 1.0;\n"
+        "#endif\n"
+        /* D3D9: the viewport correction rhi_d3d9.c keeps (rhi_d3d9.h) */
+        "#ifdef RHI_VP_ADJUST\n"
+        "    RHI_VP_ADJUST(o.oPos);\n"
         "#endif\n"
         "    return o;\n"
         "}\n");
@@ -2006,6 +2057,51 @@ uint16_t d3d8_vsh_inputs_read(DWORD handle)
     return program.inputs_read;
 }
 
+/* RTX Remix (the D3D9 backend, rhi_d3d9.h) follows a program's draw back
+ * into the world through the PROJECTION and VIEW transforms. The projection
+ * is the program's own register, as it reaches the host (Hor+ and the camera
+ * zoom applied, as in d3d8_vsh_prepare_draw), turned into D3D's row-vector
+ * form: the program takes clip x as dot(position, c[reg]), which is the
+ * matrix's first column. The view is not known here, so the world Remix
+ * sees is the camera's own space (docs/technical/d3d9-remix.md); a title
+ * that knows its camera says so with xbox_D3D8SetRemixCamera. WORLD is
+ * identity: the program's own model-view has already taken its vertices
+ * out of the object's space. A program that projects through nothing is
+ * drawn under an identity projection. */
+static float g_remix_view[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+void xbox_D3D8SetRemixCamera(const float *view)
+{
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+    memcpy(g_remix_view, view ? view : identity, sizeof g_remix_view);
+}
+
+static void d3d9_camera_for_draw(void)
+{
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    float proj[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    int reg = g_bound_proj_reg, row, col;
+
+    if (!rhi_d3d9_active())
+        return;
+    if (reg >= 0 && reg + 3 < NV2A_VS_MAX_CONSTANTS) {
+        BOOL screen = d3d8_target_is_screen();
+        float hp = hor_plus_for_draw(screen), zoom = screen ? camera_zoom() : 1.0f;
+
+        for (row = 0; row < 4; row++)
+            for (col = 0; col < 4; col++) {
+                float v = g_vsh_constants.c[reg + col][row];
+                if (col == 0)
+                    v *= hp;
+                if (col < 2)
+                    v *= zoom;
+                proj[row * 4 + col] = v;
+            }
+    }
+    rhi_d3d9_set_camera(identity, g_remix_view, proj);
+}
+
 BOOL d3d8_vsh_prepare_draw(DWORD handle)
 {
     int slot;
@@ -2159,5 +2255,6 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
         rhi_set_uniform_buffers(RHI_STAGE_VERTEX, 3, 1, &g_vsh_vdata_cb);
     }
 
+    d3d9_camera_for_draw();
     return TRUE;
 }

@@ -28,6 +28,7 @@
  */
 #include "d3d8_internal.h"
 #include "d3d8_xbox.h"
+#include "rhi_d3d9.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,6 +157,16 @@ HRESULT xbox_D3D8CopyDepthToTexture(IDirect3DTexture8 *dst)
 
     if (!rhi_device_ready() || !tex || !tex->image || !d3d8_GetDepthImage())
         return E_INVALIDARG;
+    /* Not under D3D9: Shader Model 3 has no Load, and the copy would be a
+     * full-screen draw that RTX Remix took for the scene's. The texture
+     * keeps what it held. */
+    if (rhi_d3d9_active()) {
+        static int said;
+        if (!said++)
+            fprintf(stderr, "D3D8 depth copy: not done under the D3D9 backend; an effect "
+                    "that reads the depth as a texture will not see it\n");
+        return S_OK;
+    }
     if (!create())
         return E_FAIL;
     src = d3d8_GetDepthSampledView();

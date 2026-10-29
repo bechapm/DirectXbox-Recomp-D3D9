@@ -13,7 +13,7 @@
 #include <string.h>
 
 /* The default: Direct3D 11 on Windows (Vulkan there is asked for with
- * RECOMP_D3D8_BACKEND=vulkan), Vulkan everywhere else, and nothing in a
+ * RECOMP_D3D8_BACKEND=vulkan, and Direct3D 9, for RTX Remix, with =d3d9), Vulkan everywhere else, and nothing in a
  * build that has neither -- then rhi_device_create fails and says why. */
 #if defined(_WIN32)
 const RhiBackend *g_rhi = &rhi_d3d11_backend;
@@ -30,6 +30,9 @@ static const RhiBackend *const g_backends[] = {
 #endif
 #if defined(RHI_HAVE_VULKAN)
     &rhi_vulkan_backend,
+#endif
+#if defined(_WIN32)
+    &rhi_d3d9_backend,
 #endif
     NULL
 };

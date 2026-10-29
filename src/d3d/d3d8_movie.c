@@ -43,6 +43,40 @@ typedef struct {
 } MovieConstants;
 
 static const char kShaderSource[] =
+    /* Direct3D 9 (rhi_d3d9.c): b7 is c216 in the vertex stage and c0 in the
+     * pixel stage, the vertex number comes from a stream, and a texel is
+     * fetched at its centre with the sampler's default point filter. */
+    "#ifdef RHI_D3D9\n"
+    "#ifdef RHI_D3D9_VS\n"
+    "float4 rect : register(c216);\n"
+    "float4 size : register(c217);\n"
+    "#else\n"
+    "float4 rect : register(c0);\n"
+    "float4 size : register(c1);\n"
+    "#endif\n"
+    "struct VSOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };\n"
+    "VSOut vs_main(float id : RHI_VERTEX_ID) {\n"
+    "    float2 c = float2(fmod(id, 2.0), floor(id * 0.5));\n"
+    "    VSOut o;\n"
+    "    o.pos = float4(rect.x + c.x * rect.z, rect.y - c.y * rect.w, 0, 1);\n"
+    "    o.uv  = c * size.xy;\n"
+    "    RHI_VP_ADJUST(o.pos);\n"
+    "    return o;\n"
+    "}\n"
+    "sampler2D tex : register(s9);\n"
+    "float4 texel(float2 p) {\n"
+    "    p = clamp(p, float2(0, 0), size.xy - 1.0);\n"
+    "    return tex2Dlod(tex, float4((p + 0.5) / size.xy, 0, 0));\n"
+    "}\n"
+    "float4 ps_main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+    "    float2 t = uv - 0.5;\n"
+    "    float2 p = floor(t);\n"
+    "    float2 f = t - p;\n"
+    "    float4 a = lerp(texel(p), texel(p + float2(1, 0)), f.x);\n"
+    "    float4 b = lerp(texel(p + float2(0, 1)), texel(p + float2(1, 1)), f.x);\n"
+    "    return float4(lerp(a, b, f.y).rgb, 1);\n"
+    "}\n"
+    "#else\n"
     "cbuffer Movie : register(b7) {\n"
     "    float4 rect;\n"
     "    float4 size;\n"
@@ -67,7 +101,8 @@ static const char kShaderSource[] =
     "    float4 a = lerp(texel(p), texel(p + int2(1, 0)), f.x);\n"
     "    float4 b = lerp(texel(p + int2(0, 1)), texel(p + int2(1, 1)), f.x);\n"
     "    return float4(lerp(a, b, f.y).rgb, 1);\n"
-    "}\n";
+    "}\n"
+    "#endif\n";
 
 static void movie_fail(const char *what)
 {

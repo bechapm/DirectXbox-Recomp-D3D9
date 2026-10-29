@@ -4,9 +4,11 @@
 # the vertex program and register combiner translators, all drawing through
 # rhi.h. The same sources build everywhere; what differs is the backend
 # behind rhi.h:
-#   Windows -> Direct3D 11 (the default) and Vulkan (RECOMP_D3D8_BACKEND=vulkan)
+#   Windows -> Direct3D 11 (the default), Vulkan (RECOMP_D3D8_BACKEND=vulkan)
+#              and Direct3D 9 for RTX Remix (RECOMP_D3D8_BACKEND=d3d9)
 #   POSIX   -> Vulkan (the default and only one; MoltenVK on macOS)
-# docs/technical/vulkan-backend.md is the design.
+# docs/technical/vulkan-backend.md is the design, and
+# docs/technical/d3d9-remix.md the D3D9 backend's.
 
 set(XBR_D3D8_SOURCES
     d3d8_device.c
@@ -25,6 +27,9 @@ set(XBR_D3D8_SOURCES
     d3d8_compile.c
     rhi.c
     rhi_shader_cache.c
+    # Off Windows only rhi_d3d9.h's calls, as no-ops. d3d9.dll is loaded at
+    # run time, so that RTX Remix's, beside the executable, is the one found.
+    rhi_d3d9.c
 )
 
 if(WIN32)

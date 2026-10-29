@@ -7,6 +7,7 @@
  * the output state put back afterwards. No texture and no sampler.
  */
 #include "d3d8_touch.h"
+#include "rhi_d3d9.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -185,6 +186,11 @@ void d3d8_touch_draw(RhiView *out, unsigned w, unsigned h)
     int n, i;
 
     if (!g.source || !out || !w || !h)
+        return;
+    /* Not drawn under D3D9: its pixel shader tests bits, which Shader
+     * Model 3 cannot, and a desktop with RTX Remix has no touch screen to
+     * want it for. */
+    if (rhi_d3d9_active())
         return;
     n = g.source(shapes, MAX_SHAPES, (int)w, (int)h, &opacity);
     if (n <= 0 || opacity <= 0.0f || !touch_create())

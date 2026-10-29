@@ -18,10 +18,12 @@
  * title's texture is usually BGRA, which D3D11 will not copy between. Reading
  * with Load at integer pixels also means no sampler is bound, so a texture
  * stage the title set is left alone -- the same rule d3d8_overlay.c follows
- * and for the same reason.
+ * and for the same reason. Under D3D9 it is a StretchRect, which converts
+ * the format itself, and which RTX Remix does not see as a draw.
  */
 #include "d3d8_internal.h"
 #include "d3d8_xbox.h"
+#include "rhi_d3d9.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -217,7 +219,7 @@ static HRESULT copy_to_texture(IDirect3DTexture8 *dst, const RECT *src, const PO
 
     if (!rhi_device_ready() || !tex || !tex->image || !back_w || !back_h)
         return E_INVALIDARG;
-    if (!create())
+    if (!rhi_d3d9_active() && !create())
         return E_FAIL;
 
     dst_image = tex->image;
@@ -275,6 +277,37 @@ static HRESULT copy_to_texture(IDirect3DTexture8 *dst, const RECT *src, const PO
     if ((mapped = rhi_buffer_map(g.cb, RHI_MAP_WRITE_DISCARD)) != NULL) {
         memcpy(mapped, &c, sizeof c);
         rhi_buffer_unmap(g.cb);
+    }
+    if (rhi_d3d9_active()) {
+        /* D3D9: a copy, not a draw, so RTX Remix does not take the frame
+         * drawn back over itself for the scene. The same pixels: the
+         * destination's rectangle from the source's through scale and
+         * offset. */
+        RhiRect dr, sr;
+
+        dr.left = (int32_t)vp.x;
+        dr.top = (int32_t)vp.y;
+        dr.right = (int32_t)(vp.x + vp.width);
+        dr.bottom = (int32_t)(vp.y + vp.height);
+        sr.left = (int32_t)((float)dr.left * c.scale_x + c.off_x);
+        sr.top = (int32_t)((float)dr.top * c.scale_y + c.off_y);
+        sr.right = (int32_t)((float)dr.right * c.scale_x + c.off_x);
+        sr.bottom = (int32_t)((float)dr.bottom * c.scale_y + c.off_y);
+        if (sr.left < 0) sr.left = 0;
+        if (sr.top < 0) sr.top = 0;
+        if (sr.right > (int32_t)back_w) sr.right = (int32_t)back_w;
+        if (sr.bottom > (int32_t)back_h) sr.bottom = (int32_t)back_h;
+        if (sr.right > sr.left && sr.bottom > sr.top &&
+            rhi_d3d9_copy_rect(d3d8_GetSceneView(), &sr, rtv, &dr) != 0) {
+            static int said;
+            if (!said++)
+                fprintf(stderr, "D3D8 screen copy: StretchRect into the texture failed\n");
+        }
+        rhi_output_restore(&saved);
+        rhi_view_destroy(rtv);
+        g.copies++;
+        tex->screen_copy = TRUE;
+        return S_OK;
     }
     vp.min_depth = 0.0f;
     vp.max_depth = 1.0f;

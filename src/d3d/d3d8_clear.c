@@ -17,12 +17,16 @@
  * rectangles, or one that covers the target, never comes here: it stays the
  * backends' native clear (d3d8_device.c, dev_Clear).
  *
+ * Under the D3D9 backend it is D3D9's own Clear, which takes rectangles
+ * (rhi_d3d9_clear_rects): RTX Remix would take a quad for the scene's.
+ *
  * What it touches on the device is what d3d8_overlay.c touches, and it puts
  * back the same: the render target and viewport. Everything else is set
  * again by the next draw (d3d8_states_apply runs per draw), and nothing here
  * binds a texture or a sampler.
  */
 #include "d3d8_internal.h"
+#include "rhi_d3d9.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -141,6 +145,12 @@ int d3d8_clear_rects(RhiView *rtv, RhiView *dsv, UINT width, UINT height,
 
     if (!width || !height || (!color && !depth && !stencil))
         return 0;
+    if (rhi_d3d9_active())
+        return rhi_d3d9_clear_rects(rtv, dsv, width, height, rects, count,
+                                    (color ? RHI_D3D9_CLEAR_COLOR : 0) |
+                                    (depth ? RHI_CLEAR_DEPTH : 0) |
+                                    (stencil ? RHI_CLEAR_STENCIL : 0),
+                                    rgba, z, stencil_value);
     if (!create())
         return -1;
     if (!dsv) {

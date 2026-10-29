@@ -18,6 +18,7 @@
 
 #include "d3d8_internal.h"
 #include "d3d8_fvf.h"
+#include "rhi_d3d9.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -886,6 +887,12 @@ HRESULT d3d8_shaders_init(void)
     RhiBufferDesc cbd;
     char err[4096];
 
+    /* Under D3D9 a fixed-function draw has no shaders, and a program's
+     * pixel shader is written per draw (d9_program_ps): only the constant
+     * buffer below is wanted, and these sources are not Shader Model 3. */
+    if (rhi_d3d9_active())
+        goto buffers;
+
     /* Compile vertex shader */
     memset(&ss, 0, sizeof ss);
     ss.hlsl = g_vs_source;
@@ -905,6 +912,7 @@ HRESULT d3d8_shaders_init(void)
     if (!ff_ps_get_shader(0))
         return E_FAIL;
 
+buffers:
     /* Create VS transform constant buffer (b0) */
     memset(&cbd, 0, sizeof(cbd));
     cbd.size = (sizeof(VSTransformConstants) + 15) & ~15;
@@ -926,6 +934,8 @@ HRESULT d3d8_shaders_init(void)
     return S_OK;
 }
 
+static void d9_shutdown(void);
+
 void d3d8_shaders_shutdown(void)
 {
     int i;
@@ -936,6 +946,7 @@ void d3d8_shaders_shutdown(void)
     for (i = 0; i < g_ff_ps_cache_count; i++)
         rhi_shader_destroy(g_ff_ps_cache[i].ps);
     g_ff_ps_cache_count = 0;
+    d9_shutdown();
 
     rhi_buffer_destroy(g_ps_cb);       g_ps_cb = NULL;
     rhi_buffer_destroy(g_vs_light_cb); g_vs_light_cb = NULL;
@@ -1211,6 +1222,622 @@ static int ff_op_reads_texture(DWORD op, DWORD arg1, DWORD arg2)
     return (arg1 & 0x0Fu) == 2u || (arg2 & 0x0Fu) == 2u;
 }
 
+/* ================================================================
+ * Direct3D 9, for RTX Remix (rhi_d3d9.h)
+ *
+ * Under the D3D9 backend a fixed-function draw is drawn by D3D9's own
+ * fixed-function pipeline: no shader, and the title's transforms, lights,
+ * material, render states and texture stages handed over as they are, which
+ * is what Remix rebuilds a scene from. A vertex program's draw is Shader
+ * Model 3 (d3d8_vsh.c), which D3D9 pairs only with a ps_3_0, so its pixel
+ * stage is the texture stages again as a pixel shader written for the
+ * stages' operations (d9_ps_*): the shader above picks its operations at run
+ * time with integer constants and bit tests, which Shader Model 3 does not
+ * have. The alpha test is D3D9's own under both. Register combiner programs
+ * are not translated here: their draws take stage 0's texture times the
+ * diffuse colour (docs/technical/d3d9-remix.md).
+ * ================================================================ */
+
+static const float g_d9_identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+/* A stage's operations as they are drawn: the D3D8 defaults for an unset
+ * operation, and a stage that reads a texture it does not have disabled, as
+ * in the pixel shader above. A combiner program has stage 0 modulate its
+ * texture by the diffuse colour and nothing after it. */
+typedef struct {
+    DWORD cop, ca1, ca2, aop, aa1, aa2;
+} D9StageOps;
+
+static void d9_stage_ops(UINT stage, IDirect3DBaseTexture8 *tex, D9StageOps *o)
+{
+    const DWORD *tss = d3d8_GetTSS(stage);
+
+    if (d3d8_combiners_active()) {
+        o->cop = o->aop = stage == 0 ? D3DTOP_MODULATE : D3DTOP_DISABLE;
+        o->ca1 = o->aa1 = D3DTA_TEXTURE;
+        o->ca2 = o->aa2 = D3DTA_DIFFUSE;
+    } else if (!tss) {
+        memset(o, 0, sizeof *o);
+        o->cop = o->aop = D3DTOP_DISABLE;
+        return;
+    } else {
+        o->cop = tss[D3DTSS_COLOROP] ? tss[D3DTSS_COLOROP]
+                                     : (stage == 0 ? D3DTOP_MODULATE : D3DTOP_DISABLE);
+        o->ca1 = tss[D3DTSS_COLORARG1];
+        o->ca2 = tss[D3DTSS_COLORARG2];
+        o->aop = tss[D3DTSS_ALPHAOP] ? tss[D3DTSS_ALPHAOP]
+                                     : (stage == 0 ? D3DTOP_SELECTARG1 : D3DTOP_DISABLE);
+        o->aa1 = tss[D3DTSS_ALPHAARG1];
+        o->aa2 = tss[D3DTSS_ALPHAARG2];
+    }
+    if (!tex && (ff_op_reads_texture(o->cop, o->ca1, o->ca2) ||
+                 ff_op_reads_texture(o->aop, o->aa1, o->aa2)))
+        o->cop = D3DTOP_DISABLE;
+}
+
+/* The scale a linear texture's coordinates take (they are in texels on the
+ * NV2A; NV2APSConstants.tex_scale in d3d8_combiners.h), or 0 for none. */
+static int d9_texel_scale(IDirect3DBaseTexture8 *tex, float *sx, float *sy)
+{
+    UINT w = 0, h = 0;
+
+    if (!tex || !d3d8_format_is_linear(d3d8_base_format(tex)) ||
+        !d3d8_base_size(tex, &w, &h) || !w || !h)
+        return 0;
+    *sx = 1.0f / (float)w;
+    *sy = 1.0f / (float)h;
+    return 1;
+}
+
+/* The render states every title draw takes, fixed-function or not. */
+static void d9_title_states(DWORD fvf, int program)
+{
+    static const DWORD forwarded[] = {
+        D3DRS_AMBIENT, D3DRS_COLORVERTEX, D3DRS_LOCALVIEWER, D3DRS_NORMALIZENORMALS,
+        D3DRS_DIFFUSEMATERIALSOURCE, D3DRS_SPECULARMATERIALSOURCE,
+        D3DRS_AMBIENTMATERIALSOURCE, D3DRS_EMISSIVEMATERIALSOURCE, D3DRS_SPECULARENABLE,
+        D3DRS_FOGCOLOR, D3DRS_FOGTABLEMODE, D3DRS_FOGSTART, D3DRS_FOGEND, D3DRS_FOGDENSITY,
+        D3DRS_RANGEFOGENABLE, D3DRS_FOGVERTEXMODE, D3DRS_TEXTUREFACTOR, D3DRS_SHADEMODE,
+        D3DRS_ALPHATESTENABLE, D3DRS_ALPHAREF, D3DRS_ALPHAFUNC,
+    };
+    const DWORD *rs = d3d8_GetRenderStates();
+    int pre = !program && d3d8_fvf_transformed(fvf);
+    size_t i;
+
+    if (!rs)
+        return;
+    for (i = 0; i < sizeof forwarded / sizeof forwarded[0]; i++)
+        rhi_d3d9_set_render_state(forwarded[i], rs[forwarded[i]]);
+    /* Lit only with normals to light, as the shader above; never a
+     * pre-transformed vertex, nor fogged (its fog would be its specular
+     * alpha, which the shader above does not take either). A program's fog
+     * is in its pixel shader: D3D9 fogs nothing under a ps_3_0. */
+    rhi_d3d9_set_render_state(D3DRS_LIGHTING,
+                              !program && !pre && rs[D3DRS_LIGHTING] && (fvf & D3DFVF_NORMAL));
+    rhi_d3d9_set_render_state(D3DRS_FOGENABLE, !program && !pre && rs[D3DRS_FOGENABLE]);
+}
+
+/* ---- fixed function --------------------------------------------------------------- */
+
+static LayoutCacheEntry g_d9_layout_cache[MAX_LAYOUT_CACHE];
+static int g_d9_layout_count;
+
+/* The vertex declaration for an FVF: only what the vertex carries, since
+ * D3D9's fixed function reads whatever is declared (a colour declared at
+ * offset 0 would be the position's bytes). A pre-transformed position is
+ * declared as x, y, z, its rhw skipped, and placed through the projection
+ * d9_ff_prepare_draw gives it, so that the viewport (the widescreen squeeze,
+ * the host's scale) still applies and Remix sees a 2D draw as orthographic. */
+static RhiVertexLayout *d9_ff_layout(DWORD fvf)
+{
+    static const RhiFormat tc_fmt[5] = {
+        RHI_FORMAT_R32G32_FLOAT, RHI_FORMAT_R32_FLOAT, RHI_FORMAT_R32G32_FLOAT,
+        RHI_FORMAT_R32G32B32_FLOAT, RHI_FORMAT_R32G32B32A32_FLOAT
+    };
+    RhiVertexElement elems[16];
+    RhiVertexLayout *layout;
+    UINT n = 0, offset, t, tex_count;
+    int i;
+
+    for (i = 0; i < g_d9_layout_count; i++)
+        if (g_d9_layout_cache[i].fvf == fvf)
+            return g_d9_layout_cache[i].layout;
+
+    elems[n++] = (RhiVertexElement){"POSITION", 0, RHI_FORMAT_R32G32B32_FLOAT, 0, 0};
+    offset = d3d8_fvf_position_bytes(fvf);
+    if (fvf & D3DFVF_NORMAL) {
+        elems[n++] = (RhiVertexElement){"NORMAL", 0, RHI_FORMAT_R32G32B32_FLOAT, 0, offset};
+        offset += 12;
+    }
+    /* A D3DCOLOR, which is B8G8R8A8 in memory */
+    if (fvf & D3DFVF_DIFFUSE) {
+        elems[n++] = (RhiVertexElement){"COLOR", 0, RHI_FORMAT_B8G8R8A8_UNORM, 0, offset};
+        offset += 4;
+    }
+    if (fvf & D3DFVF_SPECULAR) {
+        elems[n++] = (RhiVertexElement){"COLOR", 1, RHI_FORMAT_B8G8R8A8_UNORM, 0, offset};
+        offset += 4;
+    }
+    tex_count = (fvf & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT;
+    for (t = 0; t < tex_count && t < 8; t++) {
+        UINT size = fvf_texcoord_size(fvf, t);
+        elems[n++] = (RhiVertexElement){"TEXCOORD", t, tc_fmt[size], 0, offset};
+        offset += size * 4;
+    }
+
+    layout = rhi_vertex_layout_create(elems, n, NULL);
+    if (!layout)
+        fprintf(stderr, "D3D8: D3D9 vertex declaration failed for FVF 0x%lX\n", (unsigned long)fvf);
+    if (g_d9_layout_count < MAX_LAYOUT_CACHE) {
+        g_d9_layout_cache[g_d9_layout_count].fvf = fvf;
+        g_d9_layout_cache[g_d9_layout_count].layout = layout;
+        g_d9_layout_count++;
+    }
+    return layout;
+}
+
+static void d9_ff_lights_and_material(void)
+{
+    static D3DLIGHT8 sent[8];
+    static BOOL sent_valid[8], sent_on[8];
+    static D3DMATERIAL8 sent_mat;
+    static BOOL sent_mat_valid;
+    const D3DMATERIAL8 *mat = d3d8_GetMaterial();
+    D3DMATERIAL8 white;
+    UINT i, n = 0;
+
+    /* The enabled lights, packed into the first eight as the shader above
+     * packs them. */
+    for (i = 0; i < d3d8_GetNumLights() && n < 8; i++) {
+        const D3DLIGHT8 *light;
+
+        if (!d3d8_GetLightEnable(i) || !(light = d3d8_GetLight(i)))
+            continue;
+        if (!sent_valid[n] || memcmp(&sent[n], light, sizeof *light) != 0) {
+            rhi_d3d9_set_light(n, light, 1);
+            sent[n] = *light;
+            sent_valid[n] = sent_on[n] = TRUE;
+        } else if (!sent_on[n]) {
+            rhi_d3d9_set_light(n, NULL, 1);
+            sent_on[n] = TRUE;
+        }
+        n++;
+    }
+    for (; n < 8; n++)
+        if (sent_on[n]) {
+            rhi_d3d9_set_light(n, NULL, 0);
+            sent_on[n] = FALSE;
+        }
+
+    if (!mat) {
+        memset(&white, 0, sizeof white);
+        white.Diffuse.r = white.Diffuse.g = white.Diffuse.b = white.Diffuse.a = 1.0f;
+        memcpy(&white.Ambient, &white.Diffuse, sizeof white.Ambient);
+        mat = &white;
+    }
+    if (!sent_mat_valid || memcmp(&sent_mat, mat, sizeof *mat) != 0) {
+        rhi_d3d9_set_material(mat);
+        sent_mat = *mat;
+        sent_mat_valid = TRUE;
+    }
+}
+
+static void d9_ff_prepare_draw(DWORD fvf)
+{
+    float proj[16];
+    RhiVertexLayout *layout;
+    UINT i;
+
+    rhi_set_shader(RHI_STAGE_VERTEX, NULL);
+    rhi_set_shader(RHI_STAGE_PIXEL, NULL);
+    layout = d9_ff_layout(fvf);
+    if (layout)
+        rhi_set_vertex_layout(layout);
+
+    if (d3d8_fvf_transformed(fvf)) {
+        /* Guest pixels of the target to clip space, as the shader above
+         * (d3d8_GetTargetGuestSize says why the target's). */
+        UINT tw = 0, th = 0;
+
+        d3d8_GetTargetGuestSize(&tw, &th);
+        memset(proj, 0, sizeof proj);
+        proj[0] = 2.0f / (float)(tw ? tw : 1);
+        proj[5] = -2.0f / (float)(th ? th : 1);
+        proj[10] = 1.0f;
+        proj[12] = -1.0f;
+        proj[13] = 1.0f;
+        proj[15] = 1.0f;
+        rhi_d3d9_set_transform(D3DTS_WORLD, g_d9_identity);
+        rhi_d3d9_set_transform(D3DTS_VIEW, g_d9_identity);
+    } else {
+        /* Hor+ as above: the projection's x column, unless orthographic. */
+        float hp = d3d8_vsh_hor_plus_for_draw();
+        BOOL ortho;
+
+        memcpy(proj, d3d8_GetTransform(D3DTS_PROJECTION), sizeof proj);
+        ortho = proj[3] == 0.0f && proj[7] == 0.0f && proj[11] == 0.0f && proj[15] == 1.0f;
+        if (hp != 1.0f && !ortho) {
+            int r;
+            for (r = 0; r < 4; r++)
+                proj[r * 4] *= hp;
+        }
+        rhi_d3d9_set_transform(D3DTS_WORLD, (const float *)d3d8_GetTransform(D3DTS_WORLD));
+        rhi_d3d9_set_transform(D3DTS_VIEW, (const float *)d3d8_GetTransform(D3DTS_VIEW));
+        d9_ff_lights_and_material();
+    }
+    rhi_d3d9_set_transform(D3DTS_PROJECTION, proj);
+    d9_title_states(fvf, 0);
+
+    /* The texture stages. Stages after the first one disabled are not
+     * reached, and stages 4-7 are left as D3D9 starts them, disabled. */
+    for (i = 0; i < 4; i++) {
+        IDirect3DBaseTexture8 *tex = d3d8_GetStageTexture(i);
+        const DWORD *tss = d3d8_GetTSS(i);
+        DWORD ttff = tss ? tss[D3DTSS_TEXTURETRANSFORMFLAGS] : D3DTTFF_DISABLE;
+        float m[16], sx, sy;
+        D9StageOps o;
+
+        d9_stage_ops(i, tex, &o);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_COLOROP, o.cop);
+        if (o.cop == D3DTOP_DISABLE)
+            break;
+        rhi_d3d9_set_texture_stage(i, D3DTSS_COLORARG1, o.ca1);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_COLORARG2, o.ca2);
+        /* An alpha operation of DISABLE keeps the alpha before it, which in
+         * D3D9 is selecting CURRENT. */
+        if (o.aop == D3DTOP_DISABLE) {
+            o.aop = D3DTOP_SELECTARG1;
+            o.aa1 = D3DTA_CURRENT;
+        }
+        rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAOP, o.aop);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG1, o.aa1);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG2, o.aa2);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_TEXCOORDINDEX, tss ? tss[D3DTSS_TEXCOORDINDEX] : i);
+        if (tss) {
+            DWORD k;
+            for (k = D3DTSS_BUMPENVMAT00; k <= D3DTSS_BUMPENVMAT11; k++)
+                rhi_d3d9_set_texture_stage(i, k, tss[k]);
+        }
+
+        /* The texture matrix, while the flags apply it, and a linear
+         * texture's texel scale after it. */
+        if ((ttff & 0xFFu) == D3DTTFF_DISABLE)
+            memcpy(m, g_d9_identity, sizeof m);
+        else
+            memcpy(m, d3d8_GetTransform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + i)), sizeof m);
+        if (d9_texel_scale(tex, &sx, &sy)) {
+            int r;
+            for (r = 0; r < 4; r++) {
+                m[r * 4 + 0] *= sx;
+                m[r * 4 + 1] *= sy;
+            }
+            if ((ttff & 0xFFu) == D3DTTFF_DISABLE)
+                ttff = D3DTTFF_COUNT2;
+        }
+        rhi_d3d9_set_transform(D3DTS_TEXTURE0 + i, m);
+        rhi_d3d9_set_texture_stage(i, RHI_D3D9_TSS_TEXTURETRANSFORMFLAGS, ttff);
+    }
+}
+
+/* ---- the pixel stage under a vertex program --------------------------------------- */
+
+/* What a program draw's pixel shader is written for. */
+enum { D9_FOG_NONE, D9_FOG_PROGRAM, D9_FOG_EXP, D9_FOG_EXP2, D9_FOG_LINEAR };
+
+typedef struct {
+    D9StageOps op[4];
+    uint8_t    dim[4];      /* 0 none, 1 2D, 2 cube, 3 volume */
+    uint8_t    fog;         /* D9_FOG_* */
+    uint8_t    range_fog;
+    uint8_t    specular;
+    uint8_t    _pad;
+} D9PsKey;
+
+/* Its constants, from c16 (rhi_d3d9.c's register for uniform buffer b0) */
+typedef struct {
+    float tex_factor[4];
+    float fog_color[4];
+    float fog_params[4];        /* start, end, density */
+    float tex_scale[4][4];      /* 1/w, 1/h for a linear texture, else 1 */
+} D9PSConstants;
+
+#define D9_PS_CACHE_SIZE 128
+
+typedef struct {
+    D9PsKey    key;
+    RhiShader *ps;
+} D9PsCacheEntry;
+
+static D9PsCacheEntry g_d9_ps_cache[D9_PS_CACHE_SIZE];
+static int g_d9_ps_count;
+
+static int d9_arg(char *out, size_t n, DWORD arg, int stage, int has_tex)
+{
+    char tex[8];
+    const char *base;
+
+    snprintf(tex, sizeof tex, "t%d", stage);
+    switch (arg & 0x0Fu) {
+    case D3DTA_DIFFUSE:  base = "input.diffuse"; break;
+    case D3DTA_TEXTURE:  base = has_tex ? tex : "float4(1, 1, 1, 1)"; break;
+    case D3DTA_TFACTOR:  base = "TexFactor"; break;
+    case D3DTA_SPECULAR: base = "input.specular"; break;
+    default:             base = "current"; break;
+    }
+    if (arg & D3DTA_COMPLEMENT)
+        return snprintf(out, n, (arg & D3DTA_ALPHAREPLICATE) ? "(1.0 - %s).aaaa" : "(1.0 - %s)",
+                        base);
+    return snprintf(out, n, (arg & D3DTA_ALPHAREPLICATE) ? "%s.aaaa" : "%s", base);
+}
+
+/* One operation on a1 and a2's components `c` (rgb or a), as apply_op in the
+ * shader above, including its fallback to MODULATE. */
+static int d9_op(char *out, size_t n, DWORD op, const char *c, const char *tex_a)
+{
+    char x[8], y[8];
+
+    snprintf(x, sizeof x, "a1.%s", c);
+    snprintf(y, sizeof y, "a2.%s", c);
+    switch (op) {
+    case D3DTOP_SELECTARG1:         return snprintf(out, n, "%s", x);
+    case D3DTOP_SELECTARG1 + 1:     return snprintf(out, n, "%s", y);
+    case D3DTOP_MODULATE:           return snprintf(out, n, "%s * %s", x, y);
+    case 5:  return snprintf(out, n, "saturate(%s * %s * 2.0)", x, y);
+    case 6:  return snprintf(out, n, "saturate(%s * %s * 4.0)", x, y);
+    case 7:  return snprintf(out, n, "saturate(%s + %s)", x, y);
+    case 8:  return snprintf(out, n, "saturate(%s + %s - 0.5)", x, y);
+    case 9:  return snprintf(out, n, "saturate((%s + %s - 0.5) * 2.0)", x, y);
+    case 10: return snprintf(out, n, "saturate(%s - %s)", x, y);
+    case 11: return snprintf(out, n, "saturate(%s + %s - %s * %s)", x, y, x, y);
+    case D3DTOP_BLENDDIFFUSEALPHA:  return snprintf(out, n, "lerp(%s, %s, input.diffuse.a)", y, x);
+    case D3DTOP_BLENDTEXTUREALPHA:  return snprintf(out, n, "lerp(%s, %s, %s)", y, x, tex_a);
+    case D3DTOP_BLENDFACTORALPHA:   return snprintf(out, n, "lerp(%s, %s, TexFactor.a)", y, x);
+    case D3DTOP_BLENDCURRENTALPHA:  return snprintf(out, n, "lerp(%s, %s, current.a)", y, x);
+    case D3DTOP_DOTPRODUCT3:
+        return snprintf(out, n, "saturate(4.0 * (%s - 0.5) * (%s - 0.5))", x, y);
+    default:                        return snprintf(out, n, "%s * %s", x, y);
+    }
+}
+
+static void d9_ps_source(const D9PsKey *k, char *buf, int size)
+{
+    static const char *const sampler[4] = { "", "sampler2D", "samplerCUBE", "sampler3D" };
+    static const char *const fetch[4] = { "", "tex2D", "texCUBE", "tex3D" };
+    char a1[48], a2[48], expr[160], tex_a[24];
+    int off = 0, i;
+
+#define EMIT(...) do { if (off < size) off += snprintf(buf + off, (size_t)(size - off), __VA_ARGS__); } while (0)
+    EMIT("float4 TexFactor   : register(c16);\n"
+        "float4 FogColor    : register(c17);\n"
+        "float4 FogParams   : register(c18);\n"
+        "float4 TexScale[4] : register(c19);\n");
+    for (i = 0; i < 4; i++)
+        if (k->dim[i])
+            EMIT("%s s%d : register(s%d);\n", sampler[k->dim[i]], i, i);
+    EMIT("\n"
+        "struct PS_IN {\n"
+        "    float4 diffuse  : COLOR0;\n"
+        "    float4 specular : COLOR1;\n"
+        "    float4 tex0     : TEXCOORD0;\n"
+        "    float4 tex1     : TEXCOORD1;\n"
+        "    float4 tex2     : TEXCOORD2;\n"
+        "    float4 tex3     : TEXCOORD3;\n"
+        "    float  fog      : TEXCOORD4;\n"
+        "};\n"
+        "\n"
+        "float4 main(PS_IN input) : COLOR0 {\n"
+        "    float4 current = input.diffuse;\n"
+        "    float4 a1, a2, r;\n");
+    for (i = 0; i < 4; i++) {
+        const D9StageOps *o = &k->op[i];
+        int has_tex = k->dim[i] != 0;
+
+        if (o->cop == D3DTOP_DISABLE)
+            break;
+        if (has_tex) {
+            if (k->dim[i] == 1)
+                EMIT("    float4 t%d = tex2D(s%d, input.tex%d.xy * TexScale[%d].xy);\n", i, i, i, i);
+            else
+                EMIT("    float4 t%d = %s(s%d, input.tex%d.xyz);\n", i, fetch[k->dim[i]], i, i);
+        }
+        snprintf(tex_a, sizeof tex_a, has_tex ? "t%d.a" : "1.0", i);
+
+        d9_arg(a1, sizeof a1, o->ca1, i, has_tex);
+        d9_arg(a2, sizeof a2, o->ca2, i, has_tex);
+        EMIT("    a1 = %s;\n    a2 = %s;\n", a1, a2);
+        if (o->cop == D3DTOP_DOTPRODUCT3) {
+            EMIT("    r.rgb = saturate(4.0 * dot(a1.rgb - 0.5, a2.rgb - 0.5)).xxx;\n");
+        } else {
+            d9_op(expr, sizeof expr, o->cop, "rgb", tex_a);
+            EMIT("    r.rgb = %s;\n", expr);
+        }
+        if (o->aop == D3DTOP_DISABLE) {
+            EMIT("    r.a = current.a;\n");
+        } else {
+            d9_arg(a1, sizeof a1, o->aa1, i, has_tex);
+            d9_arg(a2, sizeof a2, o->aa2, i, has_tex);
+            d9_op(expr, sizeof expr, o->aop, "a", tex_a);
+            EMIT("    a1 = %s;\n    a2 = %s;\n    r.a = %s;\n", a1, a2, expr);
+        }
+        EMIT("    current = r;\n");
+    }
+    if (k->specular)
+        EMIT("    current.rgb = saturate(current.rgb + input.specular.rgb);\n");
+    switch (k->fog) {
+    case D9_FOG_PROGRAM:
+        /* program_fog above; an infinite coordinate is no fog */
+        EMIT("    {\n"
+            "        float span = FogParams.y - FogParams.x;\n"
+            "        float f = (span == 0.0 || abs(input.fog) > 3.0e38) ? 1.0\n"
+            "                : saturate((FogParams.y - input.fog) / span);\n"
+            "        current.rgb = lerp(FogColor.rgb, current.rgb, f);\n"
+            "    }\n");
+        break;
+    case D9_FOG_EXP:
+    case D9_FOG_EXP2:
+    case D9_FOG_LINEAR:
+        /* Table fog, from the program's fog coordinate as the distance (the
+         * view position the shader above reads is made from it) */
+        EMIT("    {\n"
+            "        float d = %s;\n", k->range_fog ? "abs(input.fog)" : "input.fog");
+        if (k->fog == D9_FOG_EXP)
+            EMIT("        float f = saturate(exp(-FogParams.z * d));\n");
+        else if (k->fog == D9_FOG_EXP2)
+            EMIT("        float e = FogParams.z * d;\n"
+                "        float f = saturate(exp(-e * e));\n");
+        else
+            EMIT("        float f = saturate((FogParams.y - d) / max(FogParams.y - FogParams.x, 1e-6));\n");
+        EMIT("        current.rgb = lerp(FogColor.rgb, current.rgb, f);\n"
+            "    }\n");
+        break;
+    default:
+        break;
+    }
+    EMIT("    return current;\n}\n");
+#undef EMIT
+}
+
+static RhiShader *d9_ps_get(const D9PsKey *key)
+{
+    RhiShaderSource ss;
+    RhiShader *ps;
+    char *src, err[4096];
+    int i;
+
+    for (i = 0; i < g_d9_ps_count; i++)
+        if (memcmp(&g_d9_ps_cache[i].key, key, sizeof *key) == 0)
+            return g_d9_ps_cache[i].ps;
+
+    src = (char *)malloc(FF_PS_SRC_SIZE);
+    if (!src)
+        return NULL;
+    d9_ps_source(key, src, FF_PS_SRC_SIZE);
+    memset(&ss, 0, sizeof ss);
+    ss.hlsl = src;
+    ss.len = strlen(src);
+    ss.name = "ps_stages_d3d9";
+    ss.entry = "main";
+    ss.target = "ps_3_0";
+    {
+        long long started = d3d8_compile_clock();
+        ps = rhi_shader_create(RHI_STAGE_PIXEL, &ss, err, sizeof err);
+        d3d8_compile_note(1, started);
+    }
+    if (!ps)
+        fprintf(stderr, "D3D8: D3D9 texture-stage PS compile failed: %s\n--- source ---\n%s\n",
+                err[0] ? err : "unknown", src);
+    free(src);
+    if (!ps)
+        return NULL;
+
+    if (g_d9_ps_count >= D9_PS_CACHE_SIZE) {
+        rhi_shader_destroy(g_d9_ps_cache[0].ps);
+        memmove(&g_d9_ps_cache[0], &g_d9_ps_cache[1],
+                (D9_PS_CACHE_SIZE - 1) * sizeof(D9PsCacheEntry));
+        g_d9_ps_count--;
+    }
+    g_d9_ps_cache[g_d9_ps_count].key = *key;
+    g_d9_ps_cache[g_d9_ps_count].ps = ps;
+    g_d9_ps_count++;
+    return ps;
+}
+
+static void d9_program_ps(void)
+{
+    const DWORD *rs = d3d8_GetRenderStates();
+    D9PSConstants *pc;
+    D9PsKey key;
+    RhiShader *ps;
+    UINT i;
+
+    memset(&key, 0, sizeof key);
+    for (i = 0; i < 4; i++) {
+        IDirect3DBaseTexture8 *tex = d3d8_GetStageTexture(i);
+
+        d9_stage_ops(i, tex, &key.op[i]);
+        if (key.op[i].cop == D3DTOP_DISABLE) {
+            /* the key names only the stages that run */
+            memset(&key.op[i], 0, sizeof key.op[i]);
+            key.op[i].cop = D3DTOP_DISABLE;
+            break;
+        }
+        if (tex) {
+            D3DRESOURCETYPE type = IDirect3DBaseTexture8_GetType(tex);
+            key.dim[i] = type == D3DRTYPE_CUBETEXTURE ? 2 : type == D3DRTYPE_VOLUMETEXTURE ? 3 : 1;
+        }
+    }
+    if (rs) {
+        key.specular = rs[D3DRS_SPECULARENABLE] != 0;
+        if (rs[D3DRS_FOGENABLE]) {
+            switch (rs[D3DRS_FOGTABLEMODE]) {
+            case D3DFOG_NONE:   key.fog = D9_FOG_PROGRAM; break;
+            case D3DFOG_EXP:    key.fog = D9_FOG_EXP; break;
+            case D3DFOG_EXP2:   key.fog = D9_FOG_EXP2; break;
+            default:            key.fog = D9_FOG_LINEAR; break;
+            }
+            key.range_fog = key.fog != D9_FOG_PROGRAM && rs[D3DRS_RANGEFOGENABLE];
+        }
+    }
+    ps = d9_ps_get(&key);
+    if (!ps)
+        return;
+    rhi_set_shader(RHI_STAGE_PIXEL, ps);
+
+    pc = (D9PSConstants *)rhi_buffer_map(g_ps_cb, RHI_MAP_WRITE_DISCARD);
+    if (pc) {
+        memset(pc, 0, sizeof *pc);
+        if (rs) {
+            DWORD tf = rs[D3DRS_TEXTUREFACTOR], fc = rs[D3DRS_FOGCOLOR];
+            pc->tex_factor[0] = ((tf >> 16) & 0xFF) / 255.0f;
+            pc->tex_factor[1] = ((tf >>  8) & 0xFF) / 255.0f;
+            pc->tex_factor[2] = ((tf >>  0) & 0xFF) / 255.0f;
+            pc->tex_factor[3] = ((tf >> 24) & 0xFF) / 255.0f;
+            pc->fog_color[0] = ((fc >> 16) & 0xFF) / 255.0f;
+            pc->fog_color[1] = ((fc >>  8) & 0xFF) / 255.0f;
+            pc->fog_color[2] = ((fc >>  0) & 0xFF) / 255.0f;
+            pc->fog_color[3] = 1.0f;
+            memcpy(&pc->fog_params[0], &rs[D3DRS_FOGSTART], sizeof(float));
+            memcpy(&pc->fog_params[1], &rs[D3DRS_FOGEND], sizeof(float));
+            memcpy(&pc->fog_params[2], &rs[D3DRS_FOGDENSITY], sizeof(float));
+        }
+        for (i = 0; i < 4; i++) {
+            float sx = 1.0f, sy = 1.0f;
+            d9_texel_scale(d3d8_GetStageTexture(i), &sx, &sy);
+            pc->tex_scale[i][0] = sx;
+            pc->tex_scale[i][1] = sy;
+        }
+        rhi_buffer_unmap(g_ps_cb);
+    }
+    rhi_set_uniform_buffers(RHI_STAGE_PIXEL, 0, 1, &g_ps_cb);
+}
+
+static void d9_shutdown(void)
+{
+    int i;
+
+    for (i = 0; i < g_d9_layout_count; i++)
+        rhi_vertex_layout_destroy(g_d9_layout_cache[i].layout);
+    g_d9_layout_count = 0;
+    for (i = 0; i < g_d9_ps_count; i++)
+        rhi_shader_destroy(g_d9_ps_cache[i].ps);
+    g_d9_ps_count = 0;
+}
+
+static void d9_prepare_draw(DWORD handle)
+{
+    if (d3d8_vsh_prepare_draw(handle)) {
+        g_draw_is_program = 1;
+        d3d8_SetTwoDSqueeze(!d3d8_vsh_bound_uses_projection()
+                            || d3d8_vsh_bound_projection_is_ortho());
+        d9_title_states(0, 1);
+        d9_program_ps();
+    } else {
+        d9_ff_prepare_draw(handle);
+        d3d8_SetTwoDSqueeze(d3d8_fvf_transformed(handle));
+    }
+    rhi_d3d9_title_draw();
+}
+
 void d3d8_shaders_prepare_draw(DWORD handle)
 {
     RhiShader *ps;
@@ -1219,6 +1846,10 @@ void d3d8_shaders_prepare_draw(DWORD handle)
 
     if (!rhi_device_ready()) return;
     g_draw_is_program = 0;
+    if (rhi_d3d9_active()) {
+        d9_prepare_draw(handle);
+        return;
+    }
     if (d3d8_vsh_prepare_draw(handle)) {
         g_draw_is_program = 1;
         /* A program that never reads the projection's first column is
