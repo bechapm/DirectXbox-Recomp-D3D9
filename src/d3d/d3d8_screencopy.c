@@ -274,7 +274,7 @@ static HRESULT copy_to_texture(IDirect3DTexture8 *dst, const RECT *src, const PO
         c.off_x = (float)src->left * kx - (float)ax * kx;
         c.off_y = (float)src->top * ky - (float)ay * ky;
     }
-    if ((mapped = rhi_buffer_map(g.cb, RHI_MAP_WRITE_DISCARD)) != NULL) {
+    if (g.cb && (mapped = rhi_buffer_map(g.cb, RHI_MAP_WRITE_DISCARD)) != NULL) {
         memcpy(mapped, &c, sizeof c);
         rhi_buffer_unmap(g.cb);
     }

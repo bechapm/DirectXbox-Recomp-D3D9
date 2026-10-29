@@ -721,6 +721,8 @@ static void d9_buffer_destroy(RhiBuffer *b)
 
 static void *d9_buffer_map(RhiBuffer *b, uint32_t mode)
 {
+    if (!b)
+        return NULL;
     if (b->vb) {
         void *p = NULL;
         DWORD flags = mode == RHI_MAP_WRITE_NO_OVERWRITE ? D3DLOCK_NOOVERWRITE : D3DLOCK_DISCARD;
@@ -736,6 +738,8 @@ static void *d9_buffer_map(RhiBuffer *b, uint32_t mode)
 
 static void d9_buffer_unmap(RhiBuffer *b)
 {
+    if (!b)
+        return;
     if (b->vb) {
         if (b->locked)
             IDirect3DVertexBuffer9_Unlock(b->vb);
@@ -747,6 +751,8 @@ static void d9_buffer_unmap(RhiBuffer *b)
 
 static void d9_buffer_update(RhiBuffer *b, const void *data)
 {
+    if (!b)
+        return;
     if (b->vb) {
         void *p;
         if (SUCCEEDED(IDirect3DVertexBuffer9_Lock(b->vb, 0, 0, &p,
