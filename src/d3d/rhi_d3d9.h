@@ -19,10 +19,14 @@
  *  - A vertex program is compiled to Shader Model 3 (vs_3_0, which D3D9
  *    pairs only with ps_3_0), and the pixel stage under it is the texture
  *    stages again, as a ps_3_0 d3d8_shaders.c builds with each stage's
- *    operation written into the code: the register-combiner translator's
- *    HLSL, and the fixed-function one's, are Shader Model 4 and up (integer
- *    constants, bit tests). Remix ignores pixel shaders, so this only shapes
- *    what is rasterised (2D, and everything when Remix is not installed).
+ *    operation written into the code: the fixed-function pixel shader is
+ *    Shader Model 4 and up (integer constants, bit tests).
+ *  - A register-combiner program is translated as under the other backends,
+ *    into Shader Model 3 under a vertex program and Shader Model 2 (ps_2_a)
+ *    under fixed function, which D3D9 pairs only with ps_2_x
+ *    (NV2ACombinerState.host). Remix ignores pixel shaders, so these only
+ *    shape what is rasterised: 2D, the title's full-screen passes, and
+ *    everything when Remix is not installed.
  *  - Each program draw is told the camera (rhi_d3d9_set_camera), so Remix
  *    can follow the positions the program writes back into the world.
  *

@@ -38,6 +38,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdarg.h>
+
+#include "rhi_d3d9.h"
 
 
 /* ================================================================
@@ -138,11 +141,11 @@ static int ps_dump_limit(void)
  * titles switch the alpha test between draws that share a pixel shader, and
  * the variant is the only structural field that changes without a parse or
  * a shadow-stage change, both of which forget the pair. */
-static RhiShader *g_last_shader[2];
+static RhiShader *g_last_shader[2 * 3];      /* [alpha_test + 2 * host] */
 
 static void forget_last_shaders(void)
 {
-    g_last_shader[0] = g_last_shader[1] = NULL;
+    memset(g_last_shader, 0, sizeof g_last_shader);
 }
 
 /* ================================================================
@@ -656,6 +659,29 @@ static const char *output_map_suffix(NV2AOutputMapping map)
     }
 }
 
+/* A texture read: `tex<i>.Sample(samp<i>, coord)` in Shader Model 5, and
+ * D3D9's tex2D / texCUBE / tex3D on the stage's sampler in Shader Model 2 and
+ * 3 (NV2ACombinerState.host), which have no separate sampler objects. The
+ * coordinate is printf-formatted. Into `out`, which it returns. */
+static const char *sample_expr(char *out, size_t n, const NV2ACombinerState *state,
+                               int i, const char *fmt, ...)
+{
+    char coord[192];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(coord, sizeof coord, fmt, ap);
+    va_end(ap);
+    if (state->host == NV2A_HOST_SM5)
+        snprintf(out, n, "tex%d.Sample(samp%d, %s)", i, i, coord);
+    else
+        snprintf(out, n, "%s(tex%d, %s)",
+                 state->shadow[i] ? "tex2D"
+                 : state->tex_mode[i] == NV2A_TEXMODE_CUBEMAP ? "texCUBE"
+                 : state->tex_mode[i] == NV2A_TEXMODE_3D ? "tex3D" : "tex2D", i, coord);
+    return out;
+}
+
 /* A shadow-map stage (its texture is a depth format;
  * d3d8_combiners_prepare_draw sets state->shadow): r_t<i> is the compare,
  * whatever the stage's mode.
@@ -667,10 +693,24 @@ static const char *output_map_suffix(NV2AOutputMapping map)
  * (emit_xbox_textures) as well as the plain sampler kinds -- so the
  * compare does not depend on how the stage's mode reached the host. The
  * caller declares r_t<i>. */
-static int emit_shadow_compare(char *buf, int bufsize, int *poff, int i)
+static int emit_shadow_compare(const NV2ACombinerState *state, char *buf, int bufsize,
+                               int *poff, int i)
 {
     int off = *poff;
 
+    if (state->host != NV2A_HOST_SM5) {
+        /* Shader Model 2 and 3 have no Load and no texture size: one texel,
+         * as the sampler filters it, against the reference. */
+        EMIT("    {\n");
+        EMIT("        float4 q = input.tc%d;\n", i);
+        EMIT("        float qw = abs(q.w) > 1e-20 ? q.w : 1.0;\n");
+        EMIT("        float s = shadow_test(tex2D(tex%d, q.xy / qw * tex_scale[%d].xy).r"
+             " * shadow_max[%d], q.z / qw);\n", i, i, i);
+        EMIT("        r_t%d = float4(s, s, s, s);\n", i);
+        EMIT("    }\n");
+        *poff = off;
+        return off;
+    }
     EMIT("    {\n");
     EMIT("        float4 q = input.tc%d;\n", i);
     EMIT("        float qw = abs(q.w) > 1e-20 ? q.w : 1.0;\n");
@@ -715,6 +755,7 @@ static int emit_xbox_textures(const NV2ACombinerState *state, char *buf,
                               int bufsize, int *poff)
 {
     int off = *poff, i;
+    char smp[256];
 
     EMIT("    float dot1 = 0.0, dot2 = 0.0, dot3 = 0.0;\n");
     for (i = 0; i < NV2A_MAX_TEXTURES; i++) {
@@ -726,7 +767,7 @@ static int emit_xbox_textures(const NV2ACombinerState *state, char *buf,
         EMIT("    float4 r_t%d = float4(0, 0, 0, 0);\n", i);
         if (state->shadow[i]) {
             *poff = off;
-            if (emit_shadow_compare(buf, bufsize, poff, i) < 0)
+            if (emit_shadow_compare(state, buf, bufsize, poff, i) < 0)
                 return -1;
             off = *poff;
             continue;   /* no alpha_only fix-up: the result is the test */
@@ -738,15 +779,16 @@ static int emit_xbox_textures(const NV2ACombinerState *state, char *buf,
         case XTM_PROJECT2D:
         case XTM_BUMPENVMAP:
         case XTM_BUMPENVMAP_LUM:
-            EMIT("    r_t%d = tex%d.Sample(samp%d, input.tc%d.xy / qdiv(input.tc%d.w)"
-                 " * tex_scale[%d].xy);\n", i, i, i, i, i, i);
+            EMIT("    r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "input.tc%d.xy / qdiv(input.tc%d.w) * tex_scale[%d].xy", i, i, i));
             break;
         case XTM_PROJECT3D:
-            EMIT("    r_t%d = tex%d.Sample(samp%d, input.tc%d.xyz / qdiv(input.tc%d.w));\n",
-                 i, i, i, i, i);
+            EMIT("    r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "input.tc%d.xyz / qdiv(input.tc%d.w)", i, i));
             break;
         case XTM_CUBEMAP:
-            EMIT("    r_t%d = tex%d.Sample(samp%d, input.tc%d.xyz);\n", i, i, i, i);
+            EMIT("    r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "input.tc%d.xyz", i));
             break;
         case XTM_PASSTHRU:
             EMIT("    r_t%d = saturate(input.tc%d);\n", i, i);
@@ -755,8 +797,8 @@ static int emit_xbox_textures(const NV2ACombinerState *state, char *buf,
             if (i < 2)
                 break;
             EMIT("    dot%d = dot(input.tc%d.xyz, dotmap%d(r_t%d));\n", i, i, dm, in);
-            EMIT("    r_t%d = tex%d.Sample(samp%d, float2(dot%d, dot%d) * tex_scale[%d].xy);\n",
-                 i, i, i, i - 1, i, i);
+            EMIT("    r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "float2(dot%d, dot%d) * tex_scale[%d].xy", i - 1, i, i));
             break;
         case XTM_DOTPRODUCT:
         case XTM_DOT_ZW:
@@ -770,8 +812,9 @@ static int emit_xbox_textures(const NV2ACombinerState *state, char *buf,
             if (i != 2)
                 break;
             EMIT("    dot2 = dot(input.tc2.xyz, dotmap%d(r_t%d));\n", dm, in);
-            EMIT("    r_t2 = tex2.Sample(samp2, float3(dot1, dot2,"
-                 " dot(input.tc3.xyz, dotmap%d(r_t%d))));\n", dm3, state->input_tex[3]);
+            EMIT("    r_t2 = %s;\n", sample_expr(smp, sizeof smp, state, 2,
+                 "float3(dot1, dot2, dot(input.tc3.xyz, dotmap%d(r_t%d)))",
+                 dm3, state->input_tex[3]));
             break;
         case XTM_DOT_RFLCT_SPEC:
             /* Stage 3 only: the eye vector is the three stages' q, and the
@@ -784,22 +827,23 @@ static int emit_xbox_textures(const NV2ACombinerState *state, char *buf,
                  "        float3 e = float3(input.tc1.w, input.tc2.w, input.tc3.w);\n"
                  "        float nn = dot(n, n);\n"
                  "        float3 rv = 2.0 * n * dot(n, e) / (nn != 0.0 ? nn : 1.0) - e;\n"
-                 "        r_t3 = tex3.Sample(samp3, rv);\n"
-                 "    }\n");
+                 "        r_t3 = %s;\n"
+                 "    }\n", sample_expr(smp, sizeof smp, state, 3, "rv"));
             break;
         case XTM_DOT_STR_3D:
         case XTM_DOT_STR_CUBE:
             if (i != 3)
                 break;
             EMIT("    dot3 = dot(input.tc3.xyz, dotmap%d(r_t%d));\n", dm, in);
-            EMIT("    r_t3 = tex3.Sample(samp3, float3(dot1, dot2, dot3));\n");
+            EMIT("    r_t3 = %s;\n", sample_expr(smp, sizeof smp, state, 3,
+                 "float3(dot1, dot2, dot3)"));
             break;
         case XTM_DPNDNT_AR:
         case XTM_DPNDNT_GB:
             if (i < 1)
                 break;
-            EMIT("    r_t%d = tex%d.Sample(samp%d, r_t%d.%s * tex_scale[%d].xy);\n",
-                 i, i, i, in, m == XTM_DPNDNT_AR ? "ar" : "gb", i);
+            EMIT("    r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "r_t%d.%s * tex_scale[%d].xy", in, m == XTM_DPNDNT_AR ? "ar" : "gb", i));
             break;
         default:            /* CLIPPLANE, BRDF, DOT_RFLCT_SPEC_CONST: zero */
             break;
@@ -816,9 +860,19 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
 {
     int off = 0;
     int i;
+    int sm5 = state->host == NV2A_HOST_SM5, sm2 = state->host == NV2A_HOST_SM2;
+    char smp[256];
 
     /* ---- Texture samplers ---- */
-    for (i = 0; i < NV2A_MAX_TEXTURES; i++) {
+    for (i = 0; i < NV2A_MAX_TEXTURES && !sm5; i++) {
+        /* Shader Model 2 and 3: a sampler per stage (sample_expr). */
+        if (state->tex_mode[i] != NV2A_TEXMODE_NONE)
+            EMIT("%s tex%d : register(s%d);\n",
+                 state->shadow[i] ? "sampler2D"
+                 : state->tex_mode[i] == NV2A_TEXMODE_CUBEMAP ? "samplerCUBE"
+                 : state->tex_mode[i] == NV2A_TEXMODE_3D ? "sampler3D" : "sampler2D", i, i);
+    }
+    for (i = 0; i < NV2A_MAX_TEXTURES && sm5; i++) {
         if (state->tex_mode[i] != NV2A_TEXMODE_NONE) {
             if (state->shadow[i]) {
                 /* A depth texture: read as 2D whatever the stage mode, and
@@ -836,7 +890,33 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
     }
     EMIT("\n");
 
-    /* ---- Constant buffer ---- */
+    /* ---- Constant buffer ----
+     *
+     * Direct3D 9 has no constant buffers and Shader Model 2 and 3 no
+     * integers: the same NV2APSConstants, its integers uploaded as floats
+     * (d3d8_combiners_prepare_draw), in the registers rhi_d3d9.c gives
+     * uniform buffer b0 -- from c0, so that it fits ps_2_x's 32. The
+     * unsigned fields are read through the names the cbuffer gives them. */
+    if (!sm5) {
+        EMIT("float4 nv_c0[8]       : register(c0);\n");
+        EMIT("float4 nv_c1[8]       : register(c8);\n");
+        EMIT("float4 fc0            : register(c16);\n");
+        EMIT("float4 fc1            : register(c17);\n");
+        EMIT("float4 fog_color      : register(c18);\n");
+        EMIT("float4 nv_alpha       : register(c19);\n");
+        EMIT("float4 alpha_only     : register(c20);\n");
+        EMIT("float4 tex_scale[4]   : register(c21);\n");
+        EMIT("float4 shadow_max     : register(c25);\n");
+        EMIT("float4 shadow_func    : register(c26);\n");
+        EMIT("float4 fog_params     : register(c27);\n");
+        EMIT("float4 fog_src        : register(c28);\n");
+        EMIT("#define c0 nv_c0\n");
+        EMIT("#define c1 nv_c1\n");
+        EMIT("#define alpha_ref nv_alpha.x\n");
+        EMIT("#define alpha_func nv_alpha.y\n");
+        EMIT("#define alpha_test_enable nv_alpha.z\n");
+        EMIT("#define fog_enable nv_alpha.w\n\n");
+    } else {
     EMIT("cbuffer CombinerCB : register(b0) {\n");
     EMIT("    float4 c0[8];\n");    /* Per-stage C0 */
     EMIT("    float4 c1[8];\n");    /* Per-stage C1 */
@@ -854,6 +934,7 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
     EMIT("    float4 fog_params;\n");     /* start, end, density, D3DFOGMODE */
     EMIT("    uint4  fog_src;\n");        /* x: NV2A_FOG_SRC_*, y: range fog */
     EMIT("};\n\n");
+    }
 
     /* ---- Input structure ----
      *
@@ -869,7 +950,9 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
      * under a vertex program every combiner read oT3.w -- 1.0 unless the
      * program wrote it -- as its fog factor. */
     EMIT("struct PS_IN {\n");
-    EMIT("    float4 pos     : SV_POSITION;\n");
+    /* Shader Model 2 and 3 take no position input (D3D9's is VPOS). */
+    if (sm5)
+        EMIT("    float4 pos     : SV_POSITION;\n");
     EMIT("    float4 color0  : COLOR0;\n");
     EMIT("    float4 color1  : COLOR1;\n");
     /* All four components: q divides a projected 2D lookup and a shadow-map
@@ -882,13 +965,36 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
     /* The fog register's alpha is the fog factor the vertex stage
      * interpolated, which both vertex paths write to TEXCOORD4
      * (d3d8_shaders.c for fixed function, d3d8_vsh.c for a program). */
-    EMIT("    float  fog     : TEXCOORD4;\n");
-    EMIT("    float4 viewpos : TEXCOORD5;\n");
+    /* Not from D3D9's fixed-function vertex pipeline, which outputs no
+     * fog coordinate or view position to a pixel shader. */
+    if (!sm2) {
+        EMIT("    float  fog     : TEXCOORD4;\n");
+        EMIT("    float4 viewpos : TEXCOORD5;\n");
+    }
     EMIT("};\n\n");
 
     /* The fog unit, which runs before the combiners: the factor their fog
      * register's alpha holds. d3d8_shaders.c's compute_pfog and program_fog
      * do the same for the fixed-function pixel path. */
+    if (!sm5 && !sm2) {
+        /* The same in floats, an infinite distance no fog. */
+        EMIT("float fog_factor(PS_IN input) {\n");
+        EMIT("    if (fog_src.x == 0.0) return saturate(input.fog);\n");
+        EMIT("    float d = input.fog;\n");
+        EMIT("    if (fog_src.x == 2.0) d = fog_src.y ? length(input.viewpos.xyz) : -input.viewpos.z;\n");
+        EMIT("    else if (fog_src.y) d = abs(d);\n");
+        EMIT("    float mode = fog_src.x == 3.0 ? 3.0 : fog_params.w;\n");
+        EMIT("    if (mode == 1.0) return saturate(exp(-fog_params.z * d));\n");
+        EMIT("    if (mode == 2.0) { float e = fog_params.z * d; return saturate(exp(-e * e)); }\n");
+        EMIT("    if (mode == 3.0) {\n");
+        EMIT("        float span = fog_params.y - fog_params.x;\n");
+        EMIT("        if (span == 0.0 || abs(d) > 3.0e38) return 1.0;\n");
+        EMIT("        return saturate((fog_params.y - d) / span);\n");
+        EMIT("    }\n");
+        EMIT("    return 1.0;\n");
+        EMIT("}\n\n");
+    }
+    if (sm5) {
     EMIT("float fog_factor(PS_IN input) {\n");
     EMIT("    if (fog_src.x == 0u) return saturate(input.fog);\n");
     EMIT("    float d = input.fog;\n");
@@ -905,6 +1011,7 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
     EMIT("    }\n");
     EMIT("    return 1.0;\n");
     EMIT("}\n\n");
+    }
 
     /* ---- Shadow compare ---- */
     for (i = 0; i < NV2A_MAX_TEXTURES && !state->shadow[i]; i++)
@@ -916,6 +1023,17 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
         EMIT("float shadow_test(float texel, float ref) {\n");
         EMIT("    float a = shadow_func.y ? ref : texel;\n");
         EMIT("    float b = shadow_func.y ? texel : ref;\n");
+        if (!sm5) {
+            EMIT("    if (shadow_func.x == 1.0) return 0.0;\n");
+            EMIT("    if (shadow_func.x == 2.0) return a <  b ? 1.0 : 0.0;\n");
+            EMIT("    if (shadow_func.x == 3.0) return a == b ? 1.0 : 0.0;\n");
+            EMIT("    if (shadow_func.x == 4.0) return a <= b ? 1.0 : 0.0;\n");
+            EMIT("    if (shadow_func.x == 5.0) return a >  b ? 1.0 : 0.0;\n");
+            EMIT("    if (shadow_func.x == 6.0) return a != b ? 1.0 : 0.0;\n");
+            EMIT("    if (shadow_func.x == 7.0) return a >= b ? 1.0 : 0.0;\n");
+            EMIT("    return 1.0;\n");
+            EMIT("}\n\n");
+        } else {
         EMIT("    switch (shadow_func.x) {\n");
         EMIT("    case 1: return 0.0;\n");
         EMIT("    case 2: return a <  b ? 1.0 : 0.0;\n");
@@ -927,6 +1045,7 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
         EMIT("    default: return 1.0;\n");
         EMIT("    }\n");
         EMIT("}\n\n");
+        }
     }
 
     /* The dot-product stages' input mappings, PS_DOTMAPPING_* (xemu psh.c
@@ -943,7 +1062,7 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
     }
 
     /* ---- Main function ---- */
-    EMIT("float4 main(PS_IN input) : SV_TARGET {\n");
+    EMIT("float4 main(PS_IN input) : %s {\n", sm5 ? "SV_TARGET" : "COLOR0");
     EMIT("    float shadow_dbg = 0.0;\n");
 
     /* Initialize register file */
@@ -973,7 +1092,10 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
      * distance, and Gladius's skinned characters (oFog = -32 or so, table
      * fog from 25 to 325) came out the flat fog colour when it was read as
      * the factor. */
-    EMIT("    float4 r_fog  = float4(fog_color.rgb, fog_factor(input));\n");
+    if (sm2)
+        EMIT("    float4 r_fog  = float4(fog_color.rgb, 1.0);\n");
+    else
+        EMIT("    float4 r_fog  = float4(fog_color.rgb, fog_factor(input));\n");
 
     /* Vertex colors: Xbox D3DCOLOR is BGRA in memory, the vertex shader
      * should have already swizzled to RGBA. */
@@ -989,20 +1111,20 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
             EMIT("    float4 r_t%d = float4(0, 0, 0, 0);\n", i);
         } else if (state->shadow[i]) {
             EMIT("    float4 r_t%d;\n", i);
-            if (emit_shadow_compare(buf, bufsize, &off, i) < 0)
+            if (emit_shadow_compare(state, buf, bufsize, &off, i) < 0)
                 return -1;
             continue;   /* no alpha_only fix-up: the result is the test */
         } else if (state->tex_mode[i] == NV2A_TEXMODE_CUBEMAP) {
             /* Cube map: use the full 3-component reflection/TCI vector */
-            EMIT("    float4 r_t%d = tex%d.Sample(samp%d, input.tc%d.xyz);\n",
-                 i, i, i, i);
+            EMIT("    float4 r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "input.tc%d.xyz", i));
         } else if (state->tex_mode[i] == NV2A_TEXMODE_3D) {
             /* 3D texture: use the full 3-component coordinate */
-            EMIT("    float4 r_t%d = tex%d.Sample(samp%d, input.tc%d.xyz);\n",
-                 i, i, i, i);
+            EMIT("    float4 r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "input.tc%d.xyz", i));
         } else {
-            EMIT("    float4 r_t%d = tex%d.Sample(samp%d, input.tc%d.xy * tex_scale[%d].xy);\n",
-                 i, i, i, i, i);
+            EMIT("    float4 r_t%d = %s;\n", i, sample_expr(smp, sizeof smp, state, i,
+                 "input.tc%d.xy * tex_scale[%d].xy", i, i));
         }
         /* Preserve disabled stages and sampled alpha. */
         if (state->tex_mode[i] != NV2A_TEXMODE_NONE)
@@ -1056,7 +1178,8 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
         EMIT("    {\n");
         EMIT("        bool mux_cd = %s;\n", (!known || (state->count_flags & 0x001u))
              ? "r_r0.a >= 0.5"
-             : "(((uint)(saturate(r_r0.a) * 255.0 + 0.5)) & 1u) != 0u");
+             : sm5 ? "(((uint)(saturate(r_r0.a) * 255.0 + 0.5)) & 1u) != 0u"
+                   : "fmod(floor(saturate(r_r0.a) * 255.0 + 0.5), 2.0) >= 1.0");
         for (k = 0; k < 4; k++) {
             EMIT("        float3 %s = ", rn_rgb[k]);
             emit_mapped_input(buf, bufsize, &off, &rgb_in[k], ".rgb", c0i, c1i);
@@ -1186,16 +1309,18 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
      * the discard alone costs early depth and hidden-surface removal for
      * every draw the shader makes, opaque ones included. */
     if (state->alpha_test) {
+        const char *u = sm5 ? "u" : ".0";   /* an unsigned compare in SM5 */
+
         EMIT("    /* Alpha test */\n");
         EMIT("    if (alpha_test_enable) {\n");
         EMIT("        bool alpha_pass = true;\n");
-        EMIT("        if      (alpha_func == 1u) alpha_pass = false;\n");
-        EMIT("        else if (alpha_func == 2u) alpha_pass = (result.a <  alpha_ref);\n");
-        EMIT("        else if (alpha_func == 3u) alpha_pass = (result.a == alpha_ref);\n");
-        EMIT("        else if (alpha_func == 4u) alpha_pass = (result.a <= alpha_ref);\n");
-        EMIT("        else if (alpha_func == 5u) alpha_pass = (result.a >  alpha_ref);\n");
-        EMIT("        else if (alpha_func == 6u) alpha_pass = (result.a != alpha_ref);\n");
-        EMIT("        else if (alpha_func == 7u) alpha_pass = (result.a >= alpha_ref);\n");
+        EMIT("        if      (alpha_func == 1%s) alpha_pass = false;\n", u);
+        EMIT("        else if (alpha_func == 2%s) alpha_pass = (result.a <  alpha_ref);\n", u);
+        EMIT("        else if (alpha_func == 3%s) alpha_pass = (result.a == alpha_ref);\n", u);
+        EMIT("        else if (alpha_func == 4%s) alpha_pass = (result.a <= alpha_ref);\n", u);
+        EMIT("        else if (alpha_func == 5%s) alpha_pass = (result.a >  alpha_ref);\n", u);
+        EMIT("        else if (alpha_func == 6%s) alpha_pass = (result.a != alpha_ref);\n", u);
+        EMIT("        else if (alpha_func == 7%s) alpha_pass = (result.a >= alpha_ref);\n", u);
         EMIT("        if (!alpha_pass) discard;\n");
         EMIT("    }\n\n");
     }
@@ -1325,7 +1450,8 @@ static RhiShader *compile_combiner_shader(const NV2ACombinerState *state)
     ss.len = (size_t)len;
     ss.name = "ps_combiner";
     ss.entry = "main";
-    ss.target = "ps_5_0";
+    ss.target = state->host == NV2A_HOST_SM3 ? "ps_3_0"
+              : state->host == NV2A_HOST_SM2 ? "ps_2_a" : "ps_5_0";
     ss.optimize = 1;
     {
         long long started = d3d8_compile_clock();
@@ -1393,10 +1519,11 @@ RhiShader *d3d8_combiners_get_shader(const NV2ACombinerState *state)
 
         entry = &g_cache[lru_slot];
         if (entry->shader) {
-            if (g_last_shader[0] == entry->shader)
-                g_last_shader[0] = NULL;
-            if (g_last_shader[1] == entry->shader)
-                g_last_shader[1] = NULL;
+            size_t k;
+
+            for (k = 0; k < sizeof g_last_shader / sizeof g_last_shader[0]; k++)
+                if (g_last_shader[k] == entry->shader)
+                    g_last_shader[k] = NULL;
             rhi_shader_destroy(entry->shader);
             entry->shader = NULL;
         }
@@ -1543,10 +1670,19 @@ BOOL d3d8_combiners_prepare_draw(void)
      * keeps its own remembered shader, so a toggle costs no lookup. */
     g_combiner_state.alpha_test = d3d8_alpha_test_can_reject(rs) ? 1 : 0;
 
+    /* The shader language, likewise per draw: under D3D9 it follows whether
+     * the draw's vertices come from a program (NV2A_HOST_*). */
+    g_combiner_state.host = !rhi_d3d9_active() ? NV2A_HOST_SM5
+                          : d3d8_shaders_draw_is_program() ? NV2A_HOST_SM3 : NV2A_HOST_SM2;
+
     /* Get or compile the pixel shader for this combiner state */
-    if (!g_last_shader[g_combiner_state.alpha_test])
-        g_last_shader[g_combiner_state.alpha_test] = d3d8_combiners_get_shader(&g_combiner_state);
-    ps = g_last_shader[g_combiner_state.alpha_test];
+    {
+        int k = g_combiner_state.alpha_test + 2 * g_combiner_state.host;
+
+        if (!g_last_shader[k])
+            g_last_shader[k] = d3d8_combiners_get_shader(&g_combiner_state);
+        ps = g_last_shader[k];
+    }
 
     /* Under RECOMP_D3D8_PS_DUMP, say which shader each draw actually binds.
      * Printed only when it changes, so the log stays readable and still
@@ -1677,6 +1813,22 @@ BOOL d3d8_combiners_prepare_draw(void)
                             swap ? ", compare reversed" : "");
                     fflush(stderr);
                 }
+            }
+        }
+
+        /* Shader Model 2 and 3 have no integers: the same values as floats. */
+        if (g_combiner_state.host != NV2A_HOST_SM5) {
+            UINT *u[] = {
+                &cb->alpha_func, &cb->alpha_test_enable, &cb->fog_enable,
+                &cb->alpha_only[0], &cb->alpha_only[1], &cb->alpha_only[2], &cb->alpha_only[3],
+                &cb->shadow_func, &cb->shadow_swap, &cb->shadow_pad[0], &cb->shadow_pad[1],
+                &cb->fog_src, &cb->fog_range, &cb->fog_pad[0], &cb->fog_pad[1],
+            };
+            size_t k;
+
+            for (k = 0; k < sizeof u / sizeof u[0]; k++) {
+                float f = (float)*u[k];
+                memcpy(u[k], &f, sizeof f);
             }
         }
 

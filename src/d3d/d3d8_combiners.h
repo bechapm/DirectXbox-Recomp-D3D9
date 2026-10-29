@@ -277,7 +277,13 @@ typedef struct NV2ACombinerState {
      * at most twice the shaders, not eight times. Set per draw from the
      * render states, like `shadow`, not from the token. */
     BYTE alpha_test;
-    BYTE key_pad[3];   /* zero: part of the key bytes, so never left unset */
+    /* --- The host shader language --- */
+    /* NV2A_HOST_*: what the shader is generated for. Only the Direct3D 9
+     * backend (rhi_d3d9.c, for RTX Remix) changes it, per draw: D3D9 pairs
+     * a vertex program's vs_3_0 only with a ps_3_0, and its fixed-function
+     * vertex pipeline only with a ps_2_x. */
+    BYTE host;
+    BYTE key_pad[2];   /* zero: part of the key bytes, so never left unset */
 
     /* Everything above decides the generated shader and is its cache key
      * (NV2A_COMBINER_KEY_BYTES). Everything below is uploaded to the
@@ -293,6 +299,14 @@ typedef struct NV2ACombinerState {
     DWORD final_c0; /* Final combiner C0: its own, PSFINALCOMBINERCONSTANT0 */
     DWORD final_c1; /* Final combiner C1: its own, PSFINALCOMBINERCONSTANT1 */
 } NV2ACombinerState;
+
+/* NV2ACombinerState.host */
+#define NV2A_HOST_SM5   0   /* ps_5_0: Direct3D 11, and Vulkan through DXC */
+#define NV2A_HOST_SM3   1   /* ps_3_0, under a D3D9 vertex program */
+#define NV2A_HOST_SM2   2   /* ps_2_a, under D3D9's fixed-function vertex pipeline:
+                             * no fog or view-position input (the fog register's
+                             * alpha is 1, and D3D9's own fog unit fogs the
+                             * result), and 32 constant registers */
 
 /* The bytes of NV2ACombinerState that select a shader. */
 #define NV2A_COMBINER_KEY_BYTES offsetof(NV2ACombinerState, c0)

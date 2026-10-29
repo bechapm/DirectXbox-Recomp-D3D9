@@ -79,9 +79,12 @@ static const int g_vs_slot_base[VS_SLOTS] = {
     216,    /* b7: the self-contained passes */
 };
 static const int g_ps_slot_base[PS_SLOTS] = {
-    16,     /* b0: the texture-stage pixel shader (d3d8_shaders.c) */
+    /* b0: the title's pixel stage -- the texture-stage shader (d3d8_shaders.c)
+     * or the register combiners (d3d8_combiners.c). From c0: under fixed
+     * function the combiners are ps_2_x, which has 32 registers. */
+    0,
     -1, -1, -1, -1, -1, -1,
-    0,      /* b7: the self-contained passes */
+    32,     /* b7: the self-contained passes */
 };
 #define VS_ADJUST_REG 255   /* RHI_VP_ADJUST */
 
@@ -1206,7 +1209,12 @@ static RhiShader *d9_shader_create(uint32_t stage, const RhiShaderSource *src, c
     text[plen + src->len] = 0;
     full.hlsl = text;
     full.len = plen + src->len;
-    full.target = stage == RHI_STAGE_VERTEX ? "vs_3_0" : "ps_3_0";
+    /* Shader Model 3, whatever the source was written for, except a pixel
+     * shader asked for as Shader Model 2: the one D3D9 runs under its
+     * fixed-function vertex pipeline (the register combiners' NV2A_HOST_SM2). */
+    full.target = stage == RHI_STAGE_VERTEX ? "vs_3_0"
+                : (src->target && strncmp(src->target, "ps_2_", 5) == 0) ? src->target
+                : "ps_3_0";
 
     if (src->macros) {
         for (; src->macros[n].name && n < 15; n++) {

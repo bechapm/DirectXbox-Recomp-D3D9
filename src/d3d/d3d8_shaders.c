@@ -1242,8 +1242,11 @@ static const float g_d9_identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 
 /* A stage's operations as they are drawn: the D3D8 defaults for an unset
  * operation, and a stage that reads a texture it does not have disabled, as
- * in the pixel shader above. A combiner program has stage 0 modulate its
- * texture by the diffuse colour and nothing after it. */
+ * in the pixel shader above. Under a combiner program -- drawn by the
+ * combiners' own shader, d3d8_combiners.c, so this only matters when that
+ * cannot be built -- stage 0 modulates its texture by the diffuse colour,
+ * and a later stage with a texture passes the colour on, enabled so that
+ * fixed function still gives the shader its coordinates. */
 typedef struct {
     DWORD cop, ca1, ca2, aop, aa1, aa2;
 } D9StageOps;
@@ -1253,9 +1256,10 @@ static void d9_stage_ops(UINT stage, IDirect3DBaseTexture8 *tex, D9StageOps *o)
     const DWORD *tss = d3d8_GetTSS(stage);
 
     if (d3d8_combiners_active()) {
-        o->cop = o->aop = stage == 0 ? D3DTOP_MODULATE : D3DTOP_DISABLE;
+        o->cop = o->aop = stage == 0 ? D3DTOP_MODULATE
+                        : tex ? D3DTOP_SELECTARG2 : D3DTOP_DISABLE;
         o->ca1 = o->aa1 = D3DTA_TEXTURE;
-        o->ca2 = o->aa2 = D3DTA_DIFFUSE;
+        o->ca2 = o->aa2 = stage == 0 ? D3DTA_DIFFUSE : D3DTA_CURRENT;
     } else if (!tss) {
         memset(o, 0, sizeof *o);
         o->cop = o->aop = D3DTOP_DISABLE;
@@ -1505,7 +1509,8 @@ static void d9_ff_prepare_draw(DWORD fvf)
             memcpy(m, g_d9_identity, sizeof m);
         else
             memcpy(m, d3d8_GetTransform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + i)), sizeof m);
-        if (d9_texel_scale(tex, &sx, &sy)) {
+        /* The combiners' shader scales its own (tex_scale). */
+        if (!d3d8_combiners_active() && d9_texel_scale(tex, &sx, &sy)) {
             int r;
             for (r = 0; r < 4; r++) {
                 m[r * 4 + 0] *= sx;
@@ -1533,7 +1538,7 @@ typedef struct {
     uint8_t    _pad;
 } D9PsKey;
 
-/* Its constants, from c16 (rhi_d3d9.c's register for uniform buffer b0) */
+/* Its constants, from c0 (rhi_d3d9.c's register for uniform buffer b0) */
 typedef struct {
     float tex_factor[4];
     float fog_color[4];
@@ -1607,10 +1612,10 @@ static void d9_ps_source(const D9PsKey *k, char *buf, int size)
     int off = 0, i;
 
 #define EMIT(...) do { if (off < size) off += snprintf(buf + off, (size_t)(size - off), __VA_ARGS__); } while (0)
-    EMIT("float4 TexFactor   : register(c16);\n"
-        "float4 FogColor    : register(c17);\n"
-        "float4 FogParams   : register(c18);\n"
-        "float4 TexScale[4] : register(c19);\n");
+    EMIT("float4 TexFactor   : register(c0);\n"
+        "float4 FogColor    : register(c1);\n"
+        "float4 FogParams   : register(c2);\n"
+        "float4 TexScale[4] : register(c3);\n");
     for (i = 0; i < 4; i++)
         if (k->dim[i])
             EMIT("%s s%d : register(s%d);\n", sampler[k->dim[i]], i, i);
@@ -1823,6 +1828,10 @@ static void d9_shutdown(void)
     g_d9_ps_count = 0;
 }
 
+/* The pixel stage is the register combiners' shader when the title set a
+ * combiner program (ps_3_0 under a vertex program, ps_2_x under fixed
+ * function: NV2ACombinerState.host), and the texture stages otherwise --
+ * D3D9's own under fixed function, d9_program_ps's under a program. */
 static void d9_prepare_draw(DWORD handle)
 {
     if (d3d8_vsh_prepare_draw(handle)) {
@@ -1830,10 +1839,12 @@ static void d9_prepare_draw(DWORD handle)
         d3d8_SetTwoDSqueeze(!d3d8_vsh_bound_uses_projection()
                             || d3d8_vsh_bound_projection_is_ortho());
         d9_title_states(0, 1);
-        d9_program_ps();
+        if (!d3d8_combiners_prepare_draw())
+            d9_program_ps();
     } else {
         d9_ff_prepare_draw(handle);
         d3d8_SetTwoDSqueeze(d3d8_fvf_transformed(handle));
+        d3d8_combiners_prepare_draw();
     }
     rhi_d3d9_title_draw();
 }

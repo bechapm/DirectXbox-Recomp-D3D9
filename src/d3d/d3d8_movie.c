@@ -43,7 +43,7 @@ typedef struct {
 } MovieConstants;
 
 static const char kShaderSource[] =
-    /* Direct3D 9 (rhi_d3d9.c): b7 is c216 in the vertex stage and c0 in the
+    /* Direct3D 9 (rhi_d3d9.c): b7 is c216 in the vertex stage and c32 in the
      * pixel stage, the vertex number comes from a stream, and a texel is
      * fetched at its centre with the sampler's default point filter. */
     "#ifdef RHI_D3D9\n"
@@ -51,8 +51,8 @@ static const char kShaderSource[] =
     "float4 rect : register(c216);\n"
     "float4 size : register(c217);\n"
     "#else\n"
-    "float4 rect : register(c0);\n"
-    "float4 size : register(c1);\n"
+    "float4 rect : register(c32);\n"
+    "float4 size : register(c33);\n"
     "#endif\n"
     "struct VSOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };\n"
     "VSOut vs_main(float id : RHI_VERTEX_ID) {\n"

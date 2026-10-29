@@ -1,7 +1,8 @@
 # A Direct3D 9 backend for RTX Remix
 
-**Status, October 2026:** written and compiled against the Windows headers;
-not yet run. `RECOMP_D3D8_BACKEND=d3d9` chooses it. This note is the design
+**Status, October 2026:** runs TimeSplitters 2 at full speed under Windows'
+own D3D9 and under RTX Remix 1.6.1, which path-traces it once a 3D scene
+gives it a camera. `RECOMP_D3D8_BACKEND=d3d9` chooses it. This note is the design
 and what is left; `src/d3d/rhi_d3d9.c` and `rhi_d3d9.h` are the reference.
 
 ## Why D3D9
@@ -35,7 +36,7 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
 | Pre-transformed (XYZRHW) | divide by the target's guest size in the VS | `POSITION` x, y, z under an orthographic `PROJECTION` of the guest target, so the viewport squeeze still applies and Remix sees 2D as orthographic |
 | Vertex program | vs_5_0 | vs_3_0 from the same generator: constants in registers c0, c192, c196; inputs by the XDK's register convention (v0 `POSITION`, v2 `NORMAL`, v3 `COLOR0`, v9 `TEXCOORD0`...) |
 | Pixel stage under a program | the generic FFP PS, or the combiner translator | a ps_3_0 written per combination of stage operations (`d9_ps_source`) |
-| Register combiner program | translated | stage 0's texture times diffuse (not translated yet) |
+| Register combiner program | translated, Shader Model 5 | translated, ps_3_0 under a vertex program and ps_2_a under fixed function (D3D9 pairs fixed function only with ps_2_x); one too long for ps_2_a draws stage 0's texture times diffuse |
 | Alpha test | in the pixel shader | D3D9's own render state, title draws only (`rhi_d3d9_title_draw`) |
 | Clear with rectangles | a quad per rectangle | D3D9 `Clear` with rectangles |
 | Screen copy | a draw | `StretchRect` |
@@ -89,7 +90,10 @@ lost, and the back buffer keeps its size.
 
 ## Known gaps
 
-- Register combiner programs are approximated.
+- A register combiner program too long for ps_2_a, under fixed function, is
+  approximated (stage 0's texture times diffuse). Under fixed function the
+  combiners' fog register reads no fog; D3D9's fog unit fogs the result.
+- A shadow-map stage compares one texel, not four filtered.
 - Vertex blending (skinned fixed-function) is ignored, as under D3D11.
 - Point sprites are one pixel, as under D3D11.
 - Frame interpolation is untested under D3D9.

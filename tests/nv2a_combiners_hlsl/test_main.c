@@ -27,6 +27,12 @@
  * SPIR-V elsewhere (rhi_vulkan_dxc.cpp). Every failure prints its seed, so
  * it can be reproduced alone: nv2a_combiners_hlsl_test <seed>.
  *
+ * On Windows each is also generated for the Direct3D 9 backend
+ * (NV2ACombinerState.host) and compiled as it is there: ps_3_0, which must
+ * always compile, and ps_2_a, which may run out of instructions or
+ * registers on a long program -- the backend then draws the stages'
+ * approximation, so those are counted, not failed.
+ *
  * Random configurations are not what titles write, and that is the point:
  * any legal one may be, and the generator must never emit invalid HLSL.
  * No device, window or game files. Without a compiler it is skipped (77).
@@ -180,11 +186,13 @@ static void build(uint32_t seed, NV2ACombinerState *state)
 }
 
 /* 1 compiled, 0 did not, -1 no compiler on this machine. */
-static int compile(const char *hlsl, int len, char *err, size_t err_len)
+static int compile(const char *hlsl, int len, int host, char *err, size_t err_len)
 {
 #if defined(_WIN32)
     ID3DBlob *code = NULL, *errors = NULL;
-    HRESULT hr = D3DCompile(hlsl, (SIZE_T)len, "combiner", NULL, NULL, "main", "ps_5_0",
+    HRESULT hr = D3DCompile(hlsl, (SIZE_T)len, "combiner", NULL, NULL, "main",
+                            host == NV2A_HOST_SM3 ? "ps_3_0"
+                            : host == NV2A_HOST_SM2 ? "ps_2_a" : "ps_5_0",
                             D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
     snprintf(err, err_len, "%s",
              errors ? (const char *)ID3D10Blob_GetBufferPointer(errors) : "(no message)");
@@ -197,6 +205,7 @@ static int compile(const char *hlsl, int len, char *err, size_t err_len)
     size_t bytes = 0;
     int ok;
 
+    (void)host;
     memset(&src, 0, sizeof src);
     src.hlsl = hlsl;
     src.len = (size_t)len;
@@ -213,12 +222,21 @@ static int compile(const char *hlsl, int len, char *err, size_t err_len)
 #endif
 }
 
+/* The hosts each configuration is compiled for: Direct3D 9's two only where
+ * D3DCompile is, as DXC does not take Shader Model 2 or 3. */
+#if defined(_WIN32)
+#define HOSTS 3
+#else
+#define HOSTS 1
+#endif
+
 int main(int argc, char **argv)
 {
     static char hlsl[1 << 18];
     static char err[16384];
+    static const char *const host_name[3] = { "ps_5_0", "ps_3_0", "ps_2_a" };
     uint32_t first = 0, count = CONFIGS, seed;
-    int failures = 0, checks = 0;
+    int failures = 0, checks = 0, sm2_left = 0, sm2_checks = 0;
 
     if (argc > 1) {
         first = (uint32_t)strtoul(argv[1], NULL, 0);
@@ -226,15 +244,18 @@ int main(int argc, char **argv)
     }
     for (seed = first; seed < first + count; seed++) {
         NV2ACombinerState state;
-        int len, r, at;
+        int len, r, at, host;
 
         build(seed, &state);
+        for (host = 0; host < HOSTS; host++)
         for (at = 0; at < 2; at++) {
             state.alpha_test = (BYTE)at;
+            state.host = (BYTE)host;
             len = d3d8_combiners_generate_hlsl(&state, hlsl, (int)sizeof hlsl);
             checks++;
             if (len <= 0) {
-                printf("FAIL seed %u alpha test %d: the generator produced nothing\n", seed, at);
+                printf("FAIL seed %u %s alpha test %d: the generator produced nothing\n",
+                       seed, host_name[host], at);
                 failures++;
                 continue;
             }
@@ -242,25 +263,40 @@ int main(int argc, char **argv)
              * is on, since a discard alone costs early depth. */
             if ((strstr(hlsl, "discard") != NULL) != at) {
                 failures++;
-                printf("FAIL seed %u alpha test %d: the source %s a discard\n", seed, at,
-                       at ? "lacks" : "contains");
+                printf("FAIL seed %u %s alpha test %d: the source %s a discard\n", seed,
+                       host_name[host], at, at ? "lacks" : "contains");
                 continue;
             }
-            r = compile(hlsl, len, err, sizeof err);
+            r = compile(hlsl, len, host, err, sizeof err);
             if (r < 0) {
                 printf("nv2a_combiners_hlsl: skipped, no shader compiler on this machine\n");
                 return 77;
             }
+            if (host == NV2A_HOST_SM2) {
+                /* Allowed to be too long; never anything else. */
+                sm2_checks++;
+                if (!r && (strstr(err, "X5608") || strstr(err, "X4532") ||
+                           strstr(err, "X5609") || strstr(err, "X5589") ||
+                           strstr(err, "too many") || strstr(err, "exceeded") ||
+                           strstr(err, "instruction limit"))) {
+                    sm2_left++;
+                    continue;
+                }
+            }
             if (!r) {
                 failures++;
-                printf("FAIL seed %u alpha test %d: the generated HLSL does not compile\n%s\n",
-                       seed, at, err);
+                printf("FAIL seed %u %s alpha test %d: the generated HLSL does not compile\n%s\n",
+                       seed, host_name[host], at, err);
                 if (count == 1 || failures == 1)
                     printf("---- source ----\n%s\n", hlsl);
             }
         }
     }
     printf("nv2a_combiners_hlsl: %d shaders (%u configurations, each without and with the "
-           "alpha test), %d failed\n", checks, (unsigned)count, failures);
+           "alpha test, for %d shader language%s), %d failed\n", checks, (unsigned)count,
+           HOSTS, HOSTS == 1 ? "" : "s", failures);
+    if (sm2_checks)
+        printf("nv2a_combiners_hlsl: %d of %d ps_2_a shaders over its limits (drawn by the "
+               "texture stages instead)\n", sm2_left, sm2_checks);
     return failures ? 1 : 0;
 }
