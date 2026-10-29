@@ -1984,19 +1984,24 @@ static void draw_failed(const char *what, HRESULT hr)
  * given an orthographic projection (the title's 2D: Remix ray traces a
  * vertex program's draw as geometry whatever its projection) are left out,
  * to see what they do to Remix's picture. */
-static int g_cam_ortho;
+static int g_cam_ortho, g_skip_next;
 
 static int skip_ortho_draw(void)
 {
     static int on = -1;
-    int ortho = g_cam_ortho;
+    int ortho = g_cam_ortho, skip = g_skip_next;
 
     if (on < 0) {
         const char *e = getenv("RECOMP_D3D9_SKIP_ORTHO");
         on = e && e[0] == '1';
     }
-    g_cam_ortho = 0;
-    return on && ortho;
+    g_cam_ortho = g_skip_next = 0;
+    return skip || (on && ortho);
+}
+
+void rhi_d3d9_skip_next_draw(void)
+{
+    g_skip_next = 1;
 }
 
 static void d9_draw(uint32_t n, uint32_t first)
@@ -2362,6 +2367,10 @@ void rhi_d3d9_set_material(const void *material) { (void)material; }
 void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16])
 {
     (void)world; (void)view; (void)proj;
+}
+
+void rhi_d3d9_skip_next_draw(void)
+{
 }
 int rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h)
 {

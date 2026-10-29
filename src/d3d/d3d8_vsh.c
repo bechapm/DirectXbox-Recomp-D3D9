@@ -2150,6 +2150,33 @@ void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]))
     g_remix_view_source = source;
 }
 
+/* RECOMP_D3D9_SKIP_VS=<hash>[,<hash>...]: a test switch. Under D3D9, draws
+ * through those programs (hex, as the logs print them) are left out, to
+ * find which draws a fault in Remix's picture comes with. */
+static int skip_vs_hash(uint32_t hash)
+{
+    static uint32_t list[32];
+    static int n = -1;
+    int i;
+
+    if (n < 0) {
+        const char *e = getenv("RECOMP_D3D9_SKIP_VS");
+        n = 0;
+        while (e && *e && n < 32) {
+            char *end;
+            unsigned long v = strtoul(e, &end, 16);
+            if (end == e)
+                break;
+            list[n++] = (uint32_t)v;
+            e = *end == ',' ? end + 1 : end;
+        }
+    }
+    for (i = 0; i < n; i++)
+        if (list[i] == hash)
+            return 1;
+    return 0;
+}
+
 static void d3d9_camera_for_draw(void)
 {
     static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
@@ -2335,5 +2362,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
     }
 
     d3d9_camera_for_draw();
+    if (rhi_d3d9_active() && skip_vs_hash(hash))
+        rhi_d3d9_skip_next_draw();
     return TRUE;
 }

@@ -127,6 +127,9 @@ int  rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
  * world space, and through world to the object's own. */
 void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16]);
 
+/* A test switch: leave out the next draw (d3d8_vsh.c's RECOMP_D3D9_SKIP_VS). */
+void rhi_d3d9_skip_next_draw(void);
+
 /* Put the finished scene on the screen: copy `scene` (the scene target's
  * sampled view) to the back buffer, which the backend keeps the scene's
  * size so that Remix takes the scene's draws as the screen's, and have the
