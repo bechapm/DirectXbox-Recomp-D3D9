@@ -33,8 +33,14 @@
  *    c255) and by the projection a fixed-function draw is given.
  *  - No depth clamp: D3D9 always clips to 0 <= z <= w. Where the raster
  *    state asks for clamping (depth_clip 0, the title's draws by default)
- *    RHI_VP_ADJUST clamps each vertex's z into that range instead (flag at
- *    c254), so geometry past the far plane is drawn at it, not cut away.
+ *    RHI_VP_ADJUST clamps each vertex's z instead (flags at c254), so
+ *    geometry past the far plane is drawn at it, not cut away. Only some
+ *    draws are clamped at the near plane too (near_clamp): a screen-space
+ *    draw's panels can sit just in front of it, all at one depth, so nothing
+ *    tilts. Any other 3D vertex in front of it is left alone, and D3D9 clips
+ *    there: moved to z = 0 it tilted its whole triangle, and an overlay on a
+ *    wall then failed its depth test across the wall (TimeSplitters 2's
+ *    Hospital).
  *    A vertex behind the eye is left as it is: giving it z = w / 2 kept an
  *    edge to it inside 0 <= z <= w only at that vertex, and the floor under
  *    the eye, which reaches w = 0 on screen, was cut away by the far plane.
@@ -117,8 +123,11 @@ static const char kVsPreludeEnd[] =
     "void rhi_vp_adjust_pos(inout float4 p)\n"
     "{\n"
     "    p.xy = p.xy * rhi_vp_adjust.xy + rhi_vp_adjust.zw * p.w;\n"
-    "    if (rhi_depth_clamp.x != 0 && p.w > 0)\n"
-    "        p.z = clamp(p.z, 0, p.w);\n"
+    "    if (rhi_depth_clamp.x != 0 && p.w > 0) {\n"
+    "        p.z = min(p.z, p.w);\n"
+    "        if (rhi_depth_clamp.y != 0)\n"
+    "            p.z = max(p.z, 0);\n"
+    "    }\n"
     "    RHI_MOD_POSITION(p);\n"
     "}\n"
     "#define RHI_VP_ADJUST(p) rhi_vp_adjust_pos(p)\n"
@@ -342,7 +351,7 @@ static struct {
     int              ds_dirty;
     float            adjust[4];          /* RHI_VP_ADJUST for the current viewport */
     int              adjust_sent;
-    float            clamp[4];           /* and its depth clamp flag */
+    float            clamp[4];           /* and its depth clamp flags: on, and at the near plane */
     int              clamp_sent;
     int              vid_bound;
 } g_b;
@@ -2221,6 +2230,21 @@ static void apply_constants(void)
     }
 }
 
+/* Whether the draw in hand is clamped at the near plane too. Screen-space, or
+ * added to the picture without writing depth: a snowflake passing the eye is
+ * kept, and has no surface to stay level with. */
+static float near_clamp(void)
+{
+    const RhiDepthDesc *d = g_b.depth ? &g_b.depth->d : NULL;
+
+    if (!g_draw_title)
+        return 0.0f;
+    if (g_title_2d)
+        return 1.0f;
+    return d && !d->depth_write && g_rs[D3DRS_ALPHABLENDENABLE] &&
+           g_rs[D3DRS_DESTBLEND] == D3DBLEND_ONE ? 1.0f : 0.0f;
+}
+
 static int prepare_draw(void)
 {
     int i;
@@ -2259,6 +2283,10 @@ static int prepare_draw(void)
     set_rs(D3DRS_ALPHATESTENABLE, g_title_draw ? g_title_alpha_test : FALSE);
     g_draw_title = g_title_draw;
     g_title_draw = 0;
+    if (g_b.clamp[1] != near_clamp()) {
+        g_b.clamp[1] = near_clamp();
+        g_b.clamp_sent = 0;
+    }
     apply_constants();
     if (g_b.layout) {
         /* Stream 0 back from the vertex numbers to what rhi.h bound there:
