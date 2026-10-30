@@ -198,7 +198,12 @@ static const char g_vs_source[] =
     "\n"
     "    o.pos = mul(float4(input.pos.xyz, 1.0), WorldViewProj);\n"
     "    float4 viewPos4 = mul(float4(input.pos.xyz, 1.0), WorldView);\n"
-    "    o.viewpos = viewPos4;\n"
+    /* For table fog, which reads -viewpos.z as the distance (as a vertex
+     * program's oFog is handed over, d3d8_vsh.c, and the combiners read it):
+     * D3D's view space looks down +z, so the distance is z, stored negated.
+     * Stored as it was, every distance was negative and nothing was fogged:
+     * Rainbow Six 3's far walls stayed dark where they grey towards the fog. */
+    "    o.viewpos = float4(viewPos4.xy, -viewPos4.z, 1.0);\n"
     "    float3 posCam = viewPos4.xyz;\n"
     "    float3 nrmCam = float3(0, 0, 1);\n"
     "\n"
