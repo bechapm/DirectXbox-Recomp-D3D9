@@ -45,7 +45,8 @@
 #include "d3d8_combiners.h"
 #include "d3d8_capture.h"
 #include "hle_d3d8_record.h"
-#include "recomp_config.h"   /* RECOMP_HLE_D3D8_DEFER / defer_draws */
+#include "recomp_config.h"   /* RECOMP_HLE_D3D8_DEFER / defer_draws, the title ID */
+#include "recomp_mods.h"     /* the mods' calls before each recorded draw */
 
 /* hle_d3d8.c: the shadow device, or NULL. */
 IDirect3DDevice8 *hle_d3d8_shadow_device(void);
@@ -68,8 +69,6 @@ static unsigned long  g_every;       /* RECOMP_D3D8_CAPTURE_EVERY, 0 = once */
 static unsigned long  g_min_draws;   /* RECOMP_D3D8_CAPTURE_MINDRAWS, 0 = any */
 static unsigned       g_files;
 static char           g_file[1024];  /* the file being written */
-static float          g_cap_view[16];   /* the Remix view last recorded */
-static int            g_cap_view_set;   /* ...in this capture */
 /* RECOMP_D3D8_CAPTURE_AT: windows of swaps, as RECOMP_HLE_D3D8_DUMP_AT. */
 static struct { unsigned long from, count, every; } g_windows[16];
 static int            g_window_count;
@@ -529,7 +528,11 @@ static void capture_snapshot(IDirect3DDevice8 *dev)
     int enabled, slot, i;
     DWORD vs = 0, s, t;
     D3DVIEWPORT8 vp;
+    D3D8CapTitle title;
 
+    /* First, so a replay knows the title before it walks the frame. */
+    title.title_id = recomp_config_title_id();
+    chunk(D3D8CAP_TITLE, &title, sizeof title, NULL, 0, NULL, 0);
     rec_scene(dev);
     for (slot = 0; slot < NV2A_VS_MAX_SLOTS; slot++) {
         const DWORD *microcode;
@@ -794,7 +797,6 @@ start:
     } else {
         snprintf(g_file, sizeof g_file, "%s", g_path);
     }
-    g_cap_view_set = 0;
     g_cap = d3d8cap_create(g_file, (uint32_t)swaps, width, height);
     if (!g_cap) {
         fprintf(stderr, "[HLE-D3D8] capture: cannot write %s; capture off\n", g_file);
@@ -1402,17 +1404,33 @@ static void op_draw_indexed_up(const void *arg)
                                 p->stride);
 }
 
-/* Before a recorded draw: the view Remix gets with it, when it changed. */
-static void rec_remix_view(void)
-{
-    D3D8CapRemixView c;
+typedef struct { uint32_t tag, bytes; } dq_note;
 
-    xbox_D3D8RemixView(c.m);
-    if (g_cap_view_set && memcmp(c.m, g_cap_view, sizeof g_cap_view) == 0)
+static void op_note(const void *arg)
+{
+    const dq_note *p = (const dq_note *)arg;
+    hle_d3d8_capture_note(p->tag, DEFER_PART_A(arg, dq_note), p->bytes);
+}
+
+/* Queued while frames are deferred, like a draw, so a note made as the
+ * title goes still lands before the draw it was made for. A frame that is
+ * not being recorded is not recorded at its flush either, so then there is
+ * nothing to queue. */
+void hle_d3d8_capture_note(uint32_t tag, const void *data, uint32_t bytes)
+{
+    D3D8CapModNote c;
+
+    if (!g_cap || (bytes && !data))
         return;
-    memcpy(g_cap_view, c.m, sizeof g_cap_view);
-    g_cap_view_set = 1;
-    chunk(D3D8CAP_REMIX_VIEW, &c, sizeof c, NULL, 0, NULL, 0);
+    if (hle_d3d8_defer_recording()) {
+        dq_note p;
+        p.tag = tag;
+        p.bytes = bytes;
+        defer_call(op_note, &p, sizeof p, data, bytes, NULL, 0);
+        return;
+    }
+    c.tag = tag;
+    chunk(D3D8CAP_MOD_NOTE, &c, sizeof c, data, bytes, NULL, 0);
 }
 
 HRESULT host_DrawPrimitiveUP(IDirect3DDevice8 *dev, D3DPRIMITIVETYPE type,
@@ -1434,7 +1452,7 @@ HRESULT host_DrawPrimitiveUP(IDirect3DDevice8 *dev, D3DPRIMITIVETYPE type,
         uint64_t bytes = (uint64_t)d3d8_up_vertices_read(type, prims) * stride;
 
         if (bytes <= 0xFFFFFFFFu) {
-            rec_remix_view();
+            recomp_mods_capture_draw();
             c.prim_type    = (uint32_t)type;
             c.prim_count   = prims;
             c.stride       = stride;
@@ -1493,7 +1511,7 @@ HRESULT host_DrawIndexedPrimitiveUP(IDirect3DDevice8 *dev, D3DPRIMITIVETYPE type
         uint64_t vbytes = (uint64_t)num_vertices * stride;
 
         if (ibytes <= 0xFFFFFFFFu && vbytes <= 0xFFFFFFFFu) {
-            rec_remix_view();
+            recomp_mods_capture_draw();
             c.prim_type    = (uint32_t)type;
             c.min_index    = min_index;
             c.num_vertices = num_vertices;
