@@ -2147,7 +2147,7 @@ static void draw(void)
                 theme_text(lr, "Mouse look", 12, 600,
                            lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
                 theme_text(cv, g_settings.mouse_look
-                                   ? "On  (the mouse moves controller 1's right stick)"
+                                   ? "On  (the mouse aims)"
                                    : "Off",
                            12, 400, lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
             } else if (k == BIND_ROW_SENS) {
@@ -2224,10 +2224,10 @@ static void draw(void)
                 : k == BIND_ROW_API    ? "All controllers reads Xbox, PlayStation, Switch and most other pads. "
                                          "Xbox controllers only is the older XInput path, for a pad that misbehaves. "
                                          "Every game uses this."
-                : k == BIND_ROW_MOUSE  ? "Moving the mouse turns controller 1's right stick, and the stick "
-                                         "itself still works. Click in the game to give it the pointer; "
+                : k == BIND_ROW_MOUSE  ? "Moving the mouse aims: in a game that turns by it itself, directly, "
+                                         "else through controller 1's right stick, which still works too. Click in the game to give it the pointer; "
                                          "switching away gives it back. This game only."
-                : k == BIND_ROW_SENS   ? "How far a movement of the mouse pushes the stick: higher turns faster. "
+                : k == BIND_ROW_SENS   ? "How far a movement of the mouse turns you: higher turns faster. "
                                          "A or Enter goes back to the default. This game only."
                 : k == BIND_ROW_RESET  ? "Put this controller back to the built-in mapping."
                 : "Left and right choose the controller or the keyboard and mouse column. "

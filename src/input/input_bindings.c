@@ -746,7 +746,7 @@ void recomp_bindings_init(void)
         fprintf(stderr, "[INPUT]   controller %d: %s\n", i + 1, g_ctl[i].label);
     look_settings();
     if (g_look.on)
-        fprintf(stderr, "[INPUT] mouse look: controller 1's right stick, sensitivity %d%s\n",
+        fprintf(stderr, "[INPUT] mouse look: on, sensitivity %d (the right stick unless the title turns by it itself)%s\n",
                 g_look.sensitivity,
                 g_ctl[0].device == DEV_NONE ? " -- but controller 1 reads nothing" : "");
     fflush(stderr);
