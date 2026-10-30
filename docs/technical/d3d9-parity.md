@@ -116,6 +116,12 @@ sprites are one pixel.
 
 TimeSplitters 2 mostly draws through vertex programs and register combiners,
 so it leaves the fixed-function path and the ps_2_a combiners nearly
-untested. Max Payne (XDK 4134, much of its picture and HUD through fixed
-function) and Rainbow Six 3 (XDK 5659) are the next titles to take through the
-three comparisons above, then Gladius or Pro Evolution Soccer 5.
+untested. Taken through the three comparisons since:
+
+| Title | D3D11 against plain D3D9 | Under Remix |
+|---|---|---|
+| TimeSplitters 2 | the same (at most 0.0003 mean on 8 frames) | HUD, weapons and sky; lights to author |
+| Max Payne (PAL, XDK 4134) | the same (at most 0.0005 on 8 frames) after D3D11's fixed-function normals were fixed | lit by its own lights, HUD on top; menus traced (washed out) and the graphic novel grey: whole frames of 2D under its 3D camera |
+| Rainbow Six 3 (XDK 5659) | the same (at most 0.01 on 7 frames) after D3D11's reflection vector, 2D texture matrices and table fog, and D3D9's texture-op numbering, were fixed | the level, steady, once its post passes, depth reset and sky zone are kept from Remix; lightmapped, so lights to author; its bloom and depth of field are lost |
+
+Gladius or Pro Evolution Soccer 5 next.
