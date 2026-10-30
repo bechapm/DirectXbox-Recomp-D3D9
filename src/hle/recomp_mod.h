@@ -13,8 +13,8 @@
  *
  *     int recomp_mod_init(const RecompModApi *api);
  *
- * called once, on the thread making the device, before the title's first
- * draw. It returns nonzero to stay loaded; zero (not this title, say) and
+ * called once, on the thread making the device, as it starts making it
+ * (so before the device exists, and before the title's first draw). It returns nonzero to stay loaded; zero (not this title, say) and
  * it is unloaded again. The api it is handed lives for the whole run.
  *
  * This header is the whole contract, and stands alone: a mod is built
@@ -166,7 +166,10 @@ typedef struct RecompModApi {
     int   (*replaying)(void);
 
     /* fn(user) just before each draw is written to a frame capture, while
-     * one is being made. Up to 8 across mods; 0 when full. */
+     * one is being made. Up to 8 across mods; 0 when full. With the
+     * title's calls deferred (RECOMP_HLE_D3D8_DEFER), draws are written
+     * when the frame's queue is run, at its end: guest memory then shows
+     * the end of the frame, not the moment of that draw. */
     int   (*capture_on_draw)(void (*fn)(void *user), void *user);
 
     /* While a capture is being made: bytes of the mod's own, stored at this
