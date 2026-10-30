@@ -1302,6 +1302,21 @@ static void d9_stage_ops(UINT stage, IDirect3DBaseTexture8 *tex, D9StageOps *o)
         o->cop = D3DTOP_DISABLE;
 }
 
+/* A texture operation in D3D9's numbering. The renderer's own (d3d8_xbox.h,
+ * which hle_d3d8_state.c maps the Xbox's onto) has no BLENDTEXTUREALPHAPM,
+ * so from BLENDCURRENTALPHA on it runs one behind D3D9's until DOTPRODUCT3.
+ * Handed over as it was, Rainbow Six 3's BLENDCURRENTALPHA reached D3D9 as
+ * BLENDTEXTUREALPHAPM (Arg1 + Arg2 x (1 - texture alpha)): its scope lens
+ * showed the whole cube map where 20% of it belonged. */
+static DWORD d9_top(DWORD op)
+{
+    if (op == D3DTOP_BLENDCURRENTALPHA)
+        return 16;                      /* D3D9's D3DTOP_BLENDCURRENTALPHA */
+    if (op == D3DTOP_PREMODULATE)
+        return 17;                      /* D3D9's D3DTOP_PREMODULATE */
+    return op;
+}
+
 /* The scale a linear texture's coordinates take (they are in texels on the
  * NV2A; NV2APSConstants.tex_scale in d3d8_combiners.h), or 0 for none. */
 static int d9_texel_scale(IDirect3DBaseTexture8 *tex, float *sx, float *sy)
@@ -1505,7 +1520,7 @@ static void d9_ff_prepare_draw(DWORD fvf)
         D9StageOps o;
 
         d9_stage_ops(i, tex, &o);
-        rhi_d3d9_set_texture_stage(i, D3DTSS_COLOROP, o.cop);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_COLOROP, d9_top(o.cop));
         if (o.cop == D3DTOP_DISABLE)
             break;
         rhi_d3d9_set_texture_stage(i, D3DTSS_COLORARG1, o.ca1);
@@ -1516,7 +1531,7 @@ static void d9_ff_prepare_draw(DWORD fvf)
             o.aop = D3DTOP_SELECTARG1;
             o.aa1 = D3DTA_CURRENT;
         }
-        rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAOP, o.aop);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAOP, d9_top(o.aop));
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG1, o.aa1);
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG2, o.aa2);
         rhi_d3d9_set_texture_stage(i, D3DTSS_TEXCOORDINDEX, tss ? tss[D3DTSS_TEXCOORDINDEX] : i);
