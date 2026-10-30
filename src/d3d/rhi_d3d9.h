@@ -87,8 +87,9 @@ void rhi_d3d9_set_render_state(uint32_t state, uint32_t value);
 /* The next draw is the title's, under the alpha test it set. Every other
  * draw -- the overlay, the display passes -- is drawn without one. `two_d`
  * is the renderer's verdict that it is screen-space (d3d8_SetTwoDSqueeze),
- * which decides what Remix is told it is. */
-void rhi_d3d9_title_draw(int two_d);
+ * which decides what Remix is told it is; `offscreen`, that it goes to a
+ * texture the title renders into rather than its back buffer. */
+void rhi_d3d9_title_draw(int two_d, int offscreen);
 /* After rhi_d3d9_title_draw: the title's own test (xbox_D3D8SetScreenSpaceTest)
  * called the next draw, a fixed-function one through the world's projection,
  * screen-space. Remix is told it is UI, as it is not by itself. `w` is the

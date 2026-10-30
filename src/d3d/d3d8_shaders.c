@@ -1872,7 +1872,7 @@ static void d9_prepare_draw(DWORD handle)
         d3d8_SetTwoDSqueeze(two_d);
         d3d8_combiners_prepare_draw();
     }
-    rhi_d3d9_title_draw(two_d);
+    rhi_d3d9_title_draw(two_d, !d3d8_target_is_back_buffer());
 }
 
 void d3d8_shaders_prepare_draw(DWORD handle)

@@ -122,6 +122,14 @@ BOOL d3d8_target_is_screen(void)
 {
     return g_cur_rt == NULL || scene_sized(g_cur_rt->width, g_cur_rt->height);
 }
+
+/* Whether draws go to the back buffer itself (NULL, or the surface
+ * GetBackBuffer gives, which is the same image), not to a texture of any
+ * size: Remix takes a target of the back buffer's size for the picture. */
+BOOL d3d8_target_is_back_buffer(void)
+{
+    return g_cur_rt == NULL || g_cur_rt->image == g_device_state.rhi_scene_image;
+}
 static D3D8Surface *g_cur_ds = NULL;
 /* The device's own depth buffer as a surface object, so SetRenderTarget can
  * name it: a NULL depth surface means no depth, as in D3D8. */

@@ -289,6 +289,7 @@ static float   g_title_2d_w;          /* and the draw's clip w, or 0 */
 static float   g_dev_world[16], g_dev_view[16];  /* WORLD and VIEW as the device has them */
 static int     g_flat_applied;        /* the device holds a flat_2d draw's transforms */
 static int     g_draw_ui;             /* remix_draw marked the draw in hand UI */
+static int     g_title_offscreen;     /* the title's draw goes to a texture (rhi_d3d9_title_draw) */
 static DWORD   g_title_alpha_test;    /* its D3DRS_ALPHATESTENABLE */
 static float   g_ff_proj[16];
 static int     g_ff_proj_set, g_ff_proj_dirty;
@@ -2441,6 +2442,30 @@ static void learn_2d(void)
 }
 
 
+/* A fixed-function draw whose WORLD x VIEW x PROJECTION leaves w alone
+ * (identity or orthographic: quads given in clip space or in pixels), into a
+ * texture the title renders into rather than its back buffer: a post pass.
+ * Rainbow Six 3 builds its blur and bloom so, with every transform identity,
+ * into a texture the size of the screen, which Remix takes for the frame's
+ * picture: it ray traced those quads and took their camera, at the origin
+ * looking down z, for the frame's, and the whole level came out black. */
+static int offscreen_pass(void)
+{
+    float vp[4], c[4];
+    int r, k;
+
+    if (g_b.vs || !g_title_offscreen || !g_ff_proj_set)
+        return 0;
+    for (r = 0; r < 4; r++)
+        for (vp[r] = 0.0f, k = 0; k < 4; k++)
+            vp[r] += g_dev_view[r * 4 + k] * g_ff_proj[k * 4 + 3];
+    for (r = 0; r < 4; r++)
+        for (c[r] = 0.0f, k = 0; k < 4; k++)
+            c[r] += g_dev_world[r * 4 + k] * vp[k];
+    return fabsf(c[0]) < 1e-6f && fabsf(c[1]) < 1e-6f && fabsf(c[2]) < 1e-6f &&
+           fabsf(c[3] - 1.0f) < 1e-6f;
+}
+
 static int screen_draw_kind(void)
 {
     static int skip_all = -1;
@@ -2456,6 +2481,8 @@ static int screen_draw_kind(void)
         return DRAW_SKIP;
     if (!g_remix_2d || !title)
         return DRAW_PLAIN;      /* the overlay and the display passes */
+    if (offscreen_pass())
+        return DRAW_SKIP;
     g_frame_draws++;
     if (!two_d) {
         g_frame_last_3d = g_frame_draws;
@@ -2748,9 +2775,10 @@ void rhi_d3d9_set_render_state(uint32_t state, uint32_t value)
         set_rs((D3DRENDERSTATETYPE)state, value);
 }
 
-void rhi_d3d9_title_draw(int two_d)
+void rhi_d3d9_title_draw(int two_d, int offscreen)
 {
     g_title_draw = 1;
+    g_title_offscreen = offscreen != 0;
     g_title_2d = two_d != 0;
     g_title_said_2d = 0;
     g_title_2d_w = 0.0f;
@@ -2892,7 +2920,7 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index)
     return "ATTR";
 }
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value) { (void)state; (void)value; }
-void rhi_d3d9_title_draw(int two_d) { (void)two_d; }
+void rhi_d3d9_title_draw(int two_d, int offscreen) { (void)two_d; (void)offscreen; }
 void rhi_d3d9_title_says_2d(float w) { (void)w; }
 int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                        const RhiRect *dst_rect)
