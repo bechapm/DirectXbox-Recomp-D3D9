@@ -112,12 +112,10 @@ lost, and the back buffer keeps its size.
 ## Known gaps
 
 [d3d9-parity.md](d3d9-parity.md) lists every place this backend draws
-differently from D3D11, and what Remix is told about the title's 2D and sky
-(`remix_draw` in `rhi_d3d9.c`: 2D drawn by programs, and fixed-function 2D
-the title's own test calls screen-space, is marked as UI with a fixed
-texture, `rtx.uiTextures = 0xA2F17C4A8F3E3CEA`; the sky gets a viewport
-Remix takes for sky). `RECOMP_D3D9_SKIP_ORTHO=1` leaves the 2D out, for
-testing.
+differently from D3D11. What Remix needs told about a title's 2D, sky and
+post passes is not the renderer's: a mod does it through the per-draw hooks
+in `src/hle/recomp_mod.h`. Without one, Remix sees the title as a plain
+D3D9 game, and traces its 2D as geometry.
 
 - The PAL release of TimeSplitters 2 does not hand its camera over yet.
 

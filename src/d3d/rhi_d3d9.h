@@ -86,13 +86,13 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index);
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value);
 /* The next draw is the title's, under the alpha test it set. Every other
  * draw -- the overlay, the display passes -- is drawn without one. `two_d`
- * is the renderer's verdict that it is screen-space (d3d8_SetTwoDSqueeze),
- * which decides what Remix is told it is; `offscreen`, that it goes to a
- * texture the title renders into rather than its back buffer. */
+ * is the renderer's verdict that it is screen-space (d3d8_SetTwoDSqueeze);
+ * `offscreen`, that it goes to a texture the title renders into rather than
+ * its back buffer. Both are passed on to mods (RecompModDraw). */
 void rhi_d3d9_title_draw(int two_d, int offscreen);
 /* After rhi_d3d9_title_draw: the title's own test (xbox_D3D8SetScreenSpaceTest)
  * called the next draw, a fixed-function one through the world's projection,
- * screen-space. Remix is told it is UI, as it is not by itself. `w` is the
+ * screen-space, which mods are told (RecompModDraw.title_2d). `w` is the
  * draw's clip w (its depth in front of the camera), the same at every vertex
  * of such a draw, or 0 if not known. */
 void rhi_d3d9_title_says_2d(float w);
@@ -146,6 +146,24 @@ void rhi_d3d9_skip_next_draw(void);
  * with bars around it. The D3D9 replacement for d3d8_display_resolve: a
  * copy, not a draw, so Remix never sees it. 0 on success. */
 int  rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h);
+
+/* ---- mods (src/hle/recomp_mod.h, version 2) --------------------------------------- */
+
+#include "../hle/recomp_mod.h"
+
+/* What recomp_mods.c hands a mod as d3d9_*: hooks on the device being made,
+ * each draw, each clear and each present; HLSL for every vertex program;
+ * the render states as set; the fixed-function projection with the
+ * viewport correction; and textures made anew when written after use.
+ * Each on_* returns 0 when full. No-ops off Windows. */
+int  rhi_d3d9_mod_on_device(RecompModDeviceFn fn, void *user);
+int  rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, void *user);
+int  rhi_d3d9_mod_on_clear(RecompModClearFn fn, void *user);
+int  rhi_d3d9_mod_on_present(RecompModDeviceFn fn, void *user);
+int  rhi_d3d9_mod_vertex_hlsl(const char *hlsl);
+int  rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value);
+void rhi_d3d9_mod_set_projection(const float m[16]);
+void rhi_d3d9_mod_remake_written_textures(int on);
 
 #ifdef __cplusplus
 }

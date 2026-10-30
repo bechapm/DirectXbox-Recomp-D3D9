@@ -9,6 +9,7 @@
 #include "platform/host_main.h"          /* host_exe_path, host_path_dirname */
 #include "recomp_config.h"               /* recomp_config_title_id */
 #include "d3d8_xbox.h"                   /* the vertex constants, the Remix view source */
+#include "rhi_d3d9.h"                     /* the D3D9 renderer's hooks */
 #include "../kernel/xbox_memory_layout.h"  /* guest memory, the title's name */
 
 #include <stdio.h>
@@ -72,6 +73,14 @@ static const RecompModApi g_api = {
     xbox_D3D8VertexConstants,
     xbox_D3D8SetRemixViewSource,
     api_log,
+    rhi_d3d9_mod_on_device,
+    rhi_d3d9_mod_on_draw,
+    rhi_d3d9_mod_on_clear,
+    rhi_d3d9_mod_on_present,
+    rhi_d3d9_mod_vertex_hlsl,
+    rhi_d3d9_mod_render_state,
+    rhi_d3d9_mod_set_projection,
+    rhi_d3d9_mod_remake_written_textures,
 };
 
 /* ---- loading ---------------------------------------------------------------- */
