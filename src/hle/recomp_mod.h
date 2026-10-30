@@ -20,7 +20,16 @@
  * This header is the whole contract, and stands alone: a mod is built
  * against a copy of it, not against the toolkit. Fields are only ever
  * added at the end; a mod checks `size` before using one newer than it
- * knows, and `version` names the newest set.
+ * knows, and `version` names the newest set. (Versions 1 and 2 were never
+ * released, and 3 is laid out anew: a mod built against them is rebuilt.)
+ *
+ * Mods are loaded by d3d8_replay too, when it replays a frame capture
+ * (RECOMP_D3D8_CAPTURE_AT), so a mod's changes to the picture can be seen
+ * on the same frames again and again. There the title is not running:
+ * `replaying` says so, guest_pointer returns NULL and vertex_constants
+ * returns 0. What a mod needs from the title's memory to draw a frame it
+ * stores in the capture as it is made (capture_note), and gets back at the
+ * same point of the replay (replay_on_note).
  */
 #ifndef RECOMP_MOD_H
 #define RECOMP_MOD_H
@@ -31,9 +40,9 @@
 extern "C" {
 #endif
 
-#define RECOMP_MOD_API_VERSION 2
+#define RECOMP_MOD_API_VERSION 3
 
-/* ---- version 2: the Direct3D 9 renderer (RECOMP_D3D8_BACKEND=d3d9) ----
+/* ---- the Direct3D 9 renderer (RECOMP_D3D8_BACKEND=d3d9) ----
  *
  * A mod hears of each draw the D3D9 renderer makes, after the renderer has
  * set the device up for it and before it is drawn, and again after. In
@@ -66,6 +75,11 @@ typedef struct RecompModDraw {
     int      projection_set;        /* fixed function: the title set a projection */
     float    projection[16];        /* fixed function: it, as the title gave it */
     float    world[16], view[16];   /* fixed function: as the device has them */
+    int      program_projection_set; /* a program: the toolkit knows its projection; */
+    float    program_projection[16];/* then: it, as a D3D row-vector PROJECTION
+                                       (clip = p * it for a position p in the
+                                       program's view space, with the toolkit's
+                                       widescreen and zoom applied) */
 } RecompModDraw;
 
 #define RECOMP_DRAW_AS_IS 0         /* before's answers */
@@ -84,7 +98,7 @@ typedef struct RecompModApi {
     uint32_t version;               /* RECOMP_MOD_API_VERSION when made */
     uint32_t size;                  /* sizeof(RecompModApi) when made */
 
-    /* ---- version 1 ---- */
+    /* ---- the title ---- */
 
     /* The title running: its certificate's title ID (0x4553000A for
      * TimeSplitters 2), and its name, UTF-8 (NULL if it has none). Which
@@ -107,16 +121,10 @@ typedef struct RecompModApi {
      * were copied. */
     uint32_t    (*vertex_constants)(uint32_t first, uint32_t count, float (*out)[4]);
 
-    /* The camera RTX Remix is told for each vertex-program draw under the
-     * D3D9 renderer (xbox_D3D8SetRemixViewSource): source fills a D3D
-     * row-vector VIEW and returns nonzero, or returns 0 for the default.
-     * NULL stops asking. Nothing happens under other renderers. */
-    void        (*set_remix_view_source)(int (*source)(float view[16]));
-
     /* A line in the game's log (stderr), prefixed "[MOD]". */
     void        (*log)(const char *line);
 
-    /* ---- version 2: the Direct3D 9 renderer (see above) ---- */
+    /* ---- the Direct3D 9 renderer (see above) ---- */
 
     /* Each returns 0 if there is no room left (8 of each across mods). */
     int   (*d3d9_on_device)(RecompModDeviceFn fn, void *user);    /* made */
@@ -144,6 +152,32 @@ typedef struct RecompModApi {
      * is made anew (a new IDirect3DTexture9, its texels copied over), for
      * a D3D9 runtime that knows a texture by its contents, read once. */
     void  (*d3d9_remake_written_textures)(int on);
+
+    /* A transform (D3DTRANSFORMSTATETYPE) set as the title's own would be:
+     * the renderer keeps it as the device's, for later draws too, until
+     * the title or a mod sets it again, and from `before` it applies to
+     * the draw in hand. A vertex program ignores these; a D3D9 runtime
+     * that reads them (RTX Remix) does not. */
+    void  (*d3d9_set_transform)(uint32_t type, const float m[16]);
+
+    /* ---- frame captures and replays ---- */
+
+    /* Nonzero inside d3d8_replay (see above). */
+    int   (*replaying)(void);
+
+    /* fn(user) just before each draw is written to a frame capture, while
+     * one is being made. Up to 8 across mods; 0 when full. */
+    int   (*capture_on_draw)(void (*fn)(void *user), void *user);
+
+    /* While a capture is being made: bytes of the mod's own, stored at this
+     * point of it under tag (a mod's own four characters, say). Does
+     * nothing otherwise. */
+    void  (*capture_note)(uint32_t tag, const void *data, uint32_t bytes);
+
+    /* In a replay: fn for each note, at the point of the capture it was
+     * stored at, before the draw that came after it. Up to 8; 0 when full. */
+    int   (*replay_on_note)(void (*fn)(uint32_t tag, const void *data, uint32_t bytes,
+                                   void *user), void *user);
 } RecompModApi;
 
 typedef int (*RecompModInitFn)(const RecompModApi *api);
