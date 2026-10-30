@@ -9,11 +9,14 @@
  * The text is drawn by GDI into a 32-bit DIB and uploaded to a texture when
  * it changes, which is roughly twice a second for a frame-rate counter. A
  * real font at a real size costs less code than an embedded glyph table and
- * reads better at any window size.
+ * reads better at any window size. The bitmap and the font are made at the
+ * picture's own scale (a 1440-line picture gets a font three times the
+ * 480-line size), so the text is drawn one texel to one pixel: it used to be
+ * drawn for a 480-line frame and blown up, which made it blocky.
  *
  * Off Windows there is no GDI, so the same bitmap is filled from the public
  * domain 8x8 IBM VGA glyphs (as SDL3's debug text carries them), drawn at
- * twice their size. Everything after the bitmap is shared.
+ * twice their size times the scale. Everything after the bitmap is shared.
  */
 #include "d3d8_internal.h"
 #include "d3d8_overlay.h"
@@ -23,13 +26,17 @@
 #include <string.h>
 
 /* Up to OVERLAY_LINES lines ('\n' between them), each OVERLAY_LINE_H
- * pixels: one line is the 28-pixel strip the frame-rate counter always was. */
+ * pixels: one line is the 28-pixel strip the frame-rate counter always was.
+ * All of these are in 480-line pixels; the bitmap is OVERLAY_W x OVERLAY_H
+ * times the picture's scale (g.scale). */
 #define OVERLAY_W         640
 #define OVERLAY_LINES      18
 #define OVERLAY_LINE_H     22
 #define OVERLAY_TOP         4
 #define OVERLAY_H        (6 + OVERLAY_LINES * OVERLAY_LINE_H)
-#define OVERLAY_PAD    8      /* from the picture's top-left corner, in 480-line pixels */
+#define OVERLAY_PAD    8      /* from the picture's top-left corner */
+#define OVERLAY_FONT_H 18     /* the font's character height */
+#define OVERLAY_MAX_SCALE 6   /* 2880 lines; a bigger picture keeps this size */
 
 static struct {
     int             tried;     /* creation attempted */
@@ -48,7 +55,9 @@ static struct {
     HFONT           font;
 #endif
     void           *bits;      /* the DIB's pixels, BGRA top-down */
-    int             text_w;    /* what the last render measured */
+    int             scale;     /* the bitmap's size over 480-line pixels; 0 none */
+    int             w, h;      /* the bitmap's size, OVERLAY_W/H times scale */
+    int             text_w;    /* what the last render measured, in bitmap pixels */
     int             text_h;
     char            text[1536];
 } g;
@@ -207,21 +216,22 @@ static const uint8_t kGlyphs[94 * 8] = {
     0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  /* '~' */
 };
 
-/* Fill the bitmap with `text`, white on black, each glyph at 2x: 14 pixels
- * across (the glyphs leave their eighth column blank) and 16 down, a line
- * every OVERLAY_LINE_H. Returns the widest line drawn, padding included;
- * *lines_out the number of lines. */
-static int glyph_render(uint32_t *bits, const char *text, int len, int *lines_out)
+/* Fill the bitmap (w x h) with `text`, white on black, each glyph at 2x
+ * times s: 14 pixels across (the glyphs leave their eighth column blank) and
+ * 16 down, a line every OVERLAY_LINE_H, all times s. Returns the widest line
+ * drawn, padding included; *lines_out the number of lines. */
+static int glyph_render(uint32_t *bits, int w, int h, int s,
+                        const char *text, int len, int *lines_out)
 {
-    const int scale = 2, advance = 7 * scale, left = 6;
-    const int first = OVERLAY_TOP + (OVERLAY_LINE_H - 8 * scale) / 2;
+    const int scale = 2 * s, advance = 7 * scale, left = 6 * s, line_h = OVERLAY_LINE_H * s;
+    const int first = OVERLAY_TOP * s + (line_h - 8 * scale) / 2;
     int i, row, col, x = left, line = 0, widest = 0;
 
-    for (i = 0; i < OVERLAY_W * OVERLAY_H; i++)
+    for (i = 0; i < w * h; i++)
         bits[i] = 0xFF000000u;                  /* opaque black, as ETO_OPAQUE */
     for (i = 0; i < len; i++) {
         unsigned char c = (unsigned char)text[i];
-        const int top = first + line * OVERLAY_LINE_H;
+        const int top = first + line * line_h;
         const uint8_t *g;
 
         if (c == '\n') {
@@ -230,7 +240,7 @@ static int glyph_render(uint32_t *bits, const char *text, int len, int *lines_ou
             x = left;
             continue;
         }
-        if (x + advance > OVERLAY_W)
+        if (x + advance > w)
             continue;                           /* past the edge: clipped */
         x += advance;
         if (c < 33 || c > 126)
@@ -238,12 +248,12 @@ static int glyph_render(uint32_t *bits, const char *text, int len, int *lines_ou
         g = &kGlyphs[(c - 33) * 8];
         for (row = 0; row < 8 * scale; row++)
             for (col = 0; col < 8 * scale; col++)
-                if (g[row / scale] & (1u << (col / scale)) && x - advance + col < OVERLAY_W)
-                    bits[(top + row) * OVERLAY_W + x - advance + col] = 0xFFFFFFFFu;
+                if (g[row / scale] & (1u << (col / scale)) && x - advance + col < w)
+                    bits[(top + row) * w + x - advance + col] = 0xFFFFFFFFu;
     }
     if (x > widest) widest = x;
     *lines_out = line < OVERLAY_LINES ? line + 1 : OVERLAY_LINES;
-    return widest + left > OVERLAY_W ? OVERLAY_W : widest + left;
+    return widest + left > w ? w : widest + left;
 }
 #endif
 
@@ -274,26 +284,42 @@ static RhiShader *compile_one(uint32_t stage, const char *entry, const char *tar
     return s;
 }
 
-static int overlay_create(void)
+/* The pieces whose size follows the picture: the texture, and the bitmap and
+ * font the text is drawn with. */
+static void overlay_release_sized(void)
+{
+    rhi_view_destroy(g.srv);             g.srv = NULL;
+    rhi_image_destroy(g.texture);        g.texture = NULL;
+#if defined(_WIN32)
+    if (g.bitmap)  { DeleteObject(g.bitmap);                     g.bitmap = NULL; }
+    if (g.font)    { DeleteObject(g.font);                       g.font = NULL; }
+    if (g.dc)      { DeleteDC(g.dc);                             g.dc = NULL; }
+#else
+    free(g.bits);
+#endif
+    g.bits = NULL;
+    g.scale = g.w = g.h = 0;
+    g.text[0] = '\0';                   /* drawn again at the new size */
+    g.text_w = 0;
+}
+
+static int overlay_size(int scale)
 {
     RhiImageDesc td;
-    RhiBufferDesc bd;
-    RhiBlendDesc bl;
-    RhiDepthDesc ds;
-    RhiRasterDesc rd;
 #if defined(_WIN32)
     BITMAPINFO bi;
 #endif
 
-    if (g.failed) return 0;
-    if (g.tried) return g.texture != NULL;
-    g.tried = 1;
-    if (!rhi_device_ready()) { g.failed = 1; return 0; }
+    if (g.scale == scale)
+        return 1;
+    overlay_release_sized();
+    g.w = OVERLAY_W * scale;
+    g.h = OVERLAY_H * scale;
 
     memset(&td, 0, sizeof td);
     td.type = RHI_IMAGE_2D;
-    td.width = OVERLAY_W;
-    td.height = OVERLAY_H;
+    td.width = (uint32_t)g.w;
+    td.height = (uint32_t)g.h;
     td.depth = 1;
     td.mip_levels = 1;
     td.format = RHI_FORMAT_B8G8R8A8_UNORM;
@@ -306,6 +332,50 @@ static int overlay_create(void)
         overlay_fail("CreateShaderResourceView");
         return 0;
     }
+
+#if defined(_WIN32)
+    /* GDI side: a top-down 32-bit DIB the text is drawn into. */
+    g.dc = CreateCompatibleDC(NULL);
+    if (!g.dc) { overlay_fail("CreateCompatibleDC"); return 0; }
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = g.w;
+    bi.bmiHeader.biHeight = -g.h;                /* top-down */
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    g.bitmap = CreateDIBSection(g.dc, &bi, DIB_RGB_COLORS, &g.bits, NULL, 0);
+    if (!g.bitmap) { overlay_fail("CreateDIBSection"); return 0; }
+    SelectObject(g.dc, g.bitmap);
+    /* Greyscale antialiasing, not ClearType: the shader reads one channel as
+     * coverage, and ClearType's per-channel edges would come out as a blur
+     * on one side of every stem. */
+    g.font = CreateFontW(-OVERLAY_FONT_H * scale, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                         DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                         ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    if (g.font) SelectObject(g.dc, g.font);
+    SetBkMode(g.dc, OPAQUE);
+    SetBkColor(g.dc, RGB(0, 0, 0));
+    SetTextColor(g.dc, RGB(255, 255, 255));
+#else
+    g.bits = calloc((size_t)g.w * (size_t)g.h, 4);
+    if (!g.bits) { overlay_fail("the text bitmap"); return 0; }
+#endif
+    g.scale = scale;
+    return 1;
+}
+
+static int overlay_create(void)
+{
+    RhiBufferDesc bd;
+    RhiBlendDesc bl;
+    RhiDepthDesc ds;
+    RhiRasterDesc rd;
+
+    if (g.failed) return 0;
+    if (g.tried) return g.cb != NULL;
+    g.tried = 1;
+    if (!rhi_device_ready()) { g.failed = 1; return 0; }
 
     memset(&bd, 0, sizeof bd);
     bd.size = sizeof(OverlayConstants);
@@ -342,32 +412,6 @@ static int overlay_create(void)
     rd.cull = RHI_CULL_NONE;
     rd.depth_clip = 1;
     if (!(g.raster = rhi_raster_state_create(&rd))) { overlay_fail("CreateRasterizerState"); return 0; }
-
-#if defined(_WIN32)
-    /* GDI side: a top-down 32-bit DIB the text is drawn into. */
-    g.dc = CreateCompatibleDC(NULL);
-    if (!g.dc) { overlay_fail("CreateCompatibleDC"); return 0; }
-    memset(&bi, 0, sizeof bi);
-    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
-    bi.bmiHeader.biWidth = OVERLAY_W;
-    bi.bmiHeader.biHeight = -OVERLAY_H;          /* top-down */
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    g.bitmap = CreateDIBSection(g.dc, &bi, DIB_RGB_COLORS, &g.bits, NULL, 0);
-    if (!g.bitmap) { overlay_fail("CreateDIBSection"); return 0; }
-    SelectObject(g.dc, g.bitmap);
-    g.font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                         DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                         CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-    if (g.font) SelectObject(g.dc, g.font);
-    SetBkMode(g.dc, OPAQUE);
-    SetBkColor(g.dc, RGB(0, 0, 0));
-    SetTextColor(g.dc, RGB(255, 255, 255));
-#else
-    g.bits = calloc((size_t)OVERLAY_W * OVERLAY_H, 4);
-    if (!g.bits) { overlay_fail("the text bitmap"); return 0; }
-#endif
     return 1;
 }
 
@@ -379,7 +423,9 @@ static int overlay_set_text(const char *text)
     RECT rect;
     SIZE extent;
     int i, start;
+    const int line_h = OVERLAY_LINE_H * g.scale, top = OVERLAY_TOP * g.scale;
 #endif
+    const int s = g.scale;
     int len, lines = 0;
 
     if (strcmp(text, g.text) == 0)
@@ -393,7 +439,7 @@ static int overlay_set_text(const char *text)
     for (i = 0; i < len; i++)
         wide[i] = (wchar_t)(unsigned char)g.text[i];
 
-    memset(g.bits, 0, (size_t)OVERLAY_W * OVERLAY_H * 4);
+    memset(g.bits, 0, (size_t)g.w * (size_t)g.h * 4);
     g.text_w = 0;
     for (start = 0; start <= len && lines < OVERLAY_LINES; lines++) {
         int end = start;
@@ -401,24 +447,24 @@ static int overlay_set_text(const char *text)
         while (end < len && wide[end] != L'\n')
             end++;
         rect.left = 0;
-        rect.top = lines ? OVERLAY_TOP + lines * OVERLAY_LINE_H : 0;
-        rect.right = OVERLAY_W;
-        rect.bottom = OVERLAY_TOP + (lines + 1) * OVERLAY_LINE_H + 2;
+        rect.top = lines ? top + lines * line_h : 0;
+        rect.right = g.w;
+        rect.bottom = top + (lines + 1) * line_h + 2 * s;
         if (!GetTextExtentPoint32W(g.dc, wide + start, end - start, &extent))
-            extent.cx = OVERLAY_W;
-        if ((int)extent.cx + 12 > g.text_w)
-            g.text_w = extent.cx + 12 > OVERLAY_W ? OVERLAY_W : (int)extent.cx + 12;
-        ExtTextOutW(g.dc, 6, OVERLAY_TOP + lines * OVERLAY_LINE_H, ETO_OPAQUE, &rect,
+            extent.cx = g.w;
+        if ((int)extent.cx + 12 * s > g.text_w)
+            g.text_w = (int)extent.cx + 12 * s > g.w ? g.w : (int)extent.cx + 12 * s;
+        ExtTextOutW(g.dc, 6 * s, top + lines * line_h, ETO_OPAQUE, &rect,
                     wide + start, (UINT)(end - start), NULL);
         start = end + 1;
     }
     GdiFlush();
 #else
-    g.text_w = glyph_render((uint32_t *)g.bits, g.text, len, &lines);
+    g.text_w = glyph_render((uint32_t *)g.bits, g.w, g.h, s, g.text, len, &lines);
 #endif
-    g.text_h = 6 + lines * OVERLAY_LINE_H;
+    g.text_h = (6 + lines * OVERLAY_LINE_H) * s;
 
-    rhi_image_update(g.texture, 0, NULL, g.bits, OVERLAY_W * 4, 0);
+    rhi_image_update(g.texture, 0, NULL, g.bits, (uint32_t)g.w * 4, 0);
     return g.text_w > 0;
 }
 
@@ -438,14 +484,15 @@ void d3d8_overlay_present(RhiView *out, unsigned width, unsigned height,
     float blend_factor[4] = { 1, 1, 1, 1 };
     void *mapped;
     /* The size it had drawn into a 480-line frame and scaled with it, in
-     * whole steps so the glyphs stay sharp. */
+     * whole steps: the bitmap is made at that scale and drawn 1:1. */
     unsigned scale = (pic_h + 240) / 480;
     const char *text = g_want;
 
     if (scale < 1) scale = 1;
+    if (scale > OVERLAY_MAX_SCALE) scale = OVERLAY_MAX_SCALE;
     if (!text[0] || !out || !width || !height)
         return;
-    if (!overlay_create() || !overlay_set_text(text))
+    if (!overlay_create() || !overlay_size((int)scale) || !overlay_set_text(text))
         return;
 
     rhi_output_save(&saved);
@@ -454,12 +501,12 @@ void d3d8_overlay_present(RhiView *out, unsigned width, unsigned height,
         goto restore;
     c.x = -1.0f + 2.0f * (float)(pic_x + OVERLAY_PAD * scale) / (float)width;
     c.y =  1.0f - 2.0f * (float)(pic_y + OVERLAY_PAD * scale) / (float)height;
-    c.w =  2.0f * (float)(g.text_w * scale) / (float)width;
-    c.h =  2.0f * (float)(g.text_h * scale) / (float)height;
+    c.w =  2.0f * (float)g.text_w / (float)width;
+    c.h =  2.0f * (float)g.text_h / (float)height;
     c.tex_w = (float)g.text_w;
     c.tex_h = (float)g.text_h;
-    c.pad0 = (float)OVERLAY_W;     /* the texture's own size, for D3D9's shader */
-    c.pad1 = (float)OVERLAY_H;
+    c.pad0 = (float)g.w;           /* the texture's own size, for D3D9's shader */
+    c.pad1 = (float)g.h;
     memcpy(mapped, &c, sizeof c);
     rhi_buffer_unmap(g.cb);
 
@@ -488,23 +535,12 @@ restore:
 
 void d3d8_overlay_shutdown(void)
 {
-    rhi_view_destroy(g.srv);             g.srv = NULL;
-    rhi_image_destroy(g.texture);        g.texture = NULL;
+    overlay_release_sized();
     rhi_buffer_destroy(g.cb);            g.cb = NULL;
     rhi_shader_destroy(g.vs);            g.vs = NULL;
     rhi_shader_destroy(g.ps);            g.ps = NULL;
     rhi_blend_state_destroy(g.blend);    g.blend = NULL;
     rhi_depth_state_destroy(g.depth);    g.depth = NULL;
     rhi_raster_state_destroy(g.raster);  g.raster = NULL;
-#if defined(_WIN32)
-    if (g.bitmap)  { DeleteObject(g.bitmap);                     g.bitmap = NULL; }
-    if (g.font)    { DeleteObject(g.font);                       g.font = NULL; }
-    if (g.dc)      { DeleteDC(g.dc);                             g.dc = NULL; }
-#else
-    free(g.bits);
-#endif
-    g.bits = NULL;
-    g.text[0] = '\0';
-    g.text_w = 0;
     g.tried = 0;
 }
