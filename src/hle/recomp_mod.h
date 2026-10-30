@@ -80,6 +80,9 @@ typedef struct RecompModDraw {
                                        (clip = p * it for a position p in the
                                        program's view space, with the toolkit's
                                        widescreen and zoom applied) */
+    int      indexed;               /* drawn through an index buffer; if not: */
+    uint32_t first_vertex;          /* its vertices in the stream the device has */
+    uint32_t vertices;
 } RecompModDraw;
 
 #define RECOMP_DRAW_AS_IS 0         /* before's answers */
@@ -93,6 +96,22 @@ typedef void (*RecompModClearFn)(uint32_t what, float z, int whole, void *user);
 #define RECOMP_CLEAR_COLOR   1u
 #define RECOMP_CLEAR_DEPTH   2u
 #define RECOMP_CLEAR_STENCIL 4u
+
+/* The title is copying a rectangle of the picture into a texture, as a title
+ * does to show it on something, or to blur it. Fields are only added at the
+ * end. */
+typedef struct RecompModCopy {
+    uint32_t size;                  /* sizeof(RecompModCopy) when made */
+    void    *device;                /* the IDirect3DDevice9 */
+    void    *source;                /* IDirect3DSurface9: what will be read */
+    void    *dest;                  /* IDirect3DSurface9: what will be written */
+    int      rect;                  /* a rectangle of it, rather than all of it: */
+    int32_t  left, top, right, bottom;
+} RecompModCopy;
+
+/* Returns a surface to read instead (IDirect3DSurface9, the rectangle in it
+ * as in `source`), or NULL to leave it. The mod keeps its reference. */
+typedef void *(*RecompModCopyFn)(const RecompModCopy *copy, void *user);
 
 typedef struct RecompModApi {
     uint32_t version;               /* RECOMP_MOD_API_VERSION when made */
@@ -181,6 +200,12 @@ typedef struct RecompModApi {
      * stored at, before the draw that came after it. Up to 8; 0 when full. */
     int   (*replay_on_note)(void (*fn)(uint32_t tag, const void *data, uint32_t bytes,
                                    void *user), void *user);
+
+    /* ---- the Direct3D 9 renderer, added later ---- */
+
+    /* fn before each copy of the picture into a texture, in a run and in a
+     * replay. Up to 8 across mods, the first answer standing; 0 when full. */
+    int   (*d3d9_on_copy)(RecompModCopyFn fn, void *user);
 } RecompModApi;
 
 typedef int (*RecompModInitFn)(const RecompModApi *api);

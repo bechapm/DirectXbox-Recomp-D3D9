@@ -162,6 +162,7 @@ int  rhi_d3d9_mod_vertex_hlsl(const char *hlsl);
 int  rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value);
 void rhi_d3d9_mod_set_projection(const float m[16]);
 void rhi_d3d9_mod_remake_written_textures(int on);
+int  rhi_d3d9_mod_on_copy(RecompModCopyFn fn, void *user);
 void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16]);
 
 #ifdef __cplusplus

@@ -226,7 +226,8 @@ static struct { RecompModBeforeDraw before; RecompModAfterDraw after; void *user
                          g_mod_draw[MOD_HOOKS];
 static struct { RecompModDeviceFn fn; void *user; } g_mod_device[MOD_HOOKS], g_mod_present[MOD_HOOKS];
 static struct { RecompModClearFn fn; void *user; } g_mod_clear[MOD_HOOKS];
-static int  g_mod_draw_n, g_mod_device_n, g_mod_present_n, g_mod_clear_n;
+static struct { RecompModCopyFn fn; void *user; } g_mod_copy[MOD_HOOKS];
+static int  g_mod_draw_n, g_mod_device_n, g_mod_present_n, g_mod_clear_n, g_mod_copy_n;
 static char g_mod_vs_hlsl[4096];    /* added to every vertex program */
 static int  g_remake_written;       /* rhi_d3d9_mod_remake_written_textures */
 
@@ -265,6 +266,15 @@ int rhi_d3d9_mod_on_clear(RecompModClearFn fn, void *user)
         return 0;
     g_mod_clear[g_mod_clear_n].fn = fn;
     g_mod_clear[g_mod_clear_n++].user = user;
+    return 1;
+}
+
+int rhi_d3d9_mod_on_copy(RecompModCopyFn fn, void *user)
+{
+    if (g_mod_copy_n >= MOD_HOOKS || !fn)
+        return 0;
+    g_mod_copy[g_mod_copy_n].fn = fn;
+    g_mod_copy[g_mod_copy_n++].user = user;
     return 1;
 }
 
@@ -2361,7 +2371,8 @@ static int           g_mod_called;      /* how many befores ran for it */
 /* After prepare_draw: the mods' befores, in the order they asked. 0 when
  * the draw is to be left out (the befores after that one are not asked,
  * and no after is called). */
-static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims)
+static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, int indexed, uint32_t first,
+                           uint32_t vertices)
 {
     RecompModDraw *d = &g_mod_d;
     const RhiDepthDesc *dd = g_b.depth ? &g_b.depth->d : NULL;
@@ -2405,6 +2416,9 @@ static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims)
     d->program_projection_set = g_b.vs && g_prog_proj_set;
     if (d->program_projection_set)
         memcpy(d->program_projection, g_prog_proj, sizeof d->program_projection);
+    d->indexed = indexed;
+    d->first_vertex = first;
+    d->vertices = vertices;
     for (i = 0; i < g_mod_draw_n; i++) {
         if (!g_mod_draw[i].before) {
             g_mod_called++;
@@ -2446,7 +2460,7 @@ static void d9_draw(uint32_t n, uint32_t first)
         return;
     if (!g_b.layout && first + n > VID_COUNT)
         return;
-    if (!mod_before_draw(type, prims))
+    if (!mod_before_draw(type, prims, 0, first, n))
         return;
     hr = IDirect3DDevice9_DrawPrimitive(g_dev, type, first, prims);
     if (FAILED(hr))
@@ -2490,7 +2504,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     memcpy(dst, src, bytes);
     IDirect3DIndexBuffer9_Unlock(g_iring[which]);
     IDirect3DDevice9_SetIndices(g_dev, g_iring[which]);
-    if (mod_before_draw(type, prims)) {
+    if (mod_before_draw(type, prims, 1, 0, 0)) {
         hr = IDirect3DDevice9_DrawIndexedPrimitive(g_dev, type, base, lo, hi - lo + 1,
                                                    g_iring_pos[which] / isz, prims);
         if (FAILED(hr))
@@ -2620,6 +2634,7 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     IDirect3DSurface9 *from;
     RECT sr, dr;
     HRESULT hr;
+    int i;
 
     if (!rhi_d3d9_active() || !src || !src->image || !dst || !dst->surf)
         return -1;
@@ -2627,6 +2642,28 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     if (!from)
         return -1;
     scene_end();
+    for (i = 0; i < g_mod_copy_n; i++) {
+        RecompModCopy c;
+        IDirect3DSurface9 *other;
+
+        memset(&c, 0, sizeof c);
+        c.size = sizeof c;
+        c.device = g_dev;
+        c.source = from;
+        c.dest = dst->surf;
+        if (src_rect) {
+            c.rect = 1;
+            c.left = src_rect->left; c.top = src_rect->top;
+            c.right = src_rect->right; c.bottom = src_rect->bottom;
+        }
+        other = (IDirect3DSurface9 *)g_mod_copy[i].fn(&c, g_mod_copy[i].user);
+        if (other) {
+            IDirect3DSurface9_AddRef(other);
+            IDirect3DSurface9_Release(from);
+            from = other;
+            break;
+        }
+    }
     if (src_rect) {
         sr.left = src_rect->left; sr.top = src_rect->top;
         sr.right = src_rect->right; sr.bottom = src_rect->bottom;
@@ -2821,6 +2858,7 @@ int rhi_d3d9_mod_vertex_hlsl(const char *hlsl) { (void)hlsl; return 0; }
 int rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value) { (void)state; (void)value; return 0; }
 void rhi_d3d9_mod_set_projection(const float m[16]) { (void)m; }
 void rhi_d3d9_mod_remake_written_textures(int on) { (void)on; }
+int rhi_d3d9_mod_on_copy(RecompModCopyFn fn, void *user) { (void)fn; (void)user; return 0; }
 int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                        const RhiRect *dst_rect)
 {

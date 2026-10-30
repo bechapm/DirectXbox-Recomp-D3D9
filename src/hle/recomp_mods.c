@@ -130,6 +130,7 @@ static const RecompModApi g_api = {
     .capture_on_draw              = api_capture_on_draw,
     .capture_note                 = api_capture_note,
     .replay_on_note               = api_replay_on_note,
+    .d3d9_on_copy                 = rhi_d3d9_mod_on_copy,
 };
 
 /* ---- loading ---------------------------------------------------------------- */
