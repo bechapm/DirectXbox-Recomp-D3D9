@@ -810,6 +810,26 @@ typedef struct { unsigned char state[256]; } KeyCache;
 static unsigned char g_key_state[256];
 static unsigned long long g_key_state_at;
 
+#if defined(_WIN32)
+/* GetAsyncKeyState reads the keyboard whatever is in front, so a key typed
+ * into another program would still reach the game. Keys count only while a
+ * window of this process is the foreground one -- the process, not one
+ * window, because a renderer may put its own window over the game's (RTX
+ * Remix's input overlay is one). Asked once per cache window below. */
+static int g_key_focus;
+
+static int process_in_front(void)
+{
+    DWORD pid = 0;
+    HWND fg = GetForegroundWindow();
+
+    if (!fg)
+        return 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+#endif
+
 #if !defined(_WIN32)
 /* Off Windows the keyboard is SDL's: the state its events leave behind, kept
  * by the host shell's loop on the main thread (src/host). Keys reach it only
@@ -885,6 +905,8 @@ static int key_down(KeyCache *kc, int vk)
     if (vk <= 0 || vk > 255)
         return 0;
 #if defined(_WIN32)
+    if (!g_key_focus)
+        return 0;
     if (!g_key_state[vk])
         g_key_state[vk] = (GetAsyncKeyState(vk) & 0x8000) ? 2 : 1;
     return g_key_state[vk] == 2;
@@ -901,7 +923,7 @@ int recomp_key_down(int vk)
     if (vk <= 0 || vk > 255)
         return 0;
 #if defined(_WIN32)
-    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+    return process_in_front() && (GetAsyncKeyState(vk) & 0x8000) != 0;
 #else
     return sdl_key_down(vk);
 #endif
@@ -914,6 +936,9 @@ static void key_cache_tick(void)
     if (now - g_key_state_at >= KEY_CACHE_TTL_MS) {
         memset(g_key_state, 0, sizeof g_key_state);
         g_key_state_at = now;
+#if defined(_WIN32)
+        g_key_focus = process_in_front();
+#endif
     }
 }
 

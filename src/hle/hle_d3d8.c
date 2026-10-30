@@ -453,6 +453,36 @@ static void shadow_mouse_raw(LPARAM lp)
         recomp_mouse_move((float)ri.data.mouse.lLastX, (float)ri.data.mouse.lLastY);
 }
 
+/* Alt+F4 and Alt+Enter, read from the keyboard rather than from the
+ * window's key messages. A renderer can take those messages away from the
+ * whole process: RTX Remix's input overlay registers raw keyboard input with
+ * RIDEV_NOLEGACY, after which no window of the process gets WM_SYSKEYDOWN,
+ * and neither key did anything. So a timer on this thread looks, while the
+ * window is in front, and acts once per press. */
+#define SHADOW_KEY_TIMER    1
+#define SHADOW_KEY_POLL_MS  30
+
+static int g_alt_f4_held, g_alt_enter_held;
+
+static void shadow_poll_keys(HWND hwnd)
+{
+    int alt, f4, enter;
+
+    if (GetForegroundWindow() != hwnd) {
+        g_alt_f4_held = g_alt_enter_held = 0;
+        return;
+    }
+    alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    f4    = alt && (GetAsyncKeyState(VK_F4) & 0x8000) != 0;
+    enter = alt && (GetAsyncKeyState(VK_RETURN) & 0x8000) != 0;
+    if (f4 && !g_alt_f4_held)
+        PostMessageA(hwnd, WM_CLOSE, 0, 0);
+    if (enter && !g_alt_enter_held)
+        shadow_set_fullscreen(hwnd, !g_shadow_fullscreen);
+    g_alt_f4_held = f4;
+    g_alt_enter_held = enter;
+}
+
 static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (shadow_mouse_button(hwnd, msg, wp))
@@ -490,12 +520,20 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         if (g_mouse_captured)
             shadow_mouse_clip(hwnd);
         break;
-    case WM_SYSKEYDOWN:
-        /* Alt+Enter, the usual Windows key for it: fullscreen and back. */
-        if (wp == VK_RETURN && (lp & (1 << 29)) && !(lp & (1 << 30))) {
-            shadow_set_fullscreen(hwnd, !g_shadow_fullscreen);
+    case WM_TIMER:
+        if (wp == SHADOW_KEY_TIMER) {
+            shadow_poll_keys(hwnd);
             return 0;
         }
+        break;
+    case WM_SYSKEYDOWN:
+        /* Alt+Enter, the usual Windows key for it: fullscreen and back --
+         * switched by shadow_poll_keys, which sees it with or without this
+         * message, so here it is only kept from DefWindowProc. Alt+F4 goes
+         * on to DefWindowProc as usual; the poll's WM_CLOSE behind it finds
+         * the process already leaving. */
+        if (wp == VK_RETURN && (lp & (1 << 29)))
+            return 0;
         break;
     case WM_SYSCHAR:
         if (wp == '\r')
@@ -680,6 +718,7 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
     SetEvent(req->ready);                /* req lives on the waiting caller's stack */
     if (!req->hwnd)
         return 1;
+    SetTimer(req->hwnd, SHADOW_KEY_TIMER, SHADOW_KEY_POLL_MS, NULL);
 
     while (GetMessageA(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
