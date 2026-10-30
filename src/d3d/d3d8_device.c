@@ -2245,6 +2245,35 @@ void xbox_D3D8SetScreenSpaceTest(XboxD3D8ScreenSpaceTest test)
     g_title_2d_test = test;
 }
 
+/* A fixed-function draw's clip w, its vertices' mean: the position is the
+ * FVF's first three floats, through WORLD, VIEW and PROJECTION. For a draw
+ * the title's test calls screen-space, which sits at one depth, it is that
+ * depth (rhi_d3d9_title_says_2d). 0 when it cannot be known. */
+static float draw_clip_w(const void *vertices, UINT stride, UINT count)
+{
+    const float *w = (const float *)&g_device_state.transforms[D3DTS_WORLD];
+    const float *v = (const float *)&g_device_state.transforms[D3DTS_VIEW];
+    const float *p = (const float *)&g_device_state.transforms[D3DTS_PROJECTION];
+    float vp[4], c[4], sum = 0.0f, pos[3];
+    UINT i;
+    int r, k;
+
+    if (!vertices || stride < sizeof pos || !count)
+        return 0.0f;
+    /* The projection's w column through VIEW, then WORLD (row vectors). */
+    for (r = 0; r < 4; r++)
+        for (vp[r] = 0.0f, k = 0; k < 4; k++)
+            vp[r] += v[r * 4 + k] * p[k * 4 + 3];
+    for (r = 0; r < 4; r++)
+        for (c[r] = 0.0f, k = 0; k < 4; k++)
+            c[r] += w[r * 4 + k] * vp[k];
+    for (i = 0; i < count; i++) {
+        memcpy(pos, (const unsigned char *)vertices + (size_t)i * stride, sizeof pos);
+        sum += pos[0] * c[0] + pos[1] * c[1] + pos[2] * c[2] + c[3];
+    }
+    return sum / (float)count;
+}
+
 static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
                         float *lo_out, float *hi_out)
 {
@@ -2620,7 +2649,7 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
             g_title_2d_lo = lo;
             g_title_2d_hi = hi;
             d3d8_SetTwoDSqueeze(TRUE);
-            rhi_d3d9_title_says_2d();
+            rhi_d3d9_title_says_2d(draw_clip_w(vertices, stride, count));
         }
     }
     if (!g_2d_screen_space) {

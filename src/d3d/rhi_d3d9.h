@@ -91,8 +91,10 @@ void rhi_d3d9_set_render_state(uint32_t state, uint32_t value);
 void rhi_d3d9_title_draw(int two_d);
 /* After rhi_d3d9_title_draw: the title's own test (xbox_D3D8SetScreenSpaceTest)
  * called the next draw, a fixed-function one through the world's projection,
- * screen-space. Remix is told it is UI, as it is not by itself. */
-void rhi_d3d9_title_says_2d(void);
+ * screen-space. Remix is told it is UI, as it is not by itself. `w` is the
+ * draw's clip w (its depth in front of the camera), the same at every vertex
+ * of such a draw, or 0 if not known. */
+void rhi_d3d9_title_says_2d(float w);
 void rhi_d3d9_set_texture_stage(uint32_t stage, uint32_t type, uint32_t value);
 /* A row-vector matrix, D3DMATRIX order (m[row * 4 + column]). */
 void rhi_d3d9_set_transform(uint32_t type, const float m[16]);

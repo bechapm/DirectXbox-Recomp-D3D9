@@ -163,6 +163,7 @@ struct RhiImage {
     int      screen_copy;           /* rhi_d3d9_copy_rect has copied the screen into it */
     uint64_t id;                    /* what it holds, for kind_2d (image_id) */
     int      drawn;                 /* a draw has used it since it was made (remix_fresh_texture) */
+    uint64_t texels;                /* a hash of all of level 0 as last written whole */
 };
 
 struct RhiView {
@@ -284,6 +285,10 @@ static uint8_t g_samp_known[16][SAMP_COUNT];
 static int     g_title_draw;          /* rhi_d3d9_title_draw: the next draw is the title's */
 static int     g_title_2d;            /* and is screen-space */
 static int     g_title_said_2d;       /* the title's own test said so (rhi_d3d9_title_says_2d) */
+static float   g_title_2d_w;          /* and the draw's clip w, or 0 */
+static float   g_dev_world[16], g_dev_view[16];  /* WORLD and VIEW as the device has them */
+static int     g_flat_applied;        /* the device holds a flat_2d draw's transforms */
+static int     g_draw_ui;             /* remix_draw marked the draw in hand UI */
 static DWORD   g_title_alpha_test;    /* its D3DRS_ALPHATESTENABLE */
 static float   g_ff_proj[16];
 static int     g_ff_proj_set, g_ff_proj_dirty;
@@ -356,6 +361,7 @@ static void forget_state(void)
     g_b.vp_dirty = g_b.scissor_dirty = g_b.ds_dirty = g_b.samp_dirty = 1;
     g_ff_proj_set = g_ff_proj_dirty = 0;
     g_ui_mark_bound = 0;
+    g_flat_applied = 0;
 }
 
 static RhiView *wrap_surface(IDirect3DSurface9 *s, uint32_t kind)
@@ -1066,7 +1072,11 @@ static IDirect3DSurface9 *level_surface(IDirect3DBaseTexture9 *t, int cube, uint
  * and Remix kept them blank. A new D3D9 texture is hashed afresh. What the
  * old one held is copied over, so a write of a part lands on the rest as
  * before. Managed 2D and cube textures only: what a title fills from the CPU.
- * At most once between draws that use it, however many writes come between. */
+ * Only for writes to the level Remix hashes (subresource 0), and not for one
+ * that writes it whole with what it already held: a title that uploads the
+ * same texels every frame would otherwise get a new texture every frame,
+ * which Remix would load again every frame. At most once between draws that
+ * use it, however many writes come between. Each one is counted on stderr. */
 static void remix_fresh_texture(RhiImage *img)
 {
     const RhiImageDesc *d = &img->desc;
@@ -1115,6 +1125,30 @@ static void remix_fresh_texture(RhiImage *img)
         if (g_b.tex[i] && g_b.tex[i]->image == img)
             IDirect3DDevice9_SetTexture(g_dev, i, nt);
     IDirect3DBaseTexture9_Release(old);
+    {
+        static unsigned made;
+
+        if (++made <= 16 || !(made & 255))
+            fprintf(stderr, "[RHI] d3d9: Remix: a %ux%u texture (D3D9 format %u) written "
+                    "after use is made anew (%u so far)\n", d->width, d->height,
+                    (unsigned)img->fmt, made);
+    }
+}
+
+/* All of a level's bytes, for remix_fresh_texture. */
+static uint64_t texels_hash(const void *data, size_t bytes)
+{
+    const uint8_t *p = data;
+    uint64_t h = 1469598103934665603ull, w;
+    size_t i;
+
+    for (i = 0; i + 8 <= bytes; i += 8) {
+        memcpy(&w, p + i, 8);
+        h = (h ^ w) * 1099511628211ull;
+    }
+    for (; i < bytes; i++)
+        h = (h ^ p[i]) * 1099511628211ull;
+    return h;
 }
 
 static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
@@ -1135,8 +1169,13 @@ static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
     rows = img->block ? (h + 3) / 4 : h;
     if (sub == 0 && !box && data)
         img->id = image_id(img, data, (size_t)row_pitch * rows);
-    if (img->drawn)
-        remix_fresh_texture(img);
+    if (g_remix_2d && sub == 0 && data) {
+        uint64_t t = box ? 0 : texels_hash(data, (size_t)row_pitch * rows);
+
+        if (img->drawn && (box || t != img->texels))
+            remix_fresh_texture(img);
+        img->texels = t;                /* 0 after a part: not known */
+    }
 
     if (img->desc.type == RHI_IMAGE_3D) {
         IDirect3DVolumeTexture9 *vt = (IDirect3DVolumeTexture9 *)img->tex;
@@ -1954,19 +1993,93 @@ static void apply_scissor(void)
 
 /* The fixed-function projection, with the viewport correction folded in:
  * clip x' = x * ax + w * cx, as the shaders do it. */
-static void apply_projection(void)
+static void set_projection(const float *m)
 {
     float p[16];
     int r;
 
-    if (!g_ff_proj_set)
-        return;
-    memcpy(p, g_ff_proj, sizeof p);
+    memcpy(p, m, sizeof p);
     for (r = 0; r < 4; r++) {
-        p[r * 4 + 0] = g_ff_proj[r * 4 + 0] * g_b.adjust[0] + g_ff_proj[r * 4 + 3] * g_b.adjust[2];
-        p[r * 4 + 1] = g_ff_proj[r * 4 + 1] * g_b.adjust[1] + g_ff_proj[r * 4 + 3] * g_b.adjust[3];
+        p[r * 4 + 0] = m[r * 4 + 0] * g_b.adjust[0] + m[r * 4 + 3] * g_b.adjust[2];
+        p[r * 4 + 1] = m[r * 4 + 1] * g_b.adjust[1] + m[r * 4 + 3] * g_b.adjust[3];
     }
     IDirect3DDevice9_SetTransform(g_dev, D3DTS_PROJECTION, (const D3DMATRIX *)p);
+}
+
+static void apply_projection(void)
+{
+    if (g_ff_proj_set)
+        set_projection(g_ff_proj);
+}
+
+/* Whether the next draw, which the title's own test called screen-space
+ * (rhi_d3d9_title_says_2d), is handed to Remix flat: with WORLD and VIEW
+ * identity and, as PROJECTION, the draw's own WORLD x VIEW x PROJECTION
+ * divided by its clip w, with w out of it (orthographic: its last column
+ * 0, 0, 0, 1). The draw sits at one depth, so every vertex lands where it
+ * did, and its texels too (perspective divides by the same w throughout);
+ * but Remix sees an orthographic draw. A whole frame of Max Payne's 2D --
+ * its menus, its graphic novel -- drawn under its perspective camera came
+ * out black under Remix when marked UI, and washed out or grey when traced.
+ * Only a draw marked UI (screen_draw_kind), so not in a frame that has drawn
+ * no 3D yet: Max Payne's menus, nothing but such draws, stay black under
+ * Remix flat or not, where its graphic novel, after one draw of its own
+ * camera's, comes out as in D3D11. Not under lighting (WORLD and VIEW place the lights) or fog (VIEW gives
+ * the fog depth). RECOMP_D3D9_FLAT_2D=0 turns it off. */
+static int flat_2d(void)
+{
+    static int on = -1;
+
+    if (on < 0) {
+        const char *e = getenv("RECOMP_D3D9_FLAT_2D");
+        on = !(e && e[0] == '0');
+    }
+    return on && g_remix_2d && g_title_draw && g_title_said_2d && g_draw_ui && g_title_2d_w > 0.0f && !g_b.vs &&
+           g_ff_proj_set && g_rs_known[D3DRS_LIGHTING] && !g_rs[D3DRS_LIGHTING] &&
+           !(g_rs_known[D3DRS_FOGENABLE] && g_rs[D3DRS_FOGENABLE]);
+}
+
+static void mat_mul(float *out, const float *a, const float *b)
+{
+    int r, c, k;
+
+    for (r = 0; r < 4; r++)
+        for (c = 0; c < 4; c++) {
+            float s = 0.0f;
+            for (k = 0; k < 4; k++)
+                s += a[r * 4 + k] * b[k * 4 + c];
+            out[r * 4 + c] = s;
+        }
+}
+
+/* The device's transforms for the next draw: a flat_2d draw's, or the
+ * title's back after one. */
+static void apply_flat_2d(void)
+{
+    static const float identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    float wv[16], m[16];
+    int i;
+
+    if (!flat_2d()) {
+        if (g_flat_applied) {
+            IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, (const D3DMATRIX *)g_dev_world);
+            IDirect3DDevice9_SetTransform(g_dev, D3DTS_VIEW, (const D3DMATRIX *)g_dev_view);
+            g_ff_proj_dirty = 1;
+            g_flat_applied = 0;
+        }
+        return;
+    }
+    mat_mul(wv, g_dev_world, g_dev_view);
+    mat_mul(m, wv, g_ff_proj);
+    for (i = 0; i < 16; i++)
+        m[i] /= g_title_2d_w;
+    m[3] = m[7] = m[11] = 0.0f;
+    m[15] = 1.0f;
+    IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, (const D3DMATRIX *)identity);
+    IDirect3DDevice9_SetTransform(g_dev, D3DTS_VIEW, (const D3DMATRIX *)identity);
+    set_projection(m);
+    g_ff_proj_dirty = 0;
+    g_flat_applied = 1;
 }
 
 static void stencil_face(const RhiStencilFace *f, int ccw)
@@ -2142,6 +2255,7 @@ static int prepare_draw(void)
         apply_samplers();
         g_b.samp_dirty = 0;
     }
+    apply_flat_2d();
     if (g_ff_proj_dirty) {
         apply_projection();
         g_ff_proj_dirty = 0;
@@ -2239,6 +2353,11 @@ static void draw_failed(const char *what, HRESULT hr)
  * screen-space (rhi_d3d9_title_says_2d): Max Payne draws its HUD, menus and
  * graphic novel as quads at one depth under the camera that draws the world,
  * which Remix traced as geometry far out in the level, behind its walls.
+ * Such a draw is marked only once the frame has drawn some 3D: a frame of
+ * nothing but such draws (Max Payne's menus), all marked UI, came out black
+ * under Remix, where the same draws marked after 3D (its HUD) show.
+ * Unmarked, they are traced, as before. Marked, it is handed to Remix flat,
+ * orthographic (flat_2d), where it can be.
  * The sky is the frame's first draws, before any that writes depth, drawn
  * through the level's own program with depth always passing and not
  * written. As geometry it was a closed box around the level that kept out
@@ -2338,6 +2457,8 @@ static int screen_draw_kind(void)
     }
     if (!g_b.vs && !g_title_said_2d)
         return DRAW_PLAIN;      /* fixed function: Remix judges its 2D itself */
+    if (!g_b.vs && !g_frame_last_3d)
+        return DRAW_PLAIN;      /* title-declared, with no 3D yet this frame */
     if (t0 && t0->image && t0->image->screen_copy)
         return DRAW_SKIP;
     {
@@ -2384,6 +2505,8 @@ static int remix_draw(void)
     int title_3d = g_title_draw && !g_title_2d;
     int sky = g_remix_2d && g_b.vs && title_3d && kind == DRAW_PLAIN && !g_frame_zwritten &&
               !zwrite && zalways;
+
+    g_draw_ui = ui;
 
     if (kind == DRAW_SKIP)
         return 0;
@@ -2624,13 +2747,15 @@ void rhi_d3d9_title_draw(int two_d)
     g_title_draw = 1;
     g_title_2d = two_d != 0;
     g_title_said_2d = 0;
+    g_title_2d_w = 0.0f;
 }
 
-void rhi_d3d9_title_says_2d(void)
+void rhi_d3d9_title_says_2d(float w)
 {
     if (!g_title_draw || g_b.vs)
         return;
     g_title_2d = g_title_said_2d = 1;
+    g_title_2d_w = w;
 }
 
 void rhi_d3d9_set_texture_stage(uint32_t stage, uint32_t type, uint32_t value)
@@ -2652,6 +2777,10 @@ void rhi_d3d9_set_transform(uint32_t type, const float m[16])
         g_ff_proj_dirty = 1;
         return;
     }
+    if (type == D3DTS_WORLD)
+        memcpy(g_dev_world, m, sizeof g_dev_world);
+    else if (type == D3DTS_VIEW)
+        memcpy(g_dev_view, m, sizeof g_dev_view);
     IDirect3DDevice9_SetTransform(g_dev, (D3DTRANSFORMSTATETYPE)type, (const D3DMATRIX *)m);
 }
 
@@ -2675,9 +2804,9 @@ void rhi_d3d9_set_camera(const float world[16], const float view[16], const floa
     if (!rhi_d3d9_active())
         return;
     if (world)
-        IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, (const D3DMATRIX *)world);
+        rhi_d3d9_set_transform(D3DTS_WORLD, world);
     if (view)
-        IDirect3DDevice9_SetTransform(g_dev, D3DTS_VIEW, (const D3DMATRIX *)view);
+        rhi_d3d9_set_transform(D3DTS_VIEW, view);
     /* The projection Remix inverts is the clip space the program writes
      * after RHI_VP_ADJUST, which is what the fixed-function projection is
      * given too: the one transform serves both kinds of draw. */
@@ -2758,7 +2887,7 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index)
 }
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value) { (void)state; (void)value; }
 void rhi_d3d9_title_draw(int two_d) { (void)two_d; }
-void rhi_d3d9_title_says_2d(void) {}
+void rhi_d3d9_title_says_2d(float w) { (void)w; }
 int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                        const RhiRect *dst_rect)
 {
