@@ -351,6 +351,7 @@ static int g_ui_mark_bound, g_remix_2d;
 static int g_frame_zwritten;    /* a draw this frame has written depth */
 static float g_frame_zclear = -1.0f; /* what depth was cleared to this frame, or -1 */
 static void learn_2d(void);
+static void learn_sky_zone(void);
 static int g_sky_viewport;      /* the viewport is set for a sky draw (remix_draw) */
 
 static void forget_state(void)
@@ -582,6 +583,7 @@ static int32_t d9_present(uint32_t interval)
     }
     scene_end();
     learn_2d();
+    learn_sky_zone();
     g_frame_zwritten = 0;
     g_frame_zclear = -1.0f;
     h = rhi_wait_begin();
@@ -2449,6 +2451,105 @@ static void learn_2d(void)
  * into a texture the size of the screen, which Remix takes for the frame's
  * picture: it ray traced those quads and took their camera, at the origin
  * looking down z, for the frame's, and the whole level came out black. */
+/* A draw that cannot change the colour it is drawn over (blend ZERO, ONE;
+ * or no colour written): it writes only depth or stencil, which Remix's
+ * picture does not use. Traced, it is a wall of whatever it covers:
+ * Rainbow Six 3's (Unreal's) full-screen pass that resets depth after its
+ * sky stood as a red plane across the view. */
+static int colourless(void)
+{
+    if ((g_rs[D3DRS_COLORWRITEENABLE] & 7u) == 0)
+        return 1;
+    return g_rs[D3DRS_ALPHABLENDENABLE] && g_rs[D3DRS_SRCBLEND] == D3DBLEND_ZERO &&
+           g_rs[D3DRS_DESTBLEND] == D3DBLEND_ONE && g_rs[D3DRS_BLENDOP] == D3DBLENDOP_ADD;
+}
+
+/* The sky zone (sky_zone_draw): what this frame has seen so far, and what
+ * the frame before taught. */
+static int   g_frame_ff3d;              /* fixed-function 3D draws this frame */
+static int   g_frame_reset;             /* depth was reset after some of them */
+static float g_frame_pre_eye[3], g_frame_main_eye[3];
+static int   g_frame_pre_set, g_frame_main_set;
+static int   g_frame_pre_n, g_frame_post_n;  /* draws before and after the reset */
+static int   g_sky_zone;                /* the frame before began with a sky zone */
+static float g_sky_main_eye[3], g_sky_dist;
+
+static void view_eye(const float *v, float eye[3])
+{
+    int j;
+
+    for (j = 0; j < 3; j++)
+        eye[j] = -(v[12] * v[j * 4 + 0] + v[13] * v[j * 4 + 1] + v[14] * v[j * 4 + 2]);
+}
+
+static float eye_dist(const float *a, const float *b)
+{
+    float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+
+    return sqrtf(x * x + y * y + z * z);
+}
+
+/* Depth is reset mid-frame: cleared, or written by a colour-less pass that
+ * always passes, after some 3D. */
+static void note_depth_reset(void)
+{
+    if (g_frame_ff3d)
+        g_frame_reset = 1;
+}
+
+/* Whether a fixed-function 3D draw is the frame's sky zone, as Unreal draws
+ * it (Rainbow Six 3): the frame's first draws, through a camera turned as
+ * the world's but standing elsewhere (inside a small box the level builds
+ * its sky in), and then depth is reset before the world. Traced, that box
+ * closed around the camera and hid the level. A frame does not know which
+ * camera is the world's until after the reset, so the frame before teaches
+ * it: it began so if a reset came after draws through one eye and before
+ * more draws through another (fewer before than after: a world drawn
+ * before a reset and a 3D gadget after it is not a sky zone). Then this frame's draws before any reset, through
+ * an eye far from where the world's was (more than half as far as the sky
+ * zone's was from it), are sky. A frame laid out otherwise is wrong for one
+ * frame at most. */
+static int sky_zone_draw(void)
+{
+    float eye[3];
+
+    view_eye(g_dev_view, eye);
+    g_frame_ff3d++;
+    if (!g_frame_reset) {
+        g_frame_pre_n++;
+        if (!g_frame_pre_set) {
+            memcpy(g_frame_pre_eye, eye, sizeof eye);
+            g_frame_pre_set = 1;
+        }
+        return g_sky_zone && eye_dist(eye, g_sky_main_eye) > 0.5f * g_sky_dist;
+    }
+    g_frame_post_n++;
+    if (!g_frame_main_set) {
+        memcpy(g_frame_main_eye, eye, sizeof eye);
+        g_frame_main_set = 1;
+    }
+    return 0;
+}
+
+/* At the end of a frame: whether it began with a sky zone. */
+static void learn_sky_zone(void)
+{
+    float d = g_frame_pre_set && g_frame_main_set ? eye_dist(g_frame_pre_eye, g_frame_main_eye)
+                                                  : 0.0f;
+    float scale = sqrtf(g_frame_main_eye[0] * g_frame_main_eye[0] +
+                        g_frame_main_eye[1] * g_frame_main_eye[1] +
+                        g_frame_main_eye[2] * g_frame_main_eye[2]);
+
+    g_sky_zone = g_frame_reset && g_frame_pre_n < g_frame_post_n &&
+                 d > 1e-3f * (scale > 1.0f ? scale : 1.0f);
+    if (g_sky_zone) {
+        memcpy(g_sky_main_eye, g_frame_main_eye, sizeof g_sky_main_eye);
+        g_sky_dist = d;
+    }
+    g_frame_ff3d = g_frame_reset = g_frame_pre_set = g_frame_main_set = 0;
+    g_frame_pre_n = g_frame_post_n = 0;
+}
+
 static int offscreen_pass(void)
 {
     float vp[4], c[4];
@@ -2483,6 +2584,13 @@ static int screen_draw_kind(void)
         return DRAW_PLAIN;      /* the overlay and the display passes */
     if (offscreen_pass())
         return DRAW_SKIP;
+    if (colourless()) {
+        const RhiDepthDesc *d = g_b.depth ? &g_b.depth->d : NULL;
+
+        if (d && d->depth_enable && d->depth_write && d->depth_func == D3DCMP_ALWAYS)
+            note_depth_reset();
+        return DRAW_SKIP;
+    }
     g_frame_draws++;
     if (!two_d) {
         g_frame_last_3d = g_frame_draws;
@@ -2538,6 +2646,9 @@ static int remix_draw(void)
     int title_3d = g_title_draw && !g_title_2d;
     int sky = g_remix_2d && g_b.vs && title_3d && kind == DRAW_PLAIN && !g_frame_zwritten &&
               !zwrite && zalways;
+
+    if (g_remix_2d && !g_b.vs && title_3d && kind == DRAW_PLAIN && sky_zone_draw())
+        sky = 1;
 
     g_draw_ui = ui;
 
@@ -2653,8 +2764,10 @@ static void d9_clear_depth(RhiView *v, uint32_t flags, float z, uint8_t s)
     if (flags & RHI_CLEAR_STENCIL) f |= D3DCLEAR_STENCIL;
     if (!f)
         return;
-    if (f & D3DCLEAR_ZBUFFER)
+    if (f & D3DCLEAR_ZBUFFER) {
         g_frame_zclear = z;
+        note_depth_reset();
+    }
     /* Clear works on what is bound, and clips to the viewport: bind the
      * surface, clear it whole, and put things back. */
     IDirect3DDevice9_GetDepthStencilSurface(g_dev, &cur);
