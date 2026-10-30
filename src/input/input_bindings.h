@@ -49,6 +49,12 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out);
  * takes it. Nothing happens for a keyboard port or a pad without motors. */
 void recomp_bindings_rumble(unsigned port, unsigned short low, unsigned short high);
 
+/* Whether a key is held now, by Windows virtual-key code (off Windows,
+ * translated to SDL's scancodes; only heard while the window has the focus
+ * there). Any thread. Titles use xbox_D3D8KeyDown, which also checks the
+ * game's window is in front on Windows. */
+int recomp_key_down(int vk);
+
 /* ---- the mouse ----------------------------------------------------------
  *
  * Fed by whoever owns the game window (src/hle/hle_d3d8.c), because only

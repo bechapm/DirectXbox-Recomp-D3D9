@@ -116,11 +116,30 @@ static DWORD hash_blend_states(const DWORD *rs)
            (rs[D3DRS_COLORWRITEENABLE] << 16);
 }
 
+/* xbox_D3D8SetWireframe (d3d8_xbox.h): every draw as lines, a debugging
+ * view. RECOMP_WIREFRAME=1 starts with it on. */
+static volatile int g_wireframe = -1;
+
+void xbox_D3D8SetWireframe(int on)
+{
+    g_wireframe = on ? 1 : 0;
+}
+
+int xbox_D3D8Wireframe(void)
+{
+    if (g_wireframe < 0) {
+        const char *e = getenv("RECOMP_WIREFRAME");
+        g_wireframe = e && *e && e[0] != '0';
+    }
+    return g_wireframe;
+}
+
 static DWORD hash_raster_states(const DWORD *rs, BOOL scissor)
 {
     return rs[D3DRS_CULLMODE] ^
            (rs[D3DRS_FILLMODE] << 4) ^
-           (scissor ? 0x100u : 0u);
+           (scissor ? 0x100u : 0u) ^
+           (xbox_D3D8Wireframe() ? 0x200u : 0u);
 }
 
 /* ================================================================
@@ -226,6 +245,8 @@ static void update_rasterizer_state(const DWORD *rs, BOOL scissor)
     case D3DFILL_WIREFRAME: rd.fill = RHI_FILL_WIREFRAME; break;
     default:                rd.fill = RHI_FILL_SOLID; break;
     }
+    if (xbox_D3D8Wireframe())
+        rd.fill = RHI_FILL_WIREFRAME;
 
     /* The one winding inversion, and it belongs to D3D8's semantics, not to
      * any API: D3D8 CW culls what the host convention calls the front face.

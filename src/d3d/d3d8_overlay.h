@@ -1,5 +1,5 @@
 /*
- * d3d8_overlay.h -- a line of text drawn over the finished frame.
+ * d3d8_overlay.h -- a few lines of text drawn over the finished frame.
  *
  * The renderer's own on-screen display: whatever the caller hands it, drawn
  * at the top-left of the picture, over the swap chain, as the frame is
@@ -32,7 +32,8 @@
 extern "C" {
 #endif
 
-/* The line to draw from now on; NULL or "" for none. It is drawn by every
+/* The text to draw from now on, up to eighteen lines separated by '\n'; NULL
+ * or "" for none. It is drawn by every
  * present (d3d8_overlay_present), not into the title's frame, so a frame
  * presented again -- an in-between frame, or a held frame redrawn behind a
  * menu -- carries the line as it is now. Called on the presenting thread. */

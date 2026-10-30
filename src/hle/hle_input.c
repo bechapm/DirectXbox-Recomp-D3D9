@@ -284,6 +284,44 @@ HLE_EXPORT(XInputGetCapabilities)
     HLE_RETURN(result);
 }
 
+/* A title's own debugging tools (a free camera, say) can take a port's
+ * input for themselves: while a port is withheld the title's XInputGetState
+ * reads a neutral pad there, still connected, and the tool reads the real
+ * one with xbox_InputRead. Set and read from any thread; a stale answer
+ * costs one read. Ports are 0-based. */
+static volatile int g_withheld[RECOMP_INPUT_PORT_COUNT];
+
+void xbox_InputWithhold(unsigned port, int on)
+{
+    if (port < RECOMP_INPUT_PORT_COUNT)
+        g_withheld[port] = on ? 1 : 0;
+}
+
+/* The port's device now, as XInputGetState would give it: buttons, the
+ * eight analog buttons (A B X Y black white L R) and the sticks (lx ly rx
+ * ry). Returns 0 for a port that does not exist. */
+int xbox_InputRead(unsigned port, uint16_t *buttons, uint8_t analog[8], int16_t thumbs[4])
+{
+    RecompInputGamepad pad;
+    uint32_t i;
+
+    if (port >= RECOMP_INPUT_PORT_COUNT)
+        return 0;
+    memset(&pad, 0, sizeof pad);
+    recomp_input_host_sample_port(port, &pad);
+    if (buttons)
+        *buttons = pad.buttons;
+    for (i = 0; analog && i < 8 && i < RECOMP_INPUT_ANALOG_BUTTON_COUNT; i++)
+        analog[i] = pad.analog_buttons[i];
+    if (thumbs) {
+        thumbs[0] = pad.thumb_lx;
+        thumbs[1] = pad.thumb_ly;
+        thumbs[2] = pad.thumb_rx;
+        thumbs[3] = pad.thumb_ry;
+    }
+    return 1;
+}
+
 /* DWORD XInputGetState(HANDLE, PXINPUT_STATE) */
 HLE_EXPORT(XInputGetState)
 {
@@ -318,6 +356,8 @@ HLE_EXPORT(XInputGetState)
     if (!recomp_input_port_for_handle(handle, &port))
         HLE_RETURN(ERR_DEVICE_NOT_CONNECTED);
     recomp_input_host_sample_port(port, &sampled);
+    if (port < RECOMP_INPUT_PORT_COUNT && g_withheld[port])
+        memset(&sampled, 0, sizeof sampled);      /* xbox_InputWithhold */
     lock();
     recomp_input_set_gamepad(&g_model, handle, &sampled);
     if (recomp_input_get_state(&g_model, handle, &packet, &pad)) {
