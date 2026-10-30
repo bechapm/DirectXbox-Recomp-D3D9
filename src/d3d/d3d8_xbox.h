@@ -1390,6 +1390,11 @@ void xbox_D3D8SetRemixCamera(const float *view);
    model-view was made from. NULL stops asking. */
 void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
 
+/* The vertex-program constants as they stand for the draw being made:
+   count registers from first, as the logs number them. Returns how many
+   were copied. For mods (src/hle/recomp_mod.h). */
+uint32_t xbox_D3D8VertexConstants(uint32_t first, uint32_t count, float (*out)[4]);
+
 /* Every draw as lines (the fill mode forced to wireframe), on or off: a
    debugging view, for a title's own key. RECOMP_WIREFRAME=1 starts with it
    on. Clears are untouched, so the lines are drawn over each frame's clear

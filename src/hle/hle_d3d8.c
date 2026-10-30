@@ -83,6 +83,7 @@ static void held_redraw(void);   /* with the overlay's switches, below */
 #include "rhi.h"                         /* rhi_set_wait_hooks */
 #include "input_bindings.h"              /* the mouse, for mouse look and mouse: bindings */
 #include "../kernel/xbox_memory_layout.h"  /* the guest lock */
+#include "recomp_mods.h"                 /* mods, loaded with the device */
 
 void hle_d3d8_push_constants_sync(void);   /* hle_d3d8_vertex.c */
 int  hle_d3d8_pb_walking(void);             /* hle_d3d8_vertex.c */
@@ -2803,6 +2804,7 @@ HLE_EXPORT(Direct3D_CreateDevice)
     uint32_t pp_va = g_hle_ltcg_nargs == 3 ? HLE_ARG(1) : HLE_ARG(4);
 
     first_call(&seen, "Direct3D_CreateDevice", pp_va);
+    recomp_mods_load();
     if (original_missing(hle_original_Direct3D_CreateDevice, "Direct3D_CreateDevice"))
         HLE_RETURN(0x80004005u);                 /* E_FAIL */
     g_in_create_device = 1;
@@ -3435,6 +3437,7 @@ static void frame_end_shadow(void)
             if (b.QuadPart - a.QuadPart > g_swap_present_max)
                 g_swap_present_max = b.QuadPart - a.QuadPart;
         }
+        recomp_mods_frame();
         /* The frame just shown is the one frame interpolation draws toward
          * next; it starts keeping the one after. */
         hle_d3d8_interp_frame_end();

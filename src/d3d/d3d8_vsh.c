@@ -2150,6 +2150,20 @@ void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]))
     g_remix_view_source = source;
 }
 
+/* d3d8_xbox.h: the constants as they stand, for a mod (recomp_mod.h). */
+uint32_t xbox_D3D8VertexConstants(uint32_t first, uint32_t count, float (*out)[4])
+{
+    uint32_t i;
+
+    if (!out || first >= NV2A_VS_MAX_CONSTANTS)
+        return 0;
+    if (count > NV2A_VS_MAX_CONSTANTS - first)
+        count = NV2A_VS_MAX_CONSTANTS - first;
+    for (i = 0; i < count; i++)
+        memcpy(out[i], g_vsh_constants.c[first + i], sizeof out[i]);
+    return count;
+}
+
 void xbox_D3D8RemixView(float view[16])
 {
     if (!g_remix_view_source || !g_remix_view_source(view))
