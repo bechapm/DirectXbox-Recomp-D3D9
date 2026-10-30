@@ -10,6 +10,7 @@
  * against a copy of it, and then checks that a file survives the trip.
  */
 #include "launcher_bindings.h"
+#include "recomp_config.h"     /* recomp_title_input_defaults */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,7 +73,7 @@ int main(int argc, char **argv)
     const char *runtime_src = (argc > 1) ? argv[1] : NULL;
     const char *tmp = "test_bindings_tmp.json";
     BindConfig a, b;
-    int i;
+    int i, j;
 
     printf("test_bindings\n");
 
@@ -113,9 +114,16 @@ int main(int argc, char **argv)
                         failures++;
                     }
                 }
-                if (k && *k && strlen(k) > 5 && !mentions(src, k + 4)) {
-                    printf("  FAIL: the runtime does not know key name \"%s\"\n", k);
-                    failures++;
+                for (j = 0; j < 2; j++) {
+                    /* A key or mouse source: the name after "key:" or "mouse:". */
+                    const char *ks = j ? a.port[0].key_src2[i] : k;
+                    const char *name = ks ? strchr(ks, ':') : NULL;
+
+                    /* One letter or digit is built from the character. */
+                    if (name && strlen(name + 1) > 1 && !mentions(src, name + 1)) {
+                        printf("  FAIL: the runtime does not know key name \"%s\"\n", ks);
+                        failures++;
+                    }
                 }
             }
             free(src);
@@ -127,7 +135,10 @@ int main(int argc, char **argv)
     /* --- the round trip ---------------------------------------------- */
     bind_defaults(&a);
     check_str(a.port[0].pad_src[0], "pad:a", "default: A is pad A");
-    check_str(a.port[0].key_src[0], "key:Z", "default: A is also Z");
+    /* The toolkit's own layout; a title built with its own
+     * (recomp_title_input) puts its keys there instead. */
+    if (!recomp_title_input_defaults())
+        check_str(a.port[0].key_src[0], "key:Z", "default: A is also Z");
     check_str(a.port[1].key_src[0], "", "default: the keyboard is port 1 only");
     check(a.port[2].pad == 2, "default: port 3 takes pad 3");
 

@@ -286,6 +286,11 @@ static int readable(const char *path)
 
 /* ------------------------------------------------------------ settings */
 
+/* recomp_title_input(MOUSE_LOOK) in the title's CMakeLists. */
+#ifndef RECOMP_TITLE_MOUSE_LOOK
+#define RECOMP_TITLE_MOUSE_LOOK 0
+#endif
+
 void recomp_settings_defaults(RecompSettings *s)
 {
     if (!s)
@@ -301,7 +306,7 @@ void recomp_settings_defaults(RecompSettings *s)
     s->fullscreen        = 0;
     s->vrr               = 1;
     s->frame_interp      = 1;
-    s->mouse_look        = 0;
+    s->mouse_look        = RECOMP_TITLE_MOUSE_LOOK;
     s->mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
     snprintf(s->touch_controls, sizeof s->touch_controls, "auto");
     s->touch_opacity     = 0.45;
@@ -841,6 +846,51 @@ int recomp_widescreen_title_extra_registers(int *out, int max)
 int recomp_title_keeps_time(void)
 {
     return RECOMP_TITLE_KEEPS_TIME;
+}
+
+/* recomp_title_input, the same way: the defaults arrive as a generated
+ * source file beside this one, the mouse look default as a definition. */
+#ifdef RECOMP_TITLE_INPUT_DEFAULTS
+extern const char recomp_title_input_json[];
+#endif
+
+const char *recomp_title_input_defaults(void)
+{
+#ifdef RECOMP_TITLE_INPUT_DEFAULTS
+    return recomp_title_input_json;
+#else
+    return NULL;
+#endif
+}
+
+int recomp_title_mouse_look(void)
+{
+    return RECOMP_TITLE_MOUSE_LOOK;
+}
+
+int recomp_input_config_path(uint32_t title_id, char *out, size_t n)
+{
+    const char *env = getenv("RECOMP_INPUT_CONFIG");
+    char dir[1024];
+#if defined(_WIN32)
+    const char sep = '\\';
+#else
+    const char sep = '/';
+#endif
+
+    if (!out || !n)
+        return 0;
+    if (env && *env) {
+        snprintf(out, n, "%s", env);
+        return 1;
+    }
+    if (!user_dir(dir, sizeof dir))
+        return 0;
+    if (recomp_title_input_defaults() && title_id)
+        snprintf(out, n, "%s%ctitles%c%08X.input.json", dir, sep, sep, title_id);
+    else
+        snprintf(out, n, "%s%cinput_bindings.json", dir, sep);
+    return 1;
 }
 
 static RecompWideMode g_wide_mode = (RecompWideMode)(RECOMP_TITLE_WIDESCREEN);

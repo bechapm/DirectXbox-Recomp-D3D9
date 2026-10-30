@@ -705,6 +705,12 @@ static void dispatch_event(const SDL_Event *e)
         if (e->button.windowID == w->id && w->cb.on_mouse_button)
             w->cb.on_mouse_button(w->cb.user, e->button.button, e->button.down ? 1 : 0);
         break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (e->wheel.windowID == w->id && w->cb.on_mouse_wheel && e->wheel.y != 0.0f)
+            w->cb.on_mouse_wheel(w->cb.user,
+                                 e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED
+                                     ? -e->wheel.y : e->wheel.y);
+        break;
     case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
     case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
         /* Also what the green button and the system's own fullscreen

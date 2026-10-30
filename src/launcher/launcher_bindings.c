@@ -21,9 +21,11 @@
 #  define BIND_MKDIR(p) _mkdir(p)
 #else
 #  include <sys/stat.h>
-#  include "recomp_config.h"        /* recomp_config_user_dir */
 #  define BIND_MKDIR(p) mkdir((p), 0755)
 #endif
+#include "recomp_config.h"          /* recomp_input_config_path, the title's layout */
+
+static int bind_parse(const char *text, BindConfig *c);
 
 /* The runtime's table, in the runtime's order. Copied rather than
  * shared because the runtime's copy is static to a file that resolves
@@ -75,7 +77,7 @@ static const struct { const char *pad, *key; } k_defaults[BIND_CONTROLS] = {
     { "pad:rthumb",     ""           }
 };
 
-void bind_defaults(BindConfig *c)
+static void builtin_defaults(BindConfig *c)
 {
     int p, i;
 
@@ -93,29 +95,18 @@ void bind_defaults(BindConfig *c)
     }
 }
 
-int bind_config_path(char *out, size_t n)
+void bind_defaults(BindConfig *c)
 {
-    const char *env = getenv("RECOMP_INPUT_CONFIG");
-#if defined(_WIN32)
-    const char *home = getenv("APPDATA");
-    const char *tail = "\\xboxrecomp\\input_bindings.json";
-#else
-    /* The runtime's own per-user directory, which it reads the file from
-     * (input_bindings.c): ~/Library/Application Support/xboxrecomp on
-     * macOS, where there is no XDG_CONFIG_HOME to ask. */
-    char dir[600];
-    const char *home = recomp_config_user_dir(dir, sizeof dir) ? dir : NULL;
-    const char *tail = "/input_bindings.json";
-#endif
+    builtin_defaults(c);
+    /* The title's layout reads as a file over the built-in one, as the
+     * runtime reads it. */
+    if (recomp_title_input_defaults())
+        bind_parse(recomp_title_input_defaults(), c);
+}
 
-    if (env && *env) {
-        snprintf(out, n, "%s", env);
-        return 1;
-    }
-    if (!home || !*home)
-        return 0;
-    snprintf(out, n, "%s%s", home, tail);
-    return 1;
+int bind_config_path(uint32_t title_id, char *out, size_t n)
+{
+    return recomp_input_config_path(title_id, out, n);
 }
 
 /* ------------------------------------------------------------ reading */
@@ -238,6 +229,7 @@ static const char *parse_sources(const char *p, BindPort *bp, int k)
     if (k >= 0) {
         bp->pad_src[k][0] = '\0';
         bp->key_src[k][0] = '\0';
+        bp->key_src2[k][0] = '\0';
     }
     if (*p == '[') {
         p = ws(p + 1);
@@ -249,9 +241,10 @@ static const char *parse_sources(const char *p, BindPort *bp, int k)
                 if (strncmp(value, "pad:", 4) == 0 && !got_pad) {
                     snprintf(bp->pad_src[k], BIND_SOURCE_LEN, "%s", value);
                     got_pad = 1;
-                } else if (is_kbm_source(value) && !got_key) {
-                    snprintf(bp->key_src[k], BIND_SOURCE_LEN, "%s", value);
-                    got_key = 1;
+                } else if (is_kbm_source(value) && got_key < 2) {
+                    snprintf(got_key ? bp->key_src2[k] : bp->key_src[k],
+                             BIND_SOURCE_LEN, "%s", value);
+                    got_key++;
                 }
             }
             p = ws(p);
@@ -356,9 +349,7 @@ int bind_load(const char *path, BindConfig *c)
     FILE *f;
     long len;
     char *text;
-    const char *p;
-    char key[48];
-    int index = 0, ok = 0;
+    int ok;
 
     bind_defaults(c);
     f = fopen(path, "rb");
@@ -375,9 +366,20 @@ int bind_load(const char *path, BindConfig *c)
     }
     fclose(f);
     text[len] = '\0';
+    ok = bind_parse(text, c);
+    free(text);
+    return ok;
+}
+
+/* A binding file's text over whatever c holds already. */
+static int bind_parse(const char *text, BindConfig *c)
+{
+    const char *p;
+    char key[48];
+    int index = 0, ok = 0;
 
     p = ws(text);
-    if (*p != '{') { free(text); return 0; }
+    if (*p != '{') return 0;
     p = ws(p + 1);
     while (*p && *p != '}') {
         p = jstring(p, key, sizeof key);
@@ -410,7 +412,6 @@ int bind_load(const char *path, BindConfig *c)
         if (*p == ',')
             p = ws(p + 1);
     }
-    free(text);
     return ok;
 }
 
@@ -458,6 +459,7 @@ int bind_save(const char *path, const BindConfig *c)
 
         for (i = 0; i < BIND_CONTROLS; i++) {
             const char *pd = bp->pad_src[i], *ky = bp->key_src[i];
+            const char *k2 = bp->key_src2[i];
 
             /* Every control is written, including one with no sources.
              * Leaving it out does not unbind it: a control the file does
@@ -471,6 +473,7 @@ int bind_save(const char *path, const BindConfig *c)
             if (*pd) fprintf(f, "\"%s\"", pd);
             if (*pd && *ky) fprintf(f, ", ");
             if (*ky) fprintf(f, "\"%s\"", ky);
+            if (*k2) fprintf(f, "%s\"%s\"", (*pd || *ky) ? ", " : "", k2);
             fprintf(f, "]");
         }
         fprintf(f, "\n      }\n    }%s\n", p + 1 < BIND_PORTS ? "," : "");
@@ -504,6 +507,8 @@ static const struct { const char *src, *label; } k_labels[] = {
     { "mouse:left", "Left mouse button" }, { "mouse:right", "Right mouse button" },
     { "mouse:middle", "Middle mouse button" },
     { "mouse:x1", "Mouse back button" }, { "mouse:x2", "Mouse forward button" },
+    { "mouse:wheel_up", "Mouse wheel up" }, { "mouse:wheel_down", "Mouse wheel down" },
+    { "key:LALT", "Left alt" }, { "key:RALT", "Right alt" },
     { NULL, NULL }
 };
 
@@ -522,5 +527,20 @@ const char *bind_source_label(const char *src)
         return buf;
     }
     snprintf(buf, sizeof buf, "%s", src);
+    return buf;
+}
+
+const char *bind_keys_label(const BindPort *bp, int control)
+{
+    static char buf[2 * 48 + 4];
+    const char *a = bp->key_src[control], *b = bp->key_src2[control];
+
+    if (!*b)
+        return bind_source_label(a);
+    if (!*a)
+        return bind_source_label(b);
+    /* bind_source_label's buffer is reused: copy the first before the second. */
+    snprintf(buf, sizeof buf, "%s", bind_source_label(a));
+    snprintf(buf + strlen(buf), sizeof buf - strlen(buf), ", %s", bind_source_label(b));
     return buf;
 }

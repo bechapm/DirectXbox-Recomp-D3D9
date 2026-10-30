@@ -138,6 +138,7 @@ static int        g_bind_top;           /* first control shown: the list scrolls
 static int        g_bind_col;           /* 0 pad, 1 keyboard and mouse */
 static int        g_capturing;          /* waiting for a press to bind */
 static int        g_capture_armed;      /* everything released since we started */
+static int        g_capture_esc;        /* ticks Escape has been held in a capture */
 static int        g_bind_dirty;
 
 /* Which row of whichever list is showing. Declared here rather than with
@@ -931,8 +932,8 @@ static const char *capture_pad(int pad_index)
 }
 
 /* The key names the runtime knows by name; everything else is a letter
- * or a digit and spells itself. Escape is not offered: it is how a
- * person gets out of the capture. */
+ * or a digit and spells itself. Escape is not here: a tap of it is taken
+ * by capture_tick, which tells it from the hold that gives up. */
 static const struct { int key; const char *name; } k_named_keys[] = {
     { LKEY_RETURN, "RETURN" }, { LKEY_BACK, "BACK" }, { LKEY_SPACE, "SPACE" },
     { LKEY_TAB, "TAB" }, { LKEY_UP, "UP" }, { LKEY_DOWN, "DOWN" },
@@ -994,6 +995,32 @@ static int everything_released(int pad_index)
            !lhost_key_held(LKEY_ESCAPE);
 }
 
+/* Escape held this long gives up a keyboard capture; a shorter press
+ * binds Escape, which a game may well want (a pause menu). Ticks are the
+ * launcher's, about 60 a second. */
+#define CAPTURE_ESC_CANCEL_TICKS 40
+
+/* The answer to a capture: into the column being bound. A keyboard answer
+ * replaces both of the control's keys, so rebinding is never adding. */
+static void capture_set(const char *got)
+{
+    int k = capture_control();
+
+    if (k >= 0 && got) {
+        BindPort *bp = &g_bind.port[g_bind_port];
+
+        if (g_bind_col == 0) {
+            snprintf(bp->pad_src[k], BIND_SOURCE_LEN, "%s", got);
+        } else {
+            snprintf(bp->key_src[k], BIND_SOURCE_LEN, "%s", got);
+            bp->key_src2[k][0] = '\0';
+        }
+        g_bind_dirty = 1;
+    }
+    g_capturing = 0;
+    g_capture_esc = 0;
+}
+
 static void capture_tick(void)
 {
     const BindPort *bp = &g_bind.port[g_bind_port];
@@ -1002,27 +1029,24 @@ static void capture_tick(void)
 
     if (!g_capture_armed) {
         g_capture_armed = everything_released(pad);
+        g_capture_esc = 0;
         return;
     }
     if (lhost_key_held(LKEY_ESCAPE)) {
-        g_capturing = 0;
+        /* The pad column has no use for a key: Escape gives up at once. */
+        if (g_bind_col == 0 || ++g_capture_esc >= CAPTURE_ESC_CANCEL_TICKS) {
+            g_capturing = 0;
+            g_capture_esc = 0;
+        }
+        return;
+    }
+    if (g_capture_esc) {                /* let go before it gave up: a tap */
+        capture_set("key:ESCAPE");
         return;
     }
     got = (g_bind_col == 0) ? capture_pad(pad) : capture_key();
-    if (!got)
-        return;
-
-    {
-        int k = capture_control();
-
-        if (k >= 0) {
-            char *dst = (g_bind_col == 0) ? g_bind.port[g_bind_port].pad_src[k]
-                                          : g_bind.port[g_bind_port].key_src[k];
-            snprintf(dst, BIND_SOURCE_LEN, "%s", got);
-            g_bind_dirty = 1;
-        }
-    }
-    g_capturing = 0;
+    if (got)
+        capture_set(got);
 }
 
 /* A mouse button while a binding waits for its answer. In the keyboard
@@ -1040,8 +1064,8 @@ static int capture_mouse(int button)
     if (!g_capture_armed)
         return 1;                       /* still waiting for a clean start */
     if (g_bind_col == 1 && got && k >= 0) {
-        snprintf(g_bind.port[g_bind_port].key_src[k], BIND_SOURCE_LEN, "%s", got);
-        g_bind_dirty = 1;
+        capture_set(got);
+        return 1;
     }
     g_capturing = 0;
     return 1;
@@ -1088,7 +1112,7 @@ static void bindings_load(void)
     char path[1024];
 
     bind_defaults(&g_bind);
-    if (bind_config_path(path, sizeof path))
+    if (bind_config_path(g_title_id, path, sizeof path))
         bind_load(path, &g_bind);
     recomp_pad_set_api(g_bind.pad_api == BIND_PAD_API_XINPUT
                        ? RECOMP_PAD_API_XINPUT : RECOMP_PAD_API_SDL);
@@ -1099,7 +1123,7 @@ static void bindings_save(void)
 {
     char path[1024];
 
-    if (g_bind_dirty && bind_config_path(path, sizeof path))
+    if (g_bind_dirty && bind_config_path(g_title_id, path, sizeof path))
         if (bind_save(path, &g_bind))
             g_bind_dirty = 0;
 }
@@ -1415,7 +1439,7 @@ static void nav(int dx, int dy, int accept, int cancel, int tabdelta)
         /* While waiting for a press, nothing else means anything: the
          * press is the answer. Cancel is handled in capture_tick, which
          * watches Escape and the pad together. */
-        if (cancel)
+        if (cancel && g_bind_col == 0)
             g_capturing = 0;
         return;
     }
@@ -2123,7 +2147,7 @@ static void draw(void)
                 theme_text(lr, "Mouse look", 12, 600,
                            lit > 0.5 ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
                 theme_text(cv, g_settings.mouse_look
-                                   ? "On  (the mouse moves controller 1's right stick)"
+                                   ? "On  (the mouse aims)"
                                    : "Off",
                            12, 400, lit > 0.5 ? THEME_GREEN : THEME_TEXT_DIM, THEME_LEFT);
             } else if (k == BIND_ROW_SENS) {
@@ -2156,7 +2180,9 @@ static void draw(void)
                 cv.x += 210;
                 theme_text(cv,
                            (g_capturing && lit > 0.5 && g_bind_col == 1)
-                               ? "press a key or click..." : bind_source_label(bp->key_src[c]),
+                               ? (g_capture_esc ? "keep holding to cancel..."
+                                                : "press a key or click...")
+                               : bind_keys_label(bp, c),
                            12, 400,
                            (lit > 0.5 && g_bind_col == 1) ? THEME_GREEN : THEME_TEXT_DIM,
                            THEME_LEFT);
@@ -2190,17 +2216,18 @@ static void draw(void)
 
             theme_text_wrapped(r,
                 g_capturing ? (g_bind_col == 1
-                                   ? "Press a key, or click any mouse button. Escape cancels."
+                                   ? "Press a key, click a mouse button or turn the wheel. "
+                                     "Hold Escape to cancel; a tap binds Escape."
                                    : "Press what you want this to be. Escape cancels.")
                 : k == BIND_ROW_PORT   ? "Which of the four controllers these bindings are for."
                 : k == BIND_ROW_DEVICE ? "What this controller reads: a gamepad, the keyboard, or nothing."
                 : k == BIND_ROW_API    ? "All controllers reads Xbox, PlayStation, Switch and most other pads. "
                                          "Xbox controllers only is the older XInput path, for a pad that misbehaves. "
                                          "Every game uses this."
-                : k == BIND_ROW_MOUSE  ? "Moving the mouse turns controller 1's right stick, and the stick "
-                                         "itself still works. Click in the game to give it the pointer; "
+                : k == BIND_ROW_MOUSE  ? "Moving the mouse aims: in a game that turns by it itself, directly, "
+                                         "else through controller 1's right stick, which still works too. Click in the game to give it the pointer; "
                                          "switching away gives it back. This game only."
-                : k == BIND_ROW_SENS   ? "How far a movement of the mouse pushes the stick: higher turns faster. "
+                : k == BIND_ROW_SENS   ? "How far a movement of the mouse turns you: higher turns faster. "
                                          "A or Enter goes back to the default. This game only."
                 : k == BIND_ROW_RESET  ? "Put this controller back to the built-in mapping."
                 : "Left and right choose the controller or the keyboard and mouse column. "
@@ -2490,6 +2517,11 @@ void launcher_wheel(int rows, int mx, int my)
 {
     int last = BIND_TOTAL_ROWS - BIND_ROWS_VISIBLE, top, k;
 
+    /* The wheel is an answer too, in the keyboard and mouse column. */
+    if (rows && g_capturing && g_capture_armed && g_bind_col == 1) {
+        capture_set(rows < 0 ? "mouse:wheel_up" : "mouse:wheel_down");
+        return;
+    }
     if (!rows || g_tab != TAB_INPUT || g_capturing)
         return;
     if (last < 0)

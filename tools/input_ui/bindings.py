@@ -88,12 +88,13 @@ PAD_SOURCES = (["pad:" + b for b in PAD_BUTTONS]
                + ["pad:lt", "pad:rt"]
                + ["pad:" + a for a in PAD_AXES])
 
-# What a "mouse:" source may name: the buttons the game window hears. x1
-# and x2 are the side buttons (back and forward). Mirrors MOUSE_BUTTONS in
+# What a "mouse:" source may name: the buttons the game window hears, and
+# the wheel's two directions (a short press per notch). x1 and x2 are the
+# side buttons (back and forward). Mirrors MOUSE_BUTTONS in
 # src/input/input_bindings.c. Mouse movement is not a source: mouse look is
 # a per-title setting (mouse_look in the title's settings file) that moves
 # controller 1's right stick on top of its bindings.
-MOUSE_BUTTONS = ["left", "right", "middle", "x1", "x2"]
+MOUSE_BUTTONS = ["left", "right", "middle", "x1", "x2", "wheel_up", "wheel_down"]
 MOUSE_SOURCES = ["mouse:" + b for b in MOUSE_BUTTONS]
 
 # Virtual-key names a "key:" source may use, beyond the single letters and
@@ -196,7 +197,8 @@ def source_label(source):
         return {
             "left": "Left mouse button", "right": "Right mouse button",
             "middle": "Middle mouse button", "x1": "Mouse back button",
-            "x2": "Mouse forward button",
+            "x2": "Mouse forward button", "wheel_up": "Mouse wheel up",
+            "wheel_down": "Mouse wheel down",
         }.get(source[6:], source)
     if source.startswith("pad:"):
         name = source[4:]

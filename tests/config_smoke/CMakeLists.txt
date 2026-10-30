@@ -18,6 +18,9 @@ if(WIN32)
         ${CMAKE_CURRENT_LIST_DIR}/../../src/launcher/launcher_bindings.c)
     target_include_directories(bindings_smoke PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/../../src/launcher)
+    # The launcher finds the binding file, and the title's own defaults,
+    # through the settings library.
+    target_link_libraries(bindings_smoke PRIVATE xbox_config)
     if(MSVC)
         target_compile_options(bindings_smoke PRIVATE /W4)
     endif()

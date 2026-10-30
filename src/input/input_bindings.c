@@ -141,9 +141,9 @@ static const char *const PAD_BUTTONS[PB_COUNT] = {
 };
 
 /* "mouse:" sources, in RECOMP_MOUSE_* order. x1 and x2 are the side buttons
- * (back and forward). */
-static const char *const MOUSE_BUTTONS[RECOMP_MOUSE_BUTTONS] = {
-    "left", "right", "middle", "x1", "x2"
+ * (back and forward); the wheel's two directions come last. */
+static const char *const MOUSE_BUTTONS[RECOMP_MOUSE_SOURCES] = {
+    "left", "right", "middle", "x1", "x2", "wheel_up", "wheel_down"
 };
 
 typedef struct {
@@ -248,7 +248,7 @@ static int parse_source(const char *text, Source *out)
     }
     if (strncmp(text, "mouse:", 6) == 0) {
         int i;
-        for (i = 0; i < RECOMP_MOUSE_BUTTONS; i++)
+        for (i = 0; i < RECOMP_MOUSE_SOURCES; i++)
             if (strcmp(MOUSE_BUTTONS[i], text + 6) == 0) {
                 out->kind = SRC_MOUSE;
                 out->arg = (short)i;
@@ -301,7 +301,12 @@ static void bind_add(Binding *b, const char *text, int *bad)
 
 /* ---- defaults ---------------------------------------------------------- */
 
-static void defaults_for(Controller *c, int port)
+/* The title's own layout (recomp_title_input_defaults), resolved once at
+ * init on top of the built-in one; what defaults_for gives from then on. */
+static Controller g_title_ctl[PORTS];
+static int g_have_title_ctl;
+
+static void builtin_defaults(Controller *c, int port)
 {
     int i, bad = 0;
 
@@ -318,6 +323,14 @@ static void defaults_for(Controller *c, int port)
             bind_add(&c->bind[k], DEFAULTS[i].key, &bad);
     }
     c->has_key = (port == 0);
+}
+
+static void defaults_for(Controller *c, int port)
+{
+    if (g_have_title_ctl)
+        *c = g_title_ctl[port];
+    else
+        builtin_defaults(c, port);
 }
 
 /* ---- a small JSON reader ----------------------------------------------- */
@@ -604,21 +617,14 @@ static int readable(const char *path)
     return 1;
 }
 
-/* RECOMP_INPUT_CONFIG, then the per-user file the UI writes, then one beside
- * the executable (the working directory a title's run.bat starts in), so a
- * title can ship a config of its own. */
+/* RECOMP_INPUT_CONFIG, then the per-user file the launcher writes
+ * (recomp_input_config_path: the title's own when it has its own layout,
+ * else the one every game shares), then -- for a title without -- one
+ * beside the executable (the working directory a title's run.bat starts
+ * in), so a title can ship a config of its own. */
 static int find_config(char *out, size_t n)
 {
     const char *env = getenv("RECOMP_INPUT_CONFIG");
-    char dir[600];
-#if defined(_WIN32)
-    const char *tail = "\\input_bindings.json";
-#else
-    const char *tail = "/input_bindings.json";
-#endif
-    /* The per-user settings directory (recomp_config.h): %APPDATA%\xboxrecomp,
-     * ~/Library/Application Support/xboxrecomp, ~/.config/xboxrecomp. */
-    const char *home = recomp_config_user_dir(dir, sizeof dir) ? dir : NULL;
 
     if (env && *env) {
         snprintf(out, n, "%s", env);
@@ -628,11 +634,10 @@ static int find_config(char *out, size_t n)
                         "using the built-in bindings\n", env);
         return 0;
     }
-    if (home && *home) {
-        snprintf(out, n, "%s%s", home, tail);
-        if (readable(out))
-            return 1;
-    }
+    if (recomp_input_config_path(recomp_config_title_id(), out, n) && readable(out))
+        return 1;
+    if (recomp_title_input_defaults())
+        return 0;
     snprintf(out, n, "input_bindings.json");
     return readable(out);
 }
@@ -688,7 +693,8 @@ static void look_settings(void)
 
     if (g_look.ready)
         return;
-    g_look.on = recomp_config_bool("RECOMP_MOUSE_LOOK", "mouse_look", 0);
+    g_look.on = recomp_config_bool("RECOMP_MOUSE_LOOK", "mouse_look",
+                                   recomp_title_mouse_look());
     v = recomp_config_int("RECOMP_MOUSE_SENSITIVITY", "mouse_sensitivity",
                           RECOMP_MOUSE_SENSITIVITY_DEFAULT);
     g_look.sensitivity = v < RECOMP_MOUSE_SENSITIVITY_MIN ? RECOMP_MOUSE_SENSITIVITY_MIN
@@ -706,6 +712,19 @@ void recomp_bindings_init(void)
     g_ready = 1;
     for (i = 0; i < PORTS; i++)
         defaults_for(&g_ctl[i], i);
+    if (recomp_title_input_defaults()) {
+        /* Parsed as a file would be, over the built-in layout, then kept as
+         * the defaults the player's own file starts from. */
+        if (parse_config(recomp_title_input_defaults())) {
+            memcpy(g_title_ctl, g_ctl, sizeof g_title_ctl);
+            g_have_title_ctl = 1;
+        } else {
+            fprintf(stderr, "[INPUT] the title's own default controls cannot be "
+                            "read; using the toolkit's\n");
+            for (i = 0; i < PORTS; i++)
+                defaults_for(&g_ctl[i], i);
+        }
+    }
     if (find_config(g_path, sizeof g_path) && (text = read_file(g_path)) != NULL) {
         if (parse_config(text)) {
             g_have_path = 1;
@@ -720,12 +739,14 @@ void recomp_bindings_init(void)
     for (i = 0; i < PORTS; i++)
         describe(&g_ctl[i], g_ctl[i].label, sizeof g_ctl[i].label);
     fprintf(stderr, "[INPUT] bindings from %s\n",
-            g_have_path ? g_path : "the built-in defaults (no config file)");
+            g_have_path ? g_path
+            : g_have_title_ctl ? "the title's own defaults (no config file)"
+            : "the built-in defaults (no config file)");
     for (i = 0; i < PORTS; i++)
         fprintf(stderr, "[INPUT]   controller %d: %s\n", i + 1, g_ctl[i].label);
     look_settings();
     if (g_look.on)
-        fprintf(stderr, "[INPUT] mouse look: controller 1's right stick, sensitivity %d%s\n",
+        fprintf(stderr, "[INPUT] mouse look: on, sensitivity %d (the right stick unless the title turns by it itself)%s\n",
                 g_look.sensitivity,
                 g_ctl[0].device == DEV_NONE ? " -- but controller 1 reads nothing" : "");
     fflush(stderr);
@@ -916,6 +937,8 @@ static void key_cache_tick(void)
 
 static volatile long g_mouse_dx, g_mouse_dy;   /* not yet read */
 static volatile long g_mouse_held;             /* bit per RECOMP_MOUSE_* */
+static volatile long g_mouse_direct;           /* recomp_mouse_set_direct */
+static RecompBindingsFilter g_filter;
 
 int recomp_mouse_look(void)
 {
@@ -948,6 +971,85 @@ void recomp_mouse_release(void)
     MOUSE_AND(&g_mouse_held, 0);
     MOUSE_TAKE(&g_mouse_dx);
     MOUSE_TAKE(&g_mouse_dy);
+}
+
+void recomp_mouse_set_direct(int on)
+{
+    if (on && !g_mouse_direct)
+        fprintf(stderr, "[INPUT] mouse look: the title turns by the mouse itself; "
+                        "the right stick is left to the pad\n");
+    g_mouse_direct = on ? 1 : 0;
+}
+
+int recomp_mouse_take(float *dx, float *dy)
+{
+    long x = MOUSE_TAKE(&g_mouse_dx), y = MOUSE_TAKE(&g_mouse_dy);
+
+    if (dx) *dx = (float)x / LOOK_FIXED;
+    if (dy) *dy = (float)y / LOOK_FIXED;
+    return x != 0 || y != 0;
+}
+
+int recomp_mouse_sensitivity(void)
+{
+    look_settings();
+    return g_look.sensitivity;
+}
+
+void recomp_bindings_set_filter(RecompBindingsFilter filter)
+{
+    g_filter = filter;
+}
+
+/* ---- the wheel --------------------------------------------------------- */
+
+/* A notch is a press WHEEL_PRESS_MS long and a release WHEEL_GAP_MS long:
+ * a title polling once a frame (16.7 ms at 60) sees both, at any polling
+ * rate, and a title counting presses counts one per notch. Notches arriving
+ * faster than that wait their turn, up to WHEEL_QUEUE; beyond it a spin is
+ * trimmed rather than played out for seconds after the hand stopped. */
+#define WHEEL_PRESS_MS 50ull
+#define WHEEL_GAP_MS   40ull
+#define WHEEL_QUEUE    4
+#define WHEEL_FIXED    120          /* a notch, as Windows counts it */
+
+static volatile long g_wheel_frac;                 /* window thread only */
+static volatile long g_wheel_queued[2];            /* notches waiting: up, down */
+static unsigned long long g_wheel_press_end[2], g_wheel_gap_end[2];
+
+void recomp_mouse_wheel(float notches)
+{
+    long whole;
+    int dir;
+
+    g_wheel_frac += (long)(notches * WHEEL_FIXED);
+    whole = g_wheel_frac / WHEEL_FIXED;
+    if (!whole)
+        return;
+    g_wheel_frac -= whole * WHEEL_FIXED;
+    dir = whole > 0 ? 0 : 1;
+    if (whole < 0)
+        whole = -whole;
+    /* A turn the other way cancels what is still waiting this way. */
+    MOUSE_TAKE(&g_wheel_queued[!dir]);
+    if (MOUSE_ADD(&g_wheel_queued[dir], whole) + whole > WHEEL_QUEUE)
+        g_wheel_queued[dir] = WHEEL_QUEUE;
+}
+
+/* Whether a wheel direction reads as pressed now. Several guest threads may
+ * ask at once; the worst a race does is start one notch a poll early. */
+static int wheel_down(int dir)
+{
+    unsigned long long now = now_ms();
+
+    if (now < g_wheel_press_end[dir])
+        return 1;
+    if (now < g_wheel_gap_end[dir] || g_wheel_queued[dir] <= 0)
+        return 0;
+    MOUSE_ADD(&g_wheel_queued[dir], -1);
+    g_wheel_press_end[dir] = now + WHEEL_PRESS_MS;
+    g_wheel_gap_end[dir] = g_wheel_press_end[dir] + WHEEL_GAP_MS;
+    return 1;
 }
 
 static unsigned long long now_us(void)
@@ -1058,6 +1160,8 @@ static int source_magnitude(const Source *s, KeyCache *kc,
     case SRC_KEY:
         return key_down(kc, s->arg) ? 255 : 0;
     case SRC_MOUSE:
+        if (s->arg >= RECOMP_MOUSE_BUTTONS)
+            return wheel_down(s->arg - RECOMP_MOUSE_WHEEL_UP) ? 255 : 0;
         return (g_mouse_held & (1L << s->arg)) ? 255 : 0;
     case SRC_PAD_BUTTON:
         if (!have_pad)
@@ -1119,6 +1223,7 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     RecompPadState pad;
     int have_pad = 0, i;
     int axis[4] = { 0, 0, 0, 0 };
+    XBOX_GAMEPAD kbm;                   /* what keys and mouse alone press */
 
     if (!out)
         return 0;
@@ -1136,19 +1241,22 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         return 0;
     }
     memset(&kc, 0, sizeof kc);
+    memset(&kbm, 0, sizeof kbm);
     key_cache_tick();
     memset(&pad, 0, sizeof pad);
     if (c->device == DEV_PAD)
         have_pad = recomp_pad_read(c->pad, &pad);
 
     for (i = 0; i < CONTROL_COUNT; i++) {
-        int mag = 0, s;
+        int mag = 0, kmag = 0, s;
 
         for (s = 0; s < c->bind[i].count; s++) {
-            int m = source_magnitude(&c->bind[i].src[s], &kc, &pad, have_pad,
-                                     c->deadzone);
+            const Source *src = &c->bind[i].src[s];
+            int m = source_magnitude(src, &kc, &pad, have_pad, c->deadzone);
             if (m > mag)
                 mag = m;
+            if ((src->kind == SRC_KEY || src->kind == SRC_MOUSE) && m > kmag)
+                kmag = m;
         }
         if (!mag)
             continue;
@@ -1157,10 +1265,14 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         case K_DIGITAL:
             if (mag >= 64)
                 out->wButtons |= CONTROLS[i].arg;
+            if (kmag >= 64)
+                kbm.wButtons |= CONTROLS[i].arg;
             break;
         case K_ANALOG:
             if (mag > out->bAnalogButtons[CONTROLS[i].arg])
                 out->bAnalogButtons[CONTROLS[i].arg] = (BYTE)mag;
+            if (kmag > kbm.bAnalogButtons[CONTROLS[i].arg])
+                kbm.bAnalogButtons[CONTROLS[i].arg] = (BYTE)kmag;
             break;
         default:
             axis[CONTROLS[i].arg] += CONTROLS[i].sign * mag;
@@ -1181,7 +1293,7 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     }
     /* Mouse look goes on top of the right stick's bindings rather than in
      * place of them: the pad's stick, or keys bound to it, still turn. */
-    if (port == 0 && g_look.on) {
+    if (port == 0 && g_look.on && !g_mouse_direct) {
         float look[2];
 
         look_axes(look);
@@ -1194,6 +1306,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     /* The on-screen controls, on top of everything bound (touch_controls.h). */
     if (port == 0)
         recomp_touch_apply(out);
+    if (g_filter)
+        g_filter(port, out, &kbm);
     return 1;
 }
 

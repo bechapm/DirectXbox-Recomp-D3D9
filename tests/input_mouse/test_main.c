@@ -52,6 +52,20 @@ static void sleep_ms(int ms)
 #endif
 }
 
+/* A filter that moves a keyboard-or-mouse right trigger to the left one. */
+static int g_filter_saw;
+
+static void swap_filter(unsigned port, XBOX_GAMEPAD *pad, const XBOX_GAMEPAD *kbm)
+{
+    if (port != 0)
+        return;
+    g_filter_saw = kbm->bAnalogButtons[XBOX_BUTTON_RTRIGGER];
+    if (g_filter_saw) {
+        pad->bAnalogButtons[XBOX_BUTTON_RTRIGGER] = 0;
+        pad->bAnalogButtons[XBOX_BUTTON_LTRIGGER] = (BYTE)g_filter_saw;
+    }
+}
+
 static XBOX_GAMEPAD sample(void)
 {
     XBOX_GAMEPAD pad;
@@ -73,11 +87,14 @@ int main(void)
         return 1;
     }
     /* Controller 1 on the keyboard, so no pad is opened, with the right
-     * trigger on the left button and Y on the back side button. The
-     * wheel is not a source, and must be refused without spoiling the rest. */
+     * trigger on the left button, Y on the back side button and the D-pad's
+     * left and right on the wheel. A bare "wheel" is not a source, and must
+     * be refused without spoiling the rest. */
     fputs("{ \"version\": 1, \"controllers\": [ { \"port\": 1, \"device\": \"keyboard\",\n"
           "  \"bindings\": { \"rtrigger\": [\"mouse:left\"], \"y\": [\"mouse:x1\"],\n"
-          "                  \"x\": [\"mouse:wheel\"] } } ] }\n", f);
+          "                  \"x\": [\"mouse:wheel\"],\n"
+          "                  \"dpad_left\": [\"mouse:wheel_up\"],\n"
+          "                  \"dpad_right\": [\"mouse:wheel_down\"] } } ] }\n", f);
     fclose(f);
     set_env("RECOMP_INPUT_CONFIG", path);
     set_env("RECOMP_MOUSE_LOOK", "1");
@@ -137,6 +154,69 @@ int main(void)
         pad = sample();
     }
     check(pad.sThumbRX == 0 && pad.sThumbRY == 0, "a mouse that stops lets the stick go");
+
+    /* ---- the wheel: a notch is one press and one release */
+    {
+        int presses = 0, held = 0, ms;
+
+        recomp_mouse_wheel(1.0f);
+        pad = sample();
+        check((pad.wButtons & XBOX_GAMEPAD_DPAD_LEFT) != 0, "a notch up presses its control");
+        check((pad.wButtons & XBOX_GAMEPAD_DPAD_RIGHT) == 0, "and not the other way's");
+        /* Two more, read at 60 polls a second: three presses in all. */
+        recomp_mouse_wheel(0.5f);
+        recomp_mouse_wheel(0.5f);           /* two halves are a notch */
+        recomp_mouse_wheel(1.0f);
+        held = 1;
+        presses = 1;
+        for (ms = 0; ms < 600; ms += 16) {
+            int now;
+
+            sleep_ms(16);
+            pad = sample();
+            now = (pad.wButtons & XBOX_GAMEPAD_DPAD_LEFT) != 0;
+            if (now && !held)
+                presses++;
+            held = now;
+        }
+        printf("  three notches up: %d presses\n", presses);
+        check(presses == 3, "three notches are three presses, none merged");
+        check(!held, "and the last is let go");
+        recomp_mouse_wheel(-1.0f);
+        pad = sample();
+        check((pad.wButtons & XBOX_GAMEPAD_DPAD_RIGHT) != 0, "a notch down presses the other");
+    }
+
+    /* ---- direct: the title takes the motion, the stick gets none */
+    {
+        float dx = 0.0f, dy = 0.0f;
+
+        recomp_mouse_set_direct(1);
+        recomp_mouse_take(NULL, NULL);
+        sleep_ms(20);
+        recomp_mouse_move(40.0f, -8.0f);
+        sleep_ms(20);
+        pad = sample();
+        check(pad.sThumbRX == 0 && pad.sThumbRY == 0, "direct: the stick is left alone");
+        check(recomp_mouse_take(&dx, &dy) == 1 && dx == 40.0f && dy == -8.0f,
+              "direct: the title takes what moved, in counts");
+        check(recomp_mouse_take(&dx, &dy) == 0 && dx == 0.0f, "and takes it once");
+        check(recomp_mouse_sensitivity() == 25, "the sensitivity setting is the title's to read");
+        recomp_mouse_set_direct(0);
+    }
+
+    /* ---- a filter sees what the keyboard and mouse press */
+    {
+        recomp_bindings_set_filter(swap_filter);
+        recomp_mouse_button(RECOMP_MOUSE_LEFT, 1);
+        pad = sample();
+        check(g_filter_saw == 255, "the filter is told the mouse pulls the trigger");
+        check(pad.bAnalogButtons[XBOX_BUTTON_RTRIGGER] == 0 &&
+              pad.bAnalogButtons[XBOX_BUTTON_LTRIGGER] == 255,
+              "and what it changes is what the title reads");
+        recomp_mouse_button(RECOMP_MOUSE_LEFT, 0);
+        recomp_bindings_set_filter(NULL);
+    }
 
     remove(path);
     if (failures)

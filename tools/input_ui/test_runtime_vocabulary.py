@@ -75,11 +75,19 @@ class Vocabulary(unittest.TestCase):
         self.assertIn('getenv("RECOMP_INPUT_CONFIG")', self.text)
 
     def test_the_runtime_looks_in_the_same_per_user_place(self):
-        # find_config() in the C takes the directory from src/config's
-        # recomp_config_user_dir() and adds input_bindings.json; the UI's
-        # config_path() does the same with bindings.user_dir().
-        self.assertIn("recomp_config_user_dir(", self.text)
-        self.assertIn('input_bindings.json"', self.text)
+        # find_config() in the C asks src/config's recomp_input_config_path(),
+        # which takes the per-user directory from user_dir() and adds
+        # input_bindings.json (a title with its own layout uses
+        # titles/<TITLEID>.input.json instead); the UI's config_path() does
+        # the same with bindings.user_dir().
+        self.assertIn("recomp_input_config_path(", self.text)
+        with open(os.path.join(ROOT, "src", "config", "recomp_config.c"),
+                  encoding="utf-8") as handle:
+            c = handle.read()
+        body = c[c.index("int recomp_input_config_path("):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("user_dir(", body)
+        self.assertIn('input_bindings.json"', body)
         self.assertTrue(bindings.config_path().endswith(
             os.path.join("xboxrecomp", "input_bindings.json"))
             or os.environ.get("RECOMP_INPUT_CONFIG"))
