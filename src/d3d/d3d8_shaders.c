@@ -142,10 +142,14 @@ static const char g_vs_source[] =
     "        uv = float4(nrmCam, 1.0);\n"
     "    } else if (mode == 0x00020000u) {\n"   /* TCI_CAMERASPACEPOSITION */
     "        uv = float4(posCam, 1.0);\n"
+    /* The eye's ray off the surface: R = I - 2(N.I)N with I from the eye to
+     * the vertex (D3D's 2(N.E)N - E, E the other way; GL's reflection map).
+     * reflect() of the vertex-to-eye vector gave -R, the far side of the
+     * cube: Rainbow Six 3's scope lens reflected darkness. */
     "    } else if (mode == 0x00030000u) {\n"   /* TCI_CAMERASPACEREFLECTIONVECTOR */
-    "        float3 V = normalize(-posCam);\n"
+    "        float3 I = normalize(posCam);\n"
     "        float3 N = normalize(nrmCam);\n"
-    "        uv = float4(reflect(V, N), 1.0);\n"
+    "        uv = float4(reflect(I, N), 1.0);\n"
     "    } else if (mode == 0x00040000u) {\n"   /* TCI_SPHEREMAP */
     "        float3 n = normalize(nrmCam);\n"
     "        float m = 2.0 * sqrt(n.x*n.x + n.y*n.y + (n.z + 1.0)*(n.z + 1.0));\n"
@@ -1119,8 +1123,24 @@ static void ff_vs_prepare_draw(DWORD fvf)
             if (ts && (ts[D3DTSS_TEXTURETRANSFORMFLAGS] & 0xFFu) == D3DTTFF_DISABLE)
                 tm = NULL;
             if (tm) {
-                float tm_t[16];
-                mat4_transpose(tm_t, tm);
+                float tm_t[16], m[16];
+                DWORD tci = ts ? ts[D3DTSS_TEXCOORDINDEX] : (DWORD)i;
+
+                /* D3D pads a set of fewer than three floats with 1 next, then
+                 * 0: (u, 1, 0, 0) and (u, v, 1, 0), so a 2D set's matrix
+                 * moves it by its third row. The input layout pads with
+                 * (0, 0, 0, 1) instead, which reads the fourth: that row
+                 * becomes the one D3D would read. Rainbow Six 3 moves its
+                 * walls' detail texture so (COUNT2), and it landed elsewhere. */
+                memcpy(m, tm, sizeof m);
+                if (!(tci & 0xFFFF0000u)) {
+                    DWORD set = tci & 0xFFFFu;
+                    UINT n = set < 4 ? fvf_texcoord_size(fvf, set) : 2;
+
+                    if (n < 3)
+                        memcpy(&m[12], &m[n * 4], 4 * sizeof(float));
+                }
+                mat4_transpose(tm_t, m);
                 memcpy(cb->tex_mat[i], tm_t, sizeof(tm_t));
             } else {
                 memset(cb->tex_mat[i], 0, sizeof(cb->tex_mat[i]));

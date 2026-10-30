@@ -2025,16 +2025,22 @@ static void apply_projection(void)
  * no 3D yet: Max Payne's menus, nothing but such draws, stay black under
  * Remix flat or not, where its graphic novel, after one draw of its own
  * camera's, comes out as in D3D11. Not under lighting (WORLD and VIEW place the lights) or fog (VIEW gives
- * the fog depth). RECOMP_D3D9_FLAT_2D=0 turns it off. */
+ * the fog depth). RECOMP_D3D9_FLAT_2D=0 turns it off; =2, a test switch,
+ * marks and flattens such draws in a frame with no 3D too. */
+static int flat_2d_mode(void)
+{
+    static int mode = -1;
+
+    if (mode < 0) {
+        const char *e = getenv("RECOMP_D3D9_FLAT_2D");
+        mode = e && e[0] >= '0' && e[0] <= '2' ? e[0] - '0' : 1;
+    }
+    return mode;
+}
+
 static int flat_2d(void)
 {
-    static int on = -1;
-
-    if (on < 0) {
-        const char *e = getenv("RECOMP_D3D9_FLAT_2D");
-        on = !(e && e[0] == '0');
-    }
-    return on && g_remix_2d && g_title_draw && g_title_said_2d && g_draw_ui && g_title_2d_w > 0.0f && !g_b.vs &&
+    return flat_2d_mode() && g_remix_2d && g_title_draw && g_title_said_2d && g_draw_ui && g_title_2d_w > 0.0f && !g_b.vs &&
            g_ff_proj_set && g_rs_known[D3DRS_LIGHTING] && !g_rs[D3DRS_LIGHTING] &&
            !(g_rs_known[D3DRS_FOGENABLE] && g_rs[D3DRS_FOGENABLE]);
 }
@@ -2457,7 +2463,7 @@ static int screen_draw_kind(void)
     }
     if (!g_b.vs && !g_title_said_2d)
         return DRAW_PLAIN;      /* fixed function: Remix judges its 2D itself */
-    if (!g_b.vs && !g_frame_last_3d)
+    if (!g_b.vs && !g_frame_last_3d && flat_2d_mode() != 2)
         return DRAW_PLAIN;      /* title-declared, with no 3D yet this frame */
     if (t0 && t0->image && t0->image->screen_copy)
         return DRAW_SKIP;
