@@ -11,7 +11,7 @@ Three kinds of difference are kept apart, because each has a different owner:
 | Kind | Meaning | Fixed in |
 |---|---|---|
 | **Backend** | Plain D3D9 (no Remix) draws something other than D3D11. | `rhi_d3d9.c`, the D3D9 branches in `src/d3d` |
-| **Remix hint** | Plain D3D9 is right, but what Remix is told about a draw (UI, sky, camera) is wrong. | The title's Remix mod (`recomp_mod.h`), the title's camera source |
+| **Remix hint** | Plain D3D9 is right, but what Remix is told about a draw (UI, sky, camera) is wrong. | The title's Remix mod (`recomp_mod.h`) |
 | **Remix side** | Remix gets the right description and still needs settings, lights or replacement assets. | `rtx.conf`, the Remix project |
 
 Gaps that every backend shares (vertex blending, point sprites) are not the
@@ -81,18 +81,14 @@ it.
 
 ## What Remix is told (Remix hints)
 
-The renderer draws what the title asks and tells Remix nothing more, with
-one exception still to move: the camera. Each program draw gets WORLD, VIEW
-and PROJECTION; VIEW comes from the title's camera source when one is
-registered (`xbox_D3D8SetRemixViewSource`, which a mod reaches through
-`recomp_mod.h`'s `set_remix_view_source`), else from the renderer's guess.
-
-Everything else Remix needs told about a title's draws (which 2D is UI, the
-sky, passes Remix would mistake for the scene, textures to make anew when
-rewritten) is a mod's job: `recomp_mod.h` (version 2) calls a mod before
-and after every draw with what the renderer knows of it, at clears and at
-`Present`, and lets it change the device's state for that one draw or leave
-the draw out. A title's Remix project carries such a mod.
+The renderer draws what the title asks and tells Remix nothing more.
+Everything Remix needs told about a title's draws (the camera of its program
+draws, which 2D is UI, the sky, passes Remix would mistake for the scene,
+textures to make anew when rewritten) is a mod's job: `recomp_mod.h` calls a
+mod before and after every draw with what the renderer knows of it (the
+program's projection among it), at clears and at `Present`, and lets it set
+the device's transforms and state for that draw or leave the draw out. A
+title's Remix project carries such a mod.
 
 ## Remix settings a title needs (Remix side)
 

@@ -2123,33 +2123,6 @@ uint16_t d3d8_vsh_inputs_read(DWORD handle)
     return program.inputs_read;
 }
 
-/* RTX Remix (the D3D9 backend, rhi_d3d9.h) follows a program's draw back
- * into the world through the PROJECTION and VIEW transforms. The projection
- * is the program's own register, as it reaches the host (Hor+ and the camera
- * zoom applied, as in d3d8_vsh_prepare_draw), turned into D3D's row-vector
- * form: the program takes clip x as dot(position, c[reg]), which is the
- * matrix's first column. The view is not known here, so the world Remix
- * sees is the camera's own space (docs/technical/d3d9-remix.md); a title
- * that knows its camera says so with xbox_D3D8SetRemixCamera. WORLD is
- * identity: the program's own model-view has already taken its vertices
- * out of the object's space. A program that projects through nothing is
- * drawn under an identity projection. */
-static float g_remix_view[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-
-static int (*g_remix_view_source)(float view[16]);
-
-void xbox_D3D8SetRemixCamera(const float *view)
-{
-    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-
-    memcpy(g_remix_view, view ? view : identity, sizeof g_remix_view);
-}
-
-void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]))
-{
-    g_remix_view_source = source;
-}
-
 /* d3d8_xbox.h: the constants as they stand, for a mod (recomp_mod.h). */
 uint32_t xbox_D3D8VertexConstants(uint32_t first, uint32_t count, float (*out)[4])
 {
@@ -2162,12 +2135,6 @@ uint32_t xbox_D3D8VertexConstants(uint32_t first, uint32_t count, float (*out)[4
     for (i = 0; i < count; i++)
         memcpy(out[i], g_vsh_constants.c[first + i], sizeof out[i]);
     return count;
-}
-
-void xbox_D3D8RemixView(float view[16])
-{
-    if (!g_remix_view_source || !g_remix_view_source(view))
-        memcpy(view, g_remix_view, sizeof g_remix_view);
 }
 
 /* RECOMP_D3D9_SKIP_VS=<hash>[,<hash>...]: a test switch. Under D3D9, draws
@@ -2197,36 +2164,40 @@ static int skip_vs_hash(uint32_t hash)
     return 0;
 }
 
-static void d3d9_camera_for_draw(void)
+/* Under D3D9, the program's projection is handed on with the draw (mods,
+ * through RecompModDraw): the program's own register as it reaches the host
+ * (Hor+ and the camera zoom applied, as in d3d8_vsh_prepare_draw), turned
+ * into D3D's row-vector form. The program takes clip x as
+ * dot(position, c[reg]), which is the matrix's first column. A D3D9 runtime
+ * that reads the fixed-function transforms even under a program (RTX
+ * Remix) needs it to follow the draw back out of clip space; plain D3D9
+ * does not use it. NULL for a program that projects through nothing. */
+static void d3d9_program_projection(void)
 {
-    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-    float proj[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    float proj[16];
     int reg = g_bound_proj_reg, row, col;
+    BOOL screen;
+    float hp, zoom;
 
     if (!rhi_d3d9_active())
         return;
-    if (reg >= 0 && reg + 3 < NV2A_VS_MAX_CONSTANTS) {
-        BOOL screen = d3d8_target_is_screen();
-        float hp = hor_plus_for_draw(screen), zoom = screen ? camera_zoom() : 1.0f;
-
-        for (row = 0; row < 4; row++)
-            for (col = 0; col < 4; col++) {
-                float v = g_vsh_constants.c[reg + col][row];
-                if (col == 0)
-                    v *= hp;
-                if (col < 2)
-                    v *= zoom;
-                proj[row * 4 + col] = v;
-            }
+    if (reg < 0 || reg + 3 >= NV2A_VS_MAX_CONSTANTS) {
+        rhi_d3d9_program_projection(NULL);
+        return;
     }
-    {
-        float view[16];
-
-        if (g_remix_view_source && g_remix_view_source(view))
-            rhi_d3d9_set_camera(identity, view, proj);
-        else
-            rhi_d3d9_set_camera(identity, g_remix_view, proj);
-    }
+    screen = d3d8_target_is_screen();
+    hp = hor_plus_for_draw(screen);
+    zoom = screen ? camera_zoom() : 1.0f;
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 4; col++) {
+            float v = g_vsh_constants.c[reg + col][row];
+            if (col == 0)
+                v *= hp;
+            if (col < 2)
+                v *= zoom;
+            proj[row * 4 + col] = v;
+        }
+    rhi_d3d9_program_projection(proj);
 }
 
 BOOL d3d8_vsh_prepare_draw(DWORD handle)
@@ -2381,7 +2352,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
         rhi_set_uniform_buffers(RHI_STAGE_VERTEX, 3, 1, &g_vsh_vdata_cb);
     }
 
-    d3d9_camera_for_draw();
+    d3d9_program_projection();
     if (rhi_d3d9_active() && skip_vs_hash(hash))
         rhi_d3d9_skip_next_draw();
     return TRUE;

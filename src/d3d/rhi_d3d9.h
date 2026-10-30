@@ -27,8 +27,9 @@
  *    (NV2ACombinerState.host). Remix ignores pixel shaders, so these only
  *    shape what is rasterised: 2D, the title's full-screen passes, and
  *    everything when Remix is not installed.
- *  - Each program draw is told the camera (rhi_d3d9_set_camera), so Remix
- *    can follow the positions the program writes back into the world.
+ *  - Each program draw's projection is handed to mods
+ *    (rhi_d3d9_program_projection), so that a mod for Remix can tell it how
+ *    to follow the positions the program writes back into the world.
  *
  * Every call here does nothing unless the D3D9 backend is the one in use,
  * so the renderer calls them without asking first where that is simpler.
@@ -127,14 +128,11 @@ int  rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
 
 /* ---- what Remix is told ----------------------------------------------------------- */
 
-/* The camera for a draw through a vertex program: VIEW and PROJECTION as
- * D3D row-vector matrices, so that a world position p reaches the clip
- * space the program writes as p * view * proj, and WORLD, which takes the
- * draw's own vertices to that world (identity when the program's input is
- * already in it, or when nothing better is known). NULL leaves one as it
- * was. Remix carries the program's output back through proj and view to
- * world space, and through world to the object's own. */
-void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16]);
+/* The projection of the next draw's vertex program, as a D3D row-vector
+ * PROJECTION (d3d8_vsh.c), or NULL when the program projects through
+ * nothing it can tell. For mods (RecompModDraw.program_projection): D3D9
+ * itself ignores the transforms under a program. */
+void rhi_d3d9_program_projection(const float proj[16]);
 
 /* A test switch: leave out the next draw (d3d8_vsh.c's RECOMP_D3D9_SKIP_VS). */
 void rhi_d3d9_skip_next_draw(void);
@@ -164,6 +162,7 @@ int  rhi_d3d9_mod_vertex_hlsl(const char *hlsl);
 int  rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value);
 void rhi_d3d9_mod_set_projection(const float m[16]);
 void rhi_d3d9_mod_remake_written_textures(int on);
+void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16]);
 
 #ifdef __cplusplus
 }

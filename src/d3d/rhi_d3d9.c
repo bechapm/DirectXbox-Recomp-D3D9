@@ -2326,6 +2326,8 @@ void rhi_d3d9_skip_next_draw(void)
 
 /* What the mods are told of the draw in hand (mod_before_draw). */
 static RecompModDraw g_mod_d;
+static float         g_prog_proj[16];   /* rhi_d3d9_program_projection */
+static int           g_prog_proj_set;
 static int           g_mod_called;      /* how many befores ran for it */
 
 /* After prepare_draw: the mods' befores, in the order they asked. 0 when
@@ -2372,6 +2374,9 @@ static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims)
     memcpy(d->projection, g_ff_proj, sizeof d->projection);
     memcpy(d->world, g_dev_world, sizeof d->world);
     memcpy(d->view, g_dev_view, sizeof d->view);
+    d->program_projection_set = g_b.vs && g_prog_proj_set;
+    if (d->program_projection_set)
+        memcpy(d->program_projection, g_prog_proj, sizeof d->program_projection);
     for (i = 0; i < g_mod_draw_n; i++) {
         if (!g_mod_draw[i].before) {
             g_mod_called++;
@@ -2682,19 +2687,24 @@ void rhi_d3d9_set_material(const void *material)
         IDirect3DDevice9_SetMaterial(g_dev, (const D3DMATERIAL9 *)material);
 }
 
-void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16])
+/* d3d8_vsh.c's program projection, for the draw in hand (mod_before_draw). */
+void rhi_d3d9_program_projection(const float proj[16])
 {
-    if (!rhi_d3d9_active())
-        return;
-    if (world)
-        rhi_d3d9_set_transform(D3DTS_WORLD, world);
-    if (view)
-        rhi_d3d9_set_transform(D3DTS_VIEW, view);
-    /* The projection Remix inverts is the clip space the program writes
-     * after RHI_VP_ADJUST, which is what the fixed-function projection is
-     * given too: the one transform serves both kinds of draw. */
+    g_prog_proj_set = proj != NULL;
     if (proj)
-        rhi_d3d9_set_transform(D3DTS_PROJECTION, proj);
+        memcpy(g_prog_proj, proj, sizeof g_prog_proj);
+}
+
+/* recomp_mod.h's d3d9_set_transform: as the title's own, and from a mod's
+ * before, for the draw in hand too (whose projection prepare_draw has
+ * already applied). */
+void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16])
+{
+    rhi_d3d9_set_transform(type, m);
+    if (rhi_d3d9_active() && type == D3DTS_PROJECTION && g_ff_proj_dirty) {
+        apply_projection();
+        g_ff_proj_dirty = 0;
+    }
 }
 
 int rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h)
@@ -2807,10 +2817,8 @@ void rhi_d3d9_set_light(uint32_t index, const void *light, int enable)
     (void)index; (void)light; (void)enable;
 }
 void rhi_d3d9_set_material(const void *material) { (void)material; }
-void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16])
-{
-    (void)world; (void)view; (void)proj;
-}
+void rhi_d3d9_program_projection(const float proj[16]) { (void)proj; }
+void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16]) { (void)type; (void)m; }
 
 void rhi_d3d9_skip_next_draw(void)
 {

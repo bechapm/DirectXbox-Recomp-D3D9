@@ -1,8 +1,9 @@
 # A Direct3D 9 backend for RTX Remix
 
 **Status, October 2026:** runs TimeSplitters 2 at full speed under Windows'
-own D3D9 and under RTX Remix 1.6.1, which path-traces its levels in the
-game's own world space (the USA release hands its camera over; see below).
+own D3D9 and under RTX Remix 1.6.1, which, with a mod for the title that
+tells it the camera and what is 2D (`src/hle/recomp_mod.h`), path-traces its
+levels in the game's own world space.
 A captured Siberia frame replays pixel for pixel the same as D3D11. `RECOMP_D3D8_BACKEND=d3d9` chooses it. This note is the design
 and what is left; `src/d3d/rhi_d3d9.c` and `rhi_d3d9.h` are the reference.
 
@@ -20,8 +21,8 @@ For a draw through a vertex shader it captures the positions the shader writes
 (`rtx.useVertexCapture`, on by default) and carries them back to world space
 through the inverse `PROJECTION` and `VIEW`. So the backend's job is less
 "run on D3D9" than "look like a D3D9 game": fixed function where the title was
-fixed function, the camera where a vertex program hides it, and nothing drawn
-that Remix could take for the scene when it is not.
+fixed function, and what a mod needs to give Remix the camera where a vertex
+program hides it.
 
 ## Where the seam goes
 
@@ -49,18 +50,15 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
 
 - **Fixed-function draws** carry the title's own `WORLD`, `VIEW` and
   `PROJECTION` (Hor+ applied to the projection as the D3D11 path applies it).
-- **Program draws** carry `PROJECTION` = the program's own projection
-  register (`proj_reg`, as uploaded: Hor+ and camera zoom applied) transposed
-  to row-vector form, `WORLD` = identity, and `VIEW` = the title's view. A
-  title gives it with `xbox_D3D8SetRemixCamera` once a frame, or, when one
-  frame is drawn under more than one camera state, with
-  `xbox_D3D8SetRemixViewSource`, asked at every program draw. Identity until
-  it does: the world Remix sees is then the camera's own space, which renders
-  but moves with the camera, defeating temporal accumulation and anchoring
-  replacements to the screen. TimeSplitters 2 (split2's `ts2_draw_world`)
-  reads the view pointer in its render context at each draw: most of its
-  frame is drawn before the function that would hand the view over, and
-  given the view there those draws carried the frame before's.
+- **Program draws** carry nothing of their own: D3D9 ignores the transforms
+  under a vertex shader, and the backend leaves them as they stand. What
+  Remix needs to follow a program's positions back into the world (a
+  `PROJECTION`, a `VIEW` from the title's camera, `WORLD`) a mod sets for
+  it through `recomp_mod.h`, which hands it each program draw's projection:
+  the program's own projection register (`proj_reg`, as uploaded: Hor+ and
+  camera zoom applied) transposed to row-vector form. Without a mod the
+  world Remix sees is whatever those transforms last were, and moves with
+  the camera.
 - **A `POSITION` element.** Remix takes a draw's vertices from the
   declaration's `POSITION` and leaves out a draw without one. v0 is
   `POSITION`, but a program need not keep its position there (TimeSplitters 2
@@ -113,11 +111,9 @@ lost, and the back buffer keeps its size.
 
 [d3d9-parity.md](d3d9-parity.md) lists every place this backend draws
 differently from D3D11. What Remix needs told about a title's 2D, sky and
-post passes is not the renderer's: a mod does it through the per-draw hooks
+post passes, and the camera of its program draws, is not the renderer's: a mod does it through the per-draw hooks
 in `src/hle/recomp_mod.h`. Without one, Remix sees the title as a plain
 D3D9 game, and traces its 2D as geometry.
-
-- The PAL release of TimeSplitters 2 does not hand its camera over yet.
 
 - A register combiner program too long for ps_2_a, under fixed function, is
   approximated (stage 0's texture times diffuse). Under fixed function the
