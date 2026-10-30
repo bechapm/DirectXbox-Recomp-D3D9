@@ -50,12 +50,11 @@
  *      one D3D8CAP_FRAME_START chunk;
  *   2. every host call shadow mode made until the next Swap, in call order.
  * The snapshot uses the same chunk types as the calls, so replay has one path
- * for both. Its order is fixed by the writer: programs and their
- * declarations, constants, screen-space, input current values, combiner
- * token, vertex shader,
- * textures, render target, transforms, viewport, render states, texture
- * stage states. The
- * stage states come after the textures because the host's SetTexture
+ * for both. Its order is fixed by the writer: the title, the scene,
+ * programs and their declarations, constants, screen-space, input current
+ * values, combiner token, vertex shader, textures, render target,
+ * transforms, viewport, render states, texture stage states. The stage
+ * states come after the textures because the host's SetTexture
  * rewrites D3DTSS_COLOROP (d3d8_device.c, dev_SetTexture).
  *
  * Handles. Vertex program handles are the host's own (d3d8_vsh.c, slot +
@@ -109,8 +108,9 @@ extern "C" {
  * version 8 the screen copies (a title reading its own frame back into a
  * texture), version 9 the scene's pixels as the frame begins, version 10
  * the depth copies (a title reading its depth buffer as a colour texture),
- * version 11 the camera the D3D9 backend gives RTX Remix. */
-#define D3D8CAP_VERSION      11u
+ * version 11 the camera the D3D9 backend gave RTX Remix (no longer written),
+ * version 12 the title's ID and the mods' notes (recomp_mod.h). */
+#define D3D8CAP_VERSION      12u
 /* The oldest version the reader still accepts. A bump that only adds chunk
  * kinds leaves an older file a valid newer one that happens not to contain
  * them (version 6 added three; version 5 one), so it leaves this alone. A
@@ -160,8 +160,10 @@ enum {
     D3D8CAP_SCREEN_COPY         = 31, /* D3D8CapScreenCopy (version 8) */
     D3D8CAP_SCENE               = 32, /* D3D8CapScene + rows (version 9) */
     D3D8CAP_DEPTH_COPY          = 33, /* D3D8CapScreenCopy, has_rect 0 (version 10) */
-    D3D8CAP_REMIX_VIEW          = 34, /* D3D8CapRemixView (version 11) */
-    D3D8CAP_CHUNK_KINDS         = 35  /* one past the last, for per-kind counters */
+    D3D8CAP_REMIX_VIEW          = 34, /* version 11 only: skipped */
+    D3D8CAP_TITLE               = 35, /* D3D8CapTitle (version 12) */
+    D3D8CAP_MOD_NOTE            = 36, /* D3D8CapModNote + bytes (version 12) */
+    D3D8CAP_CHUNK_KINDS         = 37  /* one past the last, for per-kind counters */
 };
 
 typedef struct {
@@ -307,12 +309,22 @@ typedef struct {
     int32_t  at_x, at_y;
 } D3D8CapScreenCopy;
 
-/* The view the D3D9 backend hands RTX Remix with the draws that follow
- * (xbox_D3D8RemixView): the title's camera, read from guest memory by its
- * view source, which a replay has no memory for. Recorded before a draw
- * whenever it changed, so a replay under Remix places the frame in the
- * world it ran in -- its lights, sky and replacements where they were. */
-typedef struct { float m[16]; } D3D8CapRemixView;
+/* D3D8CAP_REMIX_VIEW was the camera the D3D9 backend handed RTX Remix,
+ * read from guest memory, which a replay has none of. What a title's Remix
+ * support needs from its memory is now its mod's to store (MOD_NOTE), so
+ * the chunk is no longer written, and a version 11 capture's are skipped. */
+
+/* The title the capture was made of: its certificate's title ID (0 if the
+ * run had none), first in the snapshot. A replay hands it to the mods it
+ * loads, which have no XBE to read it from. */
+typedef struct { uint32_t title_id; } D3D8CapTitle;
+
+/* A mod's own bytes (recomp_mod.h, capture_note), `bytes` of them after
+ * this, at the point of the frame the mod stored them; a replay hands them
+ * back there (replay_on_note). What they mean is the mod's business, and
+ * the tag is its own to tell its notes from another mod's. */
+typedef struct { uint32_t tag; } D3D8CapModNote;
+
 /* D3D8CAP_DEPTH_COPY carries the same struct, has_rect 0: the device's depth
  * as it stands, written into `texture_id` by xbox_D3D8CopyDepthToTexture. */
 
@@ -321,12 +333,12 @@ typedef struct { float m[16]; } D3D8CapRemixView;
  * `width` 32-bit pixels exactly as the back buffer surface's LockRect hands
  * them out, which is R8G8B8A8 under every backend (d3d8_device.c makes the
  * scene image in that format) and is written back the same way. In the
- * snapshot, before anything else. A title whose screen copy or blend reads
- * the frame before it -- TimeSplitters 2 copies its screen before it
- * clears, for its blur -- replays from what the run had there, and every
- * loop of a replay from the same pixels; without it (before version 9) the
- * first loop read the device's zeroed scene and each later one the loop
- * before. Left out when the scene is larger than D3D8CAP_SCENE_MAX_BYTES. */
+ * snapshot, before anything but the title. A title whose screen copy or
+ * blend reads the frame before it -- TimeSplitters 2 copies its screen
+ * before it clears, for its blur -- replays from what the run had there,
+ * and every loop of a replay from the same pixels; without it (before
+ * version 9) the first loop read the device's zeroed scene and each later
+ * one the loop before. Left out when the scene is larger than D3D8CAP_SCENE_MAX_BYTES. */
 typedef struct { uint32_t width, height, pitch; } D3D8CapScene;
 #define D3D8CAP_SCENE_MAX_BYTES (64u << 20)
 
