@@ -89,10 +89,14 @@ title's own data.
 | Hint | Rule | Assumption | Known limits |
 |---|---|---|---|
 | Camera | Each program draw gets WORLD, VIEW and PROJECTION; VIEW comes from the title's camera source when it registers one (`xbox_D3D8SetRemixViewSource`), else from the renderer's guess | A title's real camera is known to its project | Titles with no camera source get the guess; TS2 PAL has none yet |
-| 2D as UI | A title's program draw the renderer judges screen-space (its program uses no projection, or an orthographic one: the same verdict widescreen uses) is marked UI with a fixed texture in `rtx.uiTextures` | Remix composites at the first UI draw, so UI must come after the frame's 3D | Fixed-function 2D is left to Remix's own rule (orthographic, no depth write); 2D a title draws through its 3D camera (Max Payne's HUD) is not caught |
+| 2D as UI | A title's program draw the renderer judges screen-space (its program uses no projection, or an orthographic one: the same verdict widescreen uses) is marked UI with a fixed texture in `rtx.uiTextures` | Remix composites at the first UI draw, so UI must come after the frame's 3D | Fixed-function 2D is left to Remix's own rule (orthographic, no depth write), unless the title's own test (`xbox_D3D8SetScreenSpaceTest`) calls it screen-space, once the frame has drawn some 3D, and is then handed to D3D9 flat, with WORLD and VIEW identity and an orthographic PROJECTION that puts every vertex where it was (`flat_2d`; not under lighting or fog; `RECOMP_D3D9_FLAT_2D=0` turns it off). Max Payne's HUD, and its graphic novel (after a draw of the novel's own camera), come out as in D3D11. A frame of nothing but such draws (Max Payne's menus) is left traced, washed out: marked UI, flat or not, it came out black Without a test such 2D is not caught; under a register combiner program it is not marked (Remix looks only at the pixel shader's samplers) |
 | Mid-frame 2D | A kind of 2D draw (program, texture, blend, topology) that was followed by 3D in the previous frame is left out | Frame structure changes slowly | One wrong frame when it changes; such 2D (TS2's muzzle glow) is not shown under Remix |
 | Screen-copy passes | 2D that samples a copy of the screen is left out | The copy holds the rasterised picture, not Remix's | Post effects built on screen copies (blur, glow) are lost under Remix |
-| Sky | A title's 3D program draw before any depth-writing draw in the frame, with depth not written and always passing, gets a viewport with minimum depth 1 (Remix's `rtx.skyMinZThreshold`) | Sky is drawn first, with depth off | A sky drawn after the world, or with a depth test, is ray traced as a box and blocks Remix's light |
+| Post passes into textures | A title's fixed-function draw whose WORLD x VIEW x PROJECTION leaves w alone (identity or orthographic) into a texture it renders into, rather than its back buffer, is left out | Such quads build post effects; they never belong in the ray-traced scene | Rainbow Six 3's blur and bloom passes, into a screen-sized texture with every transform identity, were traced and gave Remix their camera (at the origin): the level came out black. The effects they build are lost under Remix |
+| Colour-less draws | A title draw that cannot change colour (blend ZERO, ONE, or no colour written) is left out | It writes only depth or stencil, which Remix does not use | Rainbow Six 3's full-screen depth reset was traced as a red wall |
+| Sky zone | A fixed-function 3D draw before the frame's depth reset (a clear, or a colour-less pass that always passes) gets the sky viewport when the frame before began with fewer draws through another eye, then a reset, then the world, and this draw's eye is far from the world's last one (over half the sky zone's distance) | Unreal draws its sky zone first, through a camera turned as the world's but standing in the sky box | One wrong frame when the layout changes; a camera that jumps far in one frame (a respawn) is taken for sky for a frame |
+| Textures rewritten | Under Remix, a managed texture whose first level (the one Remix hashes) changes after a draw used it is made anew (its contents copied over) before the write, at most once between draws that use it; a whole write of the same texels does not count. Each one is logged | Remix hashes a texture once, at its first use, and keeps that hash when the texels change (unless `rtx.recomputeTextureHashOnWrite`) | Max Payne's graphic novel pages, filled after their first use, were blank under Remix. A texture whose texels really change every frame is made anew every frame, and Remix loads it again every frame |
+| Sky | A title's 3D program draw before any depth-writing draw in the frame, with depth not written and a test every depth passes (off, ALWAYS, or LESSEQUAL against a buffer cleared to 1 this frame: Planet X's backdrop), gets a viewport with minimum depth 1 (Remix's `rtx.skyMinZThreshold`) | Sky is drawn first, with depth off | A sky drawn after the world, or with a depth test, is ray traced as a box and blocks Remix's light |
 
 ## Remix settings a title needs (Remix side)
 
@@ -112,6 +116,12 @@ sprites are one pixel.
 
 TimeSplitters 2 mostly draws through vertex programs and register combiners,
 so it leaves the fixed-function path and the ps_2_a combiners nearly
-untested. Max Payne (XDK 4134, much of its picture and HUD through fixed
-function) and Rainbow Six 3 (XDK 5659) are the next titles to take through the
-three comparisons above, then Gladius or Pro Evolution Soccer 5.
+untested. Taken through the three comparisons since:
+
+| Title | D3D11 against plain D3D9 | Under Remix |
+|---|---|---|
+| TimeSplitters 2 | the same (at most 0.0003 mean on 8 frames) | HUD, weapons and sky; lights to author |
+| Max Payne (PAL, XDK 4134) | the same (at most 0.0005 on 8 frames) after D3D11's fixed-function normals were fixed | lit by its own lights, HUD on top; menus traced (washed out) and the graphic novel grey: whole frames of 2D under its 3D camera |
+| Rainbow Six 3 (XDK 5659) | the same (at most 0.01 on 7 frames) after D3D11's reflection vector, 2D texture matrices and table fog, and D3D9's texture-op numbering, were fixed | the level, steady, once its post passes, depth reset and sky zone are kept from Remix; lightmapped, so lights to author; its bloom and depth of field are lost |
+
+Gladius or Pro Evolution Soccer 5 next.

@@ -142,10 +142,14 @@ static const char g_vs_source[] =
     "        uv = float4(nrmCam, 1.0);\n"
     "    } else if (mode == 0x00020000u) {\n"   /* TCI_CAMERASPACEPOSITION */
     "        uv = float4(posCam, 1.0);\n"
+    /* The eye's ray off the surface: R = I - 2(N.I)N with I from the eye to
+     * the vertex (D3D's 2(N.E)N - E, E the other way; GL's reflection map).
+     * reflect() of the vertex-to-eye vector gave -R, the far side of the
+     * cube: Rainbow Six 3's scope lens reflected darkness. */
     "    } else if (mode == 0x00030000u) {\n"   /* TCI_CAMERASPACEREFLECTIONVECTOR */
-    "        float3 V = normalize(-posCam);\n"
+    "        float3 I = normalize(posCam);\n"
     "        float3 N = normalize(nrmCam);\n"
-    "        uv = float4(reflect(V, N), 1.0);\n"
+    "        uv = float4(reflect(I, N), 1.0);\n"
     "    } else if (mode == 0x00040000u) {\n"   /* TCI_SPHEREMAP */
     "        float3 n = normalize(nrmCam);\n"
     "        float m = 2.0 * sqrt(n.x*n.x + n.y*n.y + (n.z + 1.0)*(n.z + 1.0));\n"
@@ -194,7 +198,12 @@ static const char g_vs_source[] =
     "\n"
     "    o.pos = mul(float4(input.pos.xyz, 1.0), WorldViewProj);\n"
     "    float4 viewPos4 = mul(float4(input.pos.xyz, 1.0), WorldView);\n"
-    "    o.viewpos = viewPos4;\n"
+    /* For table fog, which reads -viewpos.z as the distance (as a vertex
+     * program's oFog is handed over, d3d8_vsh.c, and the combiners read it):
+     * D3D's view space looks down +z, so the distance is z, stored negated.
+     * Stored as it was, every distance was negative and nothing was fogged:
+     * Rainbow Six 3's far walls stayed dark where they grey towards the fog. */
+    "    o.viewpos = float4(viewPos4.xy, -viewPos4.z, 1.0);\n"
     "    float3 posCam = viewPos4.xyz;\n"
     "    float3 nrmCam = float3(0, 0, 1);\n"
     "\n"
@@ -1009,8 +1018,8 @@ static void ff_vs_prepare_draw(DWORD fvf)
             cb->flags = 0x01; /* pre-transformed */
         } else {
             float wv[16], wvp[16], wvp_t[16], world_t[16];
-            float world_inv[16], world_inv_t[16];
-            float wv_t[16], wv_inv[16], wv_inv_t[16];
+            float world_inv[16];
+            float wv_t[16], wv_inv[16];
 
             world = d3d8_GetTransform(D3DTS_WORLD);
             view  = d3d8_GetTransform(D3DTS_VIEW);
@@ -1044,17 +1053,20 @@ static void ff_vs_prepare_draw(DWORD fvf)
             mat4_transpose(world_t, (const float *)world);
             memcpy(cb->world, world_t, sizeof(world_t));
 
-            /* WorldInvTranspose = transpose(inverse(world)) */
+            /* WorldInvTranspose = transpose(inverse(world)). Like every
+             * matrix here it is uploaded transposed, for the column-major
+             * HLSL, and the transpose of it is inverse(world) itself.
+             * Uploading transpose(inverse(world)) gave the shader
+             * inverse(world): a rotated object's normals turned the other
+             * way (Max Payne lit from behind). */
             mat4_inverse(world_inv, (const float *)world);
-            mat4_transpose(world_inv_t, world_inv);
-            memcpy(cb->world_inv_transpose, world_inv_t, sizeof(world_inv_t));
+            memcpy(cb->world_inv_transpose, world_inv, sizeof(world_inv));
 
-            /* WorldView (camera space) and its inverse-transpose */
+            /* WorldView (camera space) and its inverse-transpose, the same */
             mat4_transpose(wv_t, wv);
             memcpy(cb->world_view, wv_t, sizeof(wv_t));
             mat4_inverse(wv_inv, wv);
-            mat4_transpose(wv_inv_t, wv_inv);
-            memcpy(cb->world_view_inv_transpose, wv_inv_t, sizeof(wv_inv_t));
+            memcpy(cb->world_view_inv_transpose, wv_inv, sizeof(wv_inv));
 
             cb->screen_w = (float)d3d8_GetGuestWidth();
             cb->screen_h = (float)d3d8_GetGuestHeight();
@@ -1116,8 +1128,24 @@ static void ff_vs_prepare_draw(DWORD fvf)
             if (ts && (ts[D3DTSS_TEXTURETRANSFORMFLAGS] & 0xFFu) == D3DTTFF_DISABLE)
                 tm = NULL;
             if (tm) {
-                float tm_t[16];
-                mat4_transpose(tm_t, tm);
+                float tm_t[16], m[16];
+                DWORD tci = ts ? ts[D3DTSS_TEXCOORDINDEX] : (DWORD)i;
+
+                /* D3D pads a set of fewer than three floats with 1 next, then
+                 * 0: (u, 1, 0, 0) and (u, v, 1, 0), so a 2D set's matrix
+                 * moves it by its third row. The input layout pads with
+                 * (0, 0, 0, 1) instead, which reads the fourth: that row
+                 * becomes the one D3D would read. Rainbow Six 3 moves its
+                 * walls' detail texture so (COUNT2), and it landed elsewhere. */
+                memcpy(m, tm, sizeof m);
+                if (!(tci & 0xFFFF0000u)) {
+                    DWORD set = tci & 0xFFFFu;
+                    UINT n = set < 4 ? fvf_texcoord_size(fvf, set) : 2;
+
+                    if (n < 3)
+                        memcpy(&m[12], &m[n * 4], 4 * sizeof(float));
+                }
+                mat4_transpose(tm_t, m);
                 memcpy(cb->tex_mat[i], tm_t, sizeof(tm_t));
             } else {
                 memset(cb->tex_mat[i], 0, sizeof(cb->tex_mat[i]));
@@ -1277,6 +1305,21 @@ static void d9_stage_ops(UINT stage, IDirect3DBaseTexture8 *tex, D9StageOps *o)
     if (!tex && (ff_op_reads_texture(o->cop, o->ca1, o->ca2) ||
                  ff_op_reads_texture(o->aop, o->aa1, o->aa2)))
         o->cop = D3DTOP_DISABLE;
+}
+
+/* A texture operation in D3D9's numbering. The renderer's own (d3d8_xbox.h,
+ * which hle_d3d8_state.c maps the Xbox's onto) has no BLENDTEXTUREALPHAPM,
+ * so from BLENDCURRENTALPHA on it runs one behind D3D9's until DOTPRODUCT3.
+ * Handed over as it was, Rainbow Six 3's BLENDCURRENTALPHA reached D3D9 as
+ * BLENDTEXTUREALPHAPM (Arg1 + Arg2 x (1 - texture alpha)): its scope lens
+ * showed the whole cube map where 20% of it belonged. */
+static DWORD d9_top(DWORD op)
+{
+    if (op == D3DTOP_BLENDCURRENTALPHA)
+        return 16;                      /* D3D9's D3DTOP_BLENDCURRENTALPHA */
+    if (op == D3DTOP_PREMODULATE)
+        return 17;                      /* D3D9's D3DTOP_PREMODULATE */
+    return op;
 }
 
 /* The scale a linear texture's coordinates take (they are in texels on the
@@ -1482,7 +1525,7 @@ static void d9_ff_prepare_draw(DWORD fvf)
         D9StageOps o;
 
         d9_stage_ops(i, tex, &o);
-        rhi_d3d9_set_texture_stage(i, D3DTSS_COLOROP, o.cop);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_COLOROP, d9_top(o.cop));
         if (o.cop == D3DTOP_DISABLE)
             break;
         rhi_d3d9_set_texture_stage(i, D3DTSS_COLORARG1, o.ca1);
@@ -1493,7 +1536,7 @@ static void d9_ff_prepare_draw(DWORD fvf)
             o.aop = D3DTOP_SELECTARG1;
             o.aa1 = D3DTA_CURRENT;
         }
-        rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAOP, o.aop);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAOP, d9_top(o.aop));
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG1, o.aa1);
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG2, o.aa2);
         rhi_d3d9_set_texture_stage(i, D3DTSS_TEXCOORDINDEX, tss ? tss[D3DTSS_TEXCOORDINDEX] : i);
@@ -1849,7 +1892,7 @@ static void d9_prepare_draw(DWORD handle)
         d3d8_SetTwoDSqueeze(two_d);
         d3d8_combiners_prepare_draw();
     }
-    rhi_d3d9_title_draw(two_d);
+    rhi_d3d9_title_draw(two_d, !d3d8_target_is_back_buffer());
 }
 
 void d3d8_shaders_prepare_draw(DWORD handle)
