@@ -77,6 +77,8 @@ D3D8DisplayFit d3d8_display_fit(UINT shape_w, UINT shape_h, UINT bb_w, UINT bb_h
  * the ratio of the two is used. */
 void d3d8_display_output_shape(UINT scene_w, UINT scene_h,
                                UINT *shape_w, UINT *shape_h);
+/* The shape just presented, for xbox_D3D8PictureShape. */
+void d3d8_display_note_shown(UINT shape_w, UINT shape_h);
 
 /* Draw `scene` into `fit` inside `out`, box filtered, painting everything
  * outside `fit` black so a window of a different shape gets bars rather

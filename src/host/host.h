@@ -116,6 +116,12 @@ int  host_window_is_fullscreen(host_window *w);
  * again. Refused in background mode. Any thread. */
 void host_window_set_relative_mouse(host_window *w, int on);
 
+/* Where the free pointer last was over the window (while it is not held for
+ * mouse look), in the window's own units from its top left, and the window's
+ * size in the same units. 0 when the pointer is outside the window or the
+ * window does not have the focus. Any thread. */
+int  host_window_pointer(host_window *w, float *x, float *y, float *width, float *height);
+
 /* Whether the window has the keyboard focus right now. Any thread. */
 int  host_window_has_focus(host_window *w);
 

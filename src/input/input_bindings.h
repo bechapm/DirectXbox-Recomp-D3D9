@@ -106,6 +106,41 @@ int  recomp_mouse_take(float *dx, float *dy);
  * (recomp_config.h), for a title turning the motion into angles. */
 int  recomp_mouse_sensitivity(void);
 
+/* ---- the mouse as a pointer ---------------------------------------------
+ *
+ * A console title's menus are made for a pad, but a title that knows where
+ * its menu items are on screen can let the mouse point at them. While the
+ * title asks for a pointer (a menu is up), the game window gives the
+ * pointer back from mouse look and shows the system's arrow over the
+ * picture, and the mouse's buttons and wheel go to the title instead of
+ * the bindings, so a click on a menu item is not also a press of whatever
+ * the left button is bound to. Everything held is let go when it switches,
+ * either way, so nothing is left pressed across it. The toolkit only says
+ * where the pointer is; what is under it is the title's to know. */
+void recomp_pointer_want(int on);
+int  recomp_pointer_wanted(void);
+
+typedef struct RecompPointer {
+    int      inside;    /* over the picture, with the game window in front */
+    float    x, y;      /* 0..1 across the picture as shown, from its top left */
+    float    aspect;    /* the picture's width over its height, as shown */
+    unsigned held;      /* bit per RECOMP_MOUSE_* button held now */
+    unsigned pressed;   /* bit per button that went down since the last read */
+    int      wheel;     /* whole notches since the last read, + away from the player */
+    unsigned moved;     /* goes up each time the position changes */
+} RecompPointer;
+
+/* What the pointer did since the last read. 0 (and *p zeroed) when no
+ * pointer is wanted. Any thread, but one reader. */
+int  recomp_pointer_read(RecompPointer *p);
+
+/* For whoever owns the game window: where the pointer is, x and y 0..1
+ * across the picture (with the bars around it left out), and the picture's
+ * shape. A scripted run's title may call it too, to move a pointer the
+ * window does not have; the buttons and the wheel come through
+ * recomp_mouse_button and recomp_mouse_wheel as usual. */
+void recomp_pointer_set(int inside, float x, float y, float aspect);
+
 /* ---- a title's last word ------------------------------------------------
  *
  * Called at the end of every sample, after the bindings, mouse look and the

@@ -201,6 +201,24 @@ void d3d8_display_output_shape(UINT scene_w, UINT scene_h,
     }
 }
 
+/* Packed width << 16 | height, so a reader on another thread never sees
+ * one frame's width with another's height. */
+static volatile long g_shown;
+
+void d3d8_display_note_shown(UINT shape_w, UINT shape_h)
+{
+    g_shown = (long)(((shape_w & 0xFFFFu) << 16) | (shape_h & 0xFFFFu));
+}
+
+BOOL xbox_D3D8PictureShape(UINT *width, UINT *height)
+{
+    long v = g_shown;
+
+    if (width)  *width = (UINT)((unsigned long)v >> 16) & 0xFFFFu;
+    if (height) *height = (UINT)v & 0xFFFFu;
+    return v != 0;
+}
+
 /* The widescreen setting, not d3d8_display_wide_now: a window lasts the
  * whole run, and the screens a title calls 4:3 are shown in it between
  * bars. */

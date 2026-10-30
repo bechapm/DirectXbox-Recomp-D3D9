@@ -19,6 +19,8 @@
  * The mouse is whatever the game window was told (recomp_mouse_*): its
  * buttons are sources like any other, and its motion is mouse look, added
  * to controller 1's right stick after the bindings have had their say.
+ * While the title wants a pointer for its menus (recomp_pointer_want), the
+ * buttons and the wheel are the pointer's instead.
  */
 #include "input_bindings.h"
 #include "touch_controls.h"
@@ -981,10 +983,29 @@ void recomp_mouse_move(float dx, float dy)
     MOUSE_ADD(&g_mouse_dy, (long)(dy * LOOK_FIXED));
 }
 
+/* The pointer (recomp_pointer_want). Position and shape in millionths, so
+ * the window's thread can write them as whole numbers. */
+#define POINTER_FIXED 1000000.0f
+
+static volatile long g_pointer_want;
+static volatile long g_pointer_inside, g_pointer_x, g_pointer_y, g_pointer_aspect;
+static volatile long g_pointer_moved;
+static volatile long g_pointer_held, g_pointer_pressed, g_pointer_wheel;
+
 void recomp_mouse_button(int button, int down)
 {
     if (button < 0 || button >= RECOMP_MOUSE_BUTTONS)
         return;
+    if (g_pointer_want) {
+        /* A click on a menu: the title's, not a binding's. */
+        if (down) {
+            MOUSE_OR(&g_pointer_held, 1L << button);
+            MOUSE_OR(&g_pointer_pressed, 1L << button);
+        } else {
+            MOUSE_AND(&g_pointer_held, ~(1L << button));
+        }
+        return;
+    }
     if (down)
         MOUSE_OR(&g_mouse_held, 1L << button);
     else
@@ -996,6 +1017,58 @@ void recomp_mouse_release(void)
     MOUSE_AND(&g_mouse_held, 0);
     MOUSE_TAKE(&g_mouse_dx);
     MOUSE_TAKE(&g_mouse_dy);
+}
+
+void recomp_pointer_want(int on)
+{
+    on = on ? 1 : 0;
+    if (on == g_pointer_want)
+        return;
+    /* Whatever is held was pressed for the other side: a button held into
+     * a menu must not stay held for the bindings, nor a click into a level
+     * stay a click. */
+    MOUSE_AND(&g_mouse_held, 0);
+    MOUSE_AND(&g_pointer_held, 0);
+    MOUSE_AND(&g_pointer_pressed, 0);
+    MOUSE_TAKE(&g_pointer_wheel);
+    MOUSE_TAKE(&g_mouse_dx);
+    MOUSE_TAKE(&g_mouse_dy);
+    g_pointer_want = on;
+}
+
+int recomp_pointer_wanted(void)
+{
+    return g_pointer_want != 0;
+}
+
+void recomp_pointer_set(int inside, float x, float y, float aspect)
+{
+    long nx = (long)(x * POINTER_FIXED), ny = (long)(y * POINTER_FIXED);
+
+    if (nx != g_pointer_x || ny != g_pointer_y || (inside ? 1 : 0) != g_pointer_inside)
+        MOUSE_ADD(&g_pointer_moved, 1);
+    g_pointer_x = nx;
+    g_pointer_y = ny;
+    g_pointer_aspect = (long)(aspect * POINTER_FIXED);
+    g_pointer_inside = inside ? 1 : 0;
+}
+
+int recomp_pointer_read(RecompPointer *p)
+{
+    if (!p)
+        return 0;
+    memset(p, 0, sizeof *p);
+    if (!g_pointer_want)
+        return 0;
+    p->inside = g_pointer_inside != 0;
+    p->x = (float)g_pointer_x / POINTER_FIXED;
+    p->y = (float)g_pointer_y / POINTER_FIXED;
+    p->aspect = (float)g_pointer_aspect / POINTER_FIXED;
+    p->held = (unsigned)g_pointer_held;
+    p->pressed = (unsigned)MOUSE_TAKE(&g_pointer_pressed);
+    p->wheel = (int)MOUSE_TAKE(&g_pointer_wheel);
+    p->moved = (unsigned)g_pointer_moved;
+    return 1;
 }
 
 void recomp_mouse_set_direct(int on)
@@ -1052,6 +1125,10 @@ void recomp_mouse_wheel(float notches)
     if (!whole)
         return;
     g_wheel_frac -= whole * WHEEL_FIXED;
+    if (g_pointer_want) {
+        MOUSE_ADD(&g_pointer_wheel, whole);     /* scrolling a menu */
+        return;
+    }
     dir = whole > 0 ? 0 : 1;
     if (whole < 0)
         whole = -whole;
