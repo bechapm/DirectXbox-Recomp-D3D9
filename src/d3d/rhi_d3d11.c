@@ -360,8 +360,11 @@ static int d_device_create(const RhiDeviceDesc *dd)
     return 0;
 }
 
+static void occl_release(void);
+
 static void d_device_destroy(void)
 {
+    occl_release();
     staging_release();
     release_back_buffer_view();
     if (g_swap) { IDXGISwapChain_Release(g_swap); g_swap = NULL; }
@@ -1291,6 +1294,74 @@ static void d_clear_depth(RhiView *v, uint32_t flags, float z, uint8_t s)
         ID3D11DeviceContext_ClearDepthStencilView(g_ctx, (ID3D11DepthStencilView *)v->v, flags, z, s);
 }
 
+/* Occlusion counting (rhi_occlusion_*): one D3D11 occlusion query a test,
+ * which may span anything, from a ring; a slot's use count is the test's
+ * generation, so a test answered after its slot came round again reads as
+ * reused. */
+#define OCCL_SLOTS 256u
+static ID3D11Query *g_occl[OCCL_SLOTS];
+static uint32_t     g_occl_uses[OCCL_SLOTS];
+static uint32_t     g_occl_next;
+static int          g_occl_open = -1;
+
+static void occl_release(void)
+{
+    uint32_t i;
+    for (i = 0; i < OCCL_SLOTS; i++)
+        if (g_occl[i]) { ID3D11Query_Release(g_occl[i]); g_occl[i] = NULL; }
+    g_occl_open = -1;
+}
+
+static int d_occlusion_begin(void)
+{
+    uint32_t i = g_occl_next % OCCL_SLOTS;
+
+    if (!g_dev || !g_ctx)
+        return -1;
+    if (!g_occl[i]) {
+        D3D11_QUERY_DESC qd;
+        memset(&qd, 0, sizeof qd);
+        qd.Query = D3D11_QUERY_OCCLUSION;
+        if (FAILED(ID3D11Device_CreateQuery(g_dev, &qd, &g_occl[i])))
+            return -1;
+    }
+    g_occl_next++;
+    g_occl_uses[i]++;
+    ID3D11DeviceContext_Begin(g_ctx, (ID3D11Asynchronous *)g_occl[i]);
+    g_occl_open = (int)i;
+    return 0;
+}
+
+static void d_occlusion_end(RhiOcclusion *out)
+{
+    if (g_occl_open < 0)
+        return;
+    ID3D11DeviceContext_End(g_ctx, (ID3D11Asynchronous *)g_occl[g_occl_open]);
+    out->first = (uint32_t)g_occl_open;
+    out->count = 1;
+    out->generation = g_occl_uses[g_occl_open];
+    g_occl_open = -1;
+}
+
+static int d_occlusion_result(const RhiOcclusion *t, uint64_t *samples)
+{
+    UINT64 n = 0;
+    HRESULT hr;
+
+    *samples = 0;
+    if (!t->count)
+        return 0;
+    if (t->first >= OCCL_SLOTS || !g_occl[t->first] || g_occl_uses[t->first] != t->generation)
+        return -1;
+    while ((hr = ID3D11DeviceContext_GetData(g_ctx, (ID3D11Asynchronous *)g_occl[t->first],
+                                             &n, sizeof n, 0)) == S_FALSE)
+        ;
+    if (FAILED(hr))
+        return -1;
+    *samples = n;
+    return 0;
+}
+
 const RhiBackend rhi_d3d11_backend = {
     "d3d11",
     d_device_create, d_device_destroy, d_device_ready, d_swapchain_view, d_swapchain_resize,
@@ -1307,6 +1378,7 @@ const RhiBackend rhi_d3d11_backend = {
     d_set_uniform_buffers, d_set_textures, d_set_samplers, d_set_blend_state, d_set_depth_state,
     d_set_raster_state, d_draw, d_draw_indexed, d_clear_color, d_clear_depth,
     d_image_copy,
+    d_occlusion_begin, d_occlusion_end, d_occlusion_result,
 };
 
 #endif /* _WIN32 */
