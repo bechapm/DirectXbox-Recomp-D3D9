@@ -1,4 +1,4 @@
-9<div align="center">
+<div align="center">
 
 # DirectXbox Recomp
 
