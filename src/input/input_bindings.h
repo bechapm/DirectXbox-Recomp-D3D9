@@ -90,6 +90,10 @@ void recomp_mouse_release(void);
  * (up to a handful) rather than lost or merged into one long press. A
  * high-resolution wheel's fractions add up to whole notches. */
 void recomp_mouse_wheel(float notches);
+/* For tests: the milliseconds the wheel's presses are timed by, instead of
+ * the host's clock (NULL puts it back), so a test steps time rather than
+ * sleeping through it. */
+void recomp_mouse_wheel_clock(unsigned long long (*clock_ms)(void));
 
 /* ---- the mouse, for a title that aims with it itself --------------------
  *

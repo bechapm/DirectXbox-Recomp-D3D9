@@ -52,6 +52,14 @@ static void sleep_ms(int ms)
 #endif
 }
 
+/* The wheel's clock, stepped by the test. */
+static unsigned long long g_clock_ms;
+
+static unsigned long long test_clock(void)
+{
+    return g_clock_ms;
+}
+
 /* A filter that moves a keyboard-or-mouse right trigger to the left one. */
 static int g_filter_saw;
 
@@ -159,6 +167,10 @@ int main(void)
     {
         int presses = 0, held = 0, ms;
 
+        /* Time steps by itself here: a loaded machine's sleeps overrun the
+         * 40 ms between presses and would merge two (it did, on CI). */
+        g_clock_ms = 1000;
+        recomp_mouse_wheel_clock(test_clock);
         recomp_mouse_wheel(1.0f);
         pad = sample();
         check((pad.wButtons & XBOX_GAMEPAD_DPAD_LEFT) != 0, "a notch up presses its control");
@@ -172,7 +184,7 @@ int main(void)
         for (ms = 0; ms < 600; ms += 16) {
             int now;
 
-            sleep_ms(16);
+            g_clock_ms += 16;
             pad = sample();
             now = (pad.wButtons & XBOX_GAMEPAD_DPAD_LEFT) != 0;
             if (now && !held)
@@ -185,6 +197,7 @@ int main(void)
         recomp_mouse_wheel(-1.0f);
         pad = sample();
         check((pad.wButtons & XBOX_GAMEPAD_DPAD_RIGHT) != 0, "a notch down presses the other");
+        recomp_mouse_wheel_clock(NULL);
     }
 
     /* ---- direct: the title takes the motion, the stick gets none */

@@ -1061,11 +1061,18 @@ void recomp_mouse_wheel(float notches)
         g_wheel_queued[dir] = WHEEL_QUEUE;
 }
 
+static unsigned long long (*g_wheel_clock)(void);   /* recomp_mouse_wheel_clock */
+
+void recomp_mouse_wheel_clock(unsigned long long (*clock_ms)(void))
+{
+    g_wheel_clock = clock_ms;
+}
+
 /* Whether a wheel direction reads as pressed now. Several guest threads may
  * ask at once; the worst a race does is start one notch a poll early. */
 static int wheel_down(int dir)
 {
-    unsigned long long now = now_ms();
+    unsigned long long now = g_wheel_clock ? g_wheel_clock() : now_ms();
 
     if (now < g_wheel_press_end[dir])
         return 1;
