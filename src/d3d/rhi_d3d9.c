@@ -149,6 +149,7 @@ struct RhiBuffer {
     uint8_t *cpu;                   /* uniform and index buffers: the contents */
     uint32_t version;               /* bumped each time cpu changes */
     void    *locked;                /* a vertex buffer between map and unmap */
+    RhiBuffer *live_prev, *live_next;   /* g_live_buffers: dynamic vertex buffers */
 };
 
 /* How texels are converted between the RHI's format and the one stored. */
@@ -171,12 +172,14 @@ struct RhiImage {
     uint32_t bpp_in, bpp_out;       /* bytes per texel before and after conv */
     int      block;                 /* block compressed: rows are 4 texels */
     D3DPOOL  pool;
+    DWORD    usage;
     IDirect3DBaseTexture9 *tex;     /* 2D, cube or volume */
     IDirect3DSurface9     *surf;    /* a depth image that is not sampled */
     int      screen_copy;           /* rhi_d3d9_copy_rect has copied the screen into it */
     uint64_t id;                    /* what it holds, for kind_2d (image_id) */
     int      drawn;                 /* a draw has used it since it was made (remake_texture) */
     uint64_t texels;                /* a hash of all of level 0 as last written whole */
+    RhiImage *live_prev, *live_next;    /* g_live_images: the default pool's */
 };
 
 struct RhiView {
@@ -184,7 +187,9 @@ struct RhiView {
     uint32_t  kind;
     uint32_t  dim;
     uint32_t  base_mip;
+    uint32_t  sub;                  /* the subresource surf is */
     IDirect3DSurface9 *surf;        /* render target or depth */
+    RhiView  *live_prev, *live_next;    /* g_live_views: those of an image with a surf */
 };
 
 struct RhiShader {
@@ -202,6 +207,25 @@ struct RhiBlendState  { RhiBlendDesc d; };
 struct RhiDepthState  { RhiDepthDesc d; };
 struct RhiRasterState { RhiRasterDesc d; };
 struct RhiSampler     { RhiSamplerDesc d; };
+
+/* What a device reset must release and make again (device_lost, below). What
+ * the title holds are these structures, which stay; only the D3D9 objects
+ * inside them change. */
+static RhiBuffer *g_live_buffers;
+static RhiImage  *g_live_images;
+static RhiView   *g_live_views;
+
+#define LIVE_LINK(head, o) do { \
+        (o)->live_prev = NULL; \
+        (o)->live_next = (head); \
+        if (head) (head)->live_prev = (o); \
+        (head) = (o); \
+    } while (0)
+#define LIVE_UNLINK(head, o) do { \
+        if ((o)->live_prev) (o)->live_prev->live_next = (o)->live_next; \
+        else (head) = (o)->live_next; \
+        if ((o)->live_next) (o)->live_next->live_prev = (o)->live_prev; \
+    } while (0)
 
 /* ---- the device ------------------------------------------------------------------------ */
 
@@ -463,6 +487,28 @@ static RhiView *wrap_surface(IDirect3DSurface9 *s, uint32_t kind)
     return v;
 }
 
+static int  g_lost;          /* Present said the device was lost */
+static int  g_test_reset;   /* RECOMP_D3D9_TEST_RESET: reset at this present, for a test */
+static int  g_presents;
+static int  reset_device(void);
+static void device_lost(void);
+
+static int make_index_rings(void)
+{
+    if (FAILED(IDirect3DDevice9_CreateIndexBuffer(g_dev, IRING_BYTES,
+                                                  D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                                  D3DFMT_INDEX16, D3DPOOL_DEFAULT,
+                                                  &g_iring[0], NULL)))
+        return -1;
+    if (FAILED(IDirect3DDevice9_CreateIndexBuffer(g_dev, IRING_BYTES,
+                                                  D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                                  D3DFMT_INDEX32, D3DPOOL_DEFAULT,
+                                                  &g_iring[1], NULL)))
+        return -1;
+    g_iring_pos[0] = g_iring_pos[1] = IRING_BYTES;    /* the first use discards */
+    return 0;
+}
+
 static int make_internal_streams(void)
 {
     static const D3DVERTEXELEMENT9 vid_el[] = {
@@ -482,18 +528,7 @@ static int make_internal_streams(void)
     IDirect3DVertexBuffer9_Unlock(g_vid_vb);
     if (FAILED(IDirect3DDevice9_CreateVertexDeclaration(g_dev, vid_el, &g_vid_decl)))
         return -1;
-    if (FAILED(IDirect3DDevice9_CreateIndexBuffer(g_dev, IRING_BYTES,
-                                                  D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
-                                                  D3DFMT_INDEX16, D3DPOOL_DEFAULT,
-                                                  &g_iring[0], NULL)))
-        return -1;
-    if (FAILED(IDirect3DDevice9_CreateIndexBuffer(g_dev, IRING_BYTES,
-                                                  D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
-                                                  D3DFMT_INDEX32, D3DPOOL_DEFAULT,
-                                                  &g_iring[1], NULL)))
-        return -1;
-    g_iring_pos[0] = g_iring_pos[1] = IRING_BYTES;    /* the first use discards */
-    return 0;
+    return make_index_rings();
 }
 
 static int d9_device_create(const RhiDeviceDesc *dd)
@@ -518,6 +553,11 @@ static int d9_device_create(const RhiDeviceDesc *dd)
         return -1;
     }
 
+    {
+        const char *e = getenv("RECOMP_D3D9_TEST_RESET");
+
+        g_test_reset = e ? atoi(e) : 0;
+    }
     g_hwnd = (HWND)dd->window;
     memset(&g_pp, 0, sizeof g_pp);
     g_pp.BackBufferWidth = dd->width;
@@ -527,7 +567,8 @@ static int d9_device_create(const RhiDeviceDesc *dd)
     g_pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
     g_pp.hDeviceWindow = g_hwnd;
     /* Always windowed: the window's owner makes it fill the screen, as it
-     * does for the other backends, and a windowed device is never lost. */
+     * does for the other backends. A windowed device can still be lost, to
+     * another program's full screen or a change of display: device_lost. */
     g_pp.Windowed = TRUE;
     g_pp.EnableAutoDepthStencil = FALSE;
     g_pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -623,6 +664,10 @@ static int32_t d9_present(uint32_t interval)
     if (!g_dev)
         return -1;
     (void)interval;     /* the flip gate paces frames; D3D9 presents at once */
+    if (g_test_reset && ++g_presents == g_test_reset)
+        reset_device();
+    if (g_lost)
+        device_lost();
     /* Bars: the parts of the client area the picture does not cover. */
     if (g_present_rect_set && GetClientRect(g_hwnd, &client)) {
         if (g_present_rect.left > 0 || g_present_rect.top > 0 ||
@@ -650,11 +695,10 @@ static int32_t d9_present(uint32_t interval)
     hr = IDirect3DDevice9_Present(g_dev, NULL, g_present_rect_set ? &g_present_rect : NULL,
                                   NULL, NULL);
     rhi_wait_end(h);
-    if (hr == D3DERR_DEVICELOST) {
-        static int said;
-        if (!said++)
-            fprintf(stderr, "[RHI] d3d9: the device was lost; frames are dropped until "
-                    "it comes back\n");
+    if (hr == D3DERR_DEVICELOST && !g_lost) {
+        g_lost = 1;
+        fprintf(stderr, "[RHI] d3d9: the device was lost; frames are dropped until "
+                "it comes back\n");
     }
     return (int32_t)hr;
 }
@@ -858,6 +902,8 @@ static RhiBuffer *d9_buffer_create(const RhiBufferDesc *d, const void *initial)
                 IDirect3DVertexBuffer9_Unlock(b->vb);
             }
         }
+        if (dynamic)
+            LIVE_LINK(g_live_buffers, b);
         return b;
     }
     /* Index and uniform buffers live on the CPU. */
@@ -889,6 +935,8 @@ static void d9_buffer_destroy(RhiBuffer *b)
         }
     if (g_b.ib == b)
         g_b.ib = NULL;
+    if ((b->desc.bind & RHI_BIND_VERTEX) && b->desc.usage == RHI_USAGE_DYNAMIC)
+        LIVE_UNLINK(g_live_buffers, b);
     if (b->vb) IDirect3DVertexBuffer9_Release(b->vb);
     free(b->cpu);
     free(b);
@@ -949,12 +997,41 @@ static uint64_t image_id(const RhiImage *img, const void *data, size_t bytes);
 static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
                             const void *data, uint32_t row_pitch, uint32_t slice_pitch);
 
+/* The D3D9 object behind an image, from its description. */
+static HRESULT image_storage(RhiImage *img)
+{
+    const RhiImageDesc *d = &img->desc;
+    uint32_t levels = d->mip_levels ? d->mip_levels : 1;
+    DWORD usage = img->usage;
+
+    if ((d->bind & RHI_BIND_DEPTH) && !(d->bind & RHI_BIND_SAMPLED))
+        return IDirect3DDevice9_CreateDepthStencilSurface(g_dev, d->width, d->height, img->fmt,
+                                                          D3DMULTISAMPLE_NONE, 0, FALSE,
+                                                          &img->surf, NULL);
+    if (d->type == RHI_IMAGE_3D)
+        return IDirect3DDevice9_CreateVolumeTexture(g_dev, d->width, d->height, d->depth, levels,
+                                                    usage, img->fmt, img->pool,
+                                                    (IDirect3DVolumeTexture9 **)&img->tex, NULL);
+    if (d->cube)
+        return IDirect3DDevice9_CreateCubeTexture(g_dev, d->width, levels, usage, img->fmt,
+                                                  img->pool, (IDirect3DCubeTexture9 **)&img->tex,
+                                                  NULL);
+    if (d->depth > 1) {
+        static int said;
+        if (!said++)
+            fprintf(stderr, "[RHI] d3d9: a 2D array image has no D3D9 equal; only its "
+                    "first layer is kept\n");
+    }
+    return IDirect3DDevice9_CreateTexture(g_dev, d->width, d->height, levels, usage, img->fmt,
+                                          img->pool, (IDirect3DTexture9 **)&img->tex, NULL);
+}
+
 static RhiImage *d9_image_create(const RhiImageDesc *d, const RhiSubresourceData *initial)
 {
     RhiImage *img = calloc(1, sizeof *img);
     uint32_t levels = d->mip_levels ? d->mip_levels : 1;
     DWORD usage = 0;
-    HRESULT hr = E_FAIL;
+    HRESULT hr;
 
     if (!img)
         return NULL;
@@ -982,29 +1059,9 @@ static RhiImage *d9_image_create(const RhiImageDesc *d, const RhiSubresourceData
     } else {
         img->pool = D3DPOOL_MANAGED;
     }
+    img->usage = usage;
 
-    if ((d->bind & RHI_BIND_DEPTH) && !(d->bind & RHI_BIND_SAMPLED)) {
-        hr = IDirect3DDevice9_CreateDepthStencilSurface(g_dev, d->width, d->height, img->fmt,
-                                                        D3DMULTISAMPLE_NONE, 0, FALSE,
-                                                        &img->surf, NULL);
-    } else if (d->type == RHI_IMAGE_3D) {
-        hr = IDirect3DDevice9_CreateVolumeTexture(g_dev, d->width, d->height, d->depth, levels,
-                                                  usage, img->fmt, img->pool,
-                                                  (IDirect3DVolumeTexture9 **)&img->tex, NULL);
-    } else if (d->cube) {
-        hr = IDirect3DDevice9_CreateCubeTexture(g_dev, d->width, levels, usage, img->fmt,
-                                                img->pool, (IDirect3DCubeTexture9 **)&img->tex,
-                                                NULL);
-    } else {
-        if (d->depth > 1) {
-            static int said;
-            if (!said++)
-                fprintf(stderr, "[RHI] d3d9: a 2D array image has no D3D9 equal; only its "
-                        "first layer is kept\n");
-        }
-        hr = IDirect3DDevice9_CreateTexture(g_dev, d->width, d->height, levels, usage, img->fmt,
-                                            img->pool, (IDirect3DTexture9 **)&img->tex, NULL);
-    }
+    hr = image_storage(img);
     if (FAILED(hr)) {
         fprintf(stderr, "[RHI] d3d9: could not make a %ux%u image of D3D9 format %u "
                 "(0x%08lX)\n", d->width, d->height, (unsigned)img->fmt, (unsigned long)hr);
@@ -1020,6 +1077,8 @@ static RhiImage *d9_image_create(const RhiImageDesc *d, const RhiSubresourceData
                 d9_image_update(img, i, NULL, initial[i].data, initial[i].row_pitch,
                                 initial[i].slice_pitch);
     }
+    if (img->pool == D3DPOOL_DEFAULT)
+        LIVE_LINK(g_live_images, img);
     return img;
 }
 
@@ -1040,6 +1099,8 @@ static void d9_image_destroy(RhiImage *img)
             g_b.tex[i] = NULL;
             IDirect3DDevice9_SetTexture(g_dev, i, NULL);
         }
+    if (img->pool == D3DPOOL_DEFAULT)
+        LIVE_UNLINK(g_live_images, img);
     if (img->tex) IDirect3DBaseTexture9_Release(img->tex);
     if (img->surf) IDirect3DSurface9_Release(img->surf);
     free(img);
@@ -1436,11 +1497,13 @@ static RhiView *d9_view_create(RhiImage *img, uint32_t kind, const RhiViewDesc *
     if (kind != RHI_VIEW_SAMPLED) {
         uint32_t levels = img->desc.mip_levels ? img->desc.mip_levels : 1;
         uint32_t layer = d ? d->base_layer : 0;
-        v->surf = subresource_surface(img, v->base_mip + layer * levels);
+        v->sub = v->base_mip + layer * levels;
+        v->surf = subresource_surface(img, v->sub);
         if (!v->surf) {
             free(v);
             return NULL;
         }
+        LIVE_LINK(g_live_views, v);
     } else if (!img->tex) {
         free(v);        /* a depth surface that was not made to be sampled */
         return NULL;
@@ -1462,6 +1525,8 @@ static void d9_view_destroy(RhiView *v)
         }
     if (g_b.rt == v) g_b.rt = NULL;
     if (g_b.ds == v) g_b.ds = NULL;
+    if (v->kind != RHI_VIEW_SAMPLED)
+        LIVE_UNLINK(g_live_views, v);
     if (v->surf) IDirect3DSurface9_Release(v->surf);
     if (v->image) d9_image_destroy(v->image);
     free(v);
@@ -1946,6 +2011,192 @@ static void d9_set_raster_state(RhiRasterState *s)
 {
     g_b.raster = s;
     g_b.ds_dirty = 1;
+}
+
+/* ---- a lost device ---------------------------------------------------------------------- */
+
+/* A device can be lost, to another program's full screen or a change of display,
+ * and then draws nothing until Reset, which wants every default pool object
+ * released first, and clears all of the device's state. So when the device
+ * can be reset, those objects are released and made again inside the structures
+ * the title holds, and what was set is set again: what the caches above know,
+ * and what only the device kept, read back first.
+ *
+ * What was in the default pool is gone: render targets come back black and
+ * dynamic buffers empty. A title draws and fills those every frame, so a
+ * frame is wrong at most. A mod that holds a default pool object of its own
+ * stops the reset, which then tries again at each present. */
+#define TEXTURE_TRANSFORMS 8
+#define LIGHTS 8
+
+static const D3DTRANSFORMSTATETYPE k_view_transforms[] = { D3DTS_VIEW, D3DTS_PROJECTION };
+
+static struct {
+    D3DMATRIX view[2], world, texture[TEXTURE_TRANSFORMS];
+    D3DMATERIAL9 material;
+    D3DLIGHT9 light[LIGHTS];
+    uint8_t light_set[LIGHTS];
+    BOOL light_on[LIGHTS];
+} g_kept;
+
+static void keep_device_state(void)
+{
+    int i;
+
+    for (i = 0; i < 2; i++)
+        IDirect3DDevice9_GetTransform(g_dev, k_view_transforms[i], &g_kept.view[i]);
+    IDirect3DDevice9_GetTransform(g_dev, D3DTS_WORLD, &g_kept.world);
+    for (i = 0; i < TEXTURE_TRANSFORMS; i++)
+        IDirect3DDevice9_GetTransform(g_dev, (D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + i),
+                                      &g_kept.texture[i]);
+    IDirect3DDevice9_GetMaterial(g_dev, &g_kept.material);
+    for (i = 0; i < LIGHTS; i++) {
+        g_kept.light_set[i] = SUCCEEDED(IDirect3DDevice9_GetLight(g_dev, i, &g_kept.light[i]));
+        if (g_kept.light_set[i])
+            IDirect3DDevice9_GetLightEnable(g_dev, i, &g_kept.light_on[i]);
+    }
+}
+
+static void release_default_pool(void)
+{
+    RhiBuffer *b;
+    RhiImage *img;
+    RhiView *v;
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        IDirect3DDevice9_SetTexture(g_dev, i, NULL);
+        IDirect3DDevice9_SetStreamSource(g_dev, i, NULL, 0, 0);
+    }
+    for (i = 0; i < 4; i++)
+        IDirect3DDevice9_SetTexture(g_dev, D3DVERTEXTEXTURESAMPLER0 + i, NULL);
+    IDirect3DDevice9_SetIndices(g_dev, NULL);
+    IDirect3DDevice9_SetDepthStencilSurface(g_dev, NULL);
+    if (g_bb_view->surf)
+        IDirect3DDevice9_SetRenderTarget(g_dev, 0, g_bb_view->surf);
+    for (v = g_live_views; v; v = v->live_next)
+        if (v->surf) { IDirect3DSurface9_Release(v->surf); v->surf = NULL; }
+    for (img = g_live_images; img; img = img->live_next) {
+        if (img->tex)  { IDirect3DBaseTexture9_Release(img->tex); img->tex = NULL; }
+        if (img->surf) { IDirect3DSurface9_Release(img->surf); img->surf = NULL; }
+    }
+    for (b = g_live_buffers; b; b = b->live_next)
+        if (b->vb) { IDirect3DVertexBuffer9_Release(b->vb); b->vb = NULL; }
+    for (i = 0; i < 2; i++)
+        if (g_iring[i]) { IDirect3DIndexBuffer9_Release(g_iring[i]); g_iring[i] = NULL; }
+    if (g_bb_view->surf) { IDirect3DSurface9_Release(g_bb_view->surf); g_bb_view->surf = NULL; }
+}
+
+static int make_default_pool(void)
+{
+    RhiBuffer *b;
+    RhiImage *img;
+    RhiView *v;
+    int bad = 0;
+
+    if (FAILED(IDirect3DDevice9_GetBackBuffer(g_dev, 0, 0, D3DBACKBUFFER_TYPE_MONO,
+                                              &g_bb_view->surf)))
+        bad++;
+    if (make_index_rings() != 0)
+        bad++;
+    for (b = g_live_buffers; b; b = b->live_next)
+        if (FAILED(IDirect3DDevice9_CreateVertexBuffer(g_dev, b->desc.size,
+                                                       D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0,
+                                                       D3DPOOL_DEFAULT, &b->vb, NULL)))
+            bad++;
+    for (img = g_live_images; img; img = img->live_next)
+        if (FAILED(image_storage(img)))
+            bad++;
+    for (v = g_live_views; v; v = v->live_next) {
+        v->surf = subresource_surface(v->image, v->sub);
+        if (!v->surf)
+            bad++;
+        else if (v->kind == RHI_VIEW_RENDER_TARGET)
+            IDirect3DDevice9_ColorFill(g_dev, v->surf, NULL, D3DCOLOR_XRGB(0, 0, 0));
+    }
+    return bad;
+}
+
+static void set_again(void)
+{
+    uint32_t i, j;
+
+    for (i = 0; i < RS_COUNT; i++)
+        if (g_rs_known[i])
+            IDirect3DDevice9_SetRenderState(g_dev, (D3DRENDERSTATETYPE)i, g_rs[i]);
+    for (i = 0; i < 8; i++)
+        for (j = 0; j < TSS_COUNT; j++)
+            if (g_tss_known[i][j])
+                IDirect3DDevice9_SetTextureStageState(g_dev, i, (D3DTEXTURESTAGESTATETYPE)j,
+                                                      g_tss[i][j]);
+    for (i = 0; i < 16; i++)
+        for (j = 0; j < SAMP_COUNT; j++)
+            if (g_samp_known[i][j])
+                IDirect3DDevice9_SetSamplerState(g_dev, i, (D3DSAMPLERSTATETYPE)j, g_samp[i][j]);
+    for (i = 0; i < 2; i++)
+        IDirect3DDevice9_SetTransform(g_dev, k_view_transforms[i], &g_kept.view[i]);
+    IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, &g_kept.world);
+    for (i = 0; i < TEXTURE_TRANSFORMS; i++)
+        IDirect3DDevice9_SetTransform(g_dev, (D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + i),
+                                      &g_kept.texture[i]);
+    IDirect3DDevice9_SetMaterial(g_dev, &g_kept.material);
+    for (i = 0; i < LIGHTS; i++)
+        if (g_kept.light_set[i]) {
+            IDirect3DDevice9_SetLight(g_dev, i, &g_kept.light[i]);
+            IDirect3DDevice9_LightEnable(g_dev, i, g_kept.light_on[i]);
+        }
+    IDirect3DDevice9_SetVertexShader(g_dev, g_b.vs ? g_b.vs->vs : NULL);
+    IDirect3DDevice9_SetPixelShader(g_dev, g_b.ps ? g_b.ps->ps : NULL);
+    for (i = 0; i < 16; i++) {
+        RhiView *v = g_b.tex[i];
+        RhiBuffer *b = g_b.vb[i];
+
+        IDirect3DDevice9_SetTexture(g_dev, i, v && v->image ? v->image->tex : NULL);
+        IDirect3DDevice9_SetStreamSource(g_dev, i, b ? b->vb : NULL, b ? g_b.vb_offset[i] : 0,
+                                         b ? g_b.vb_stride[i] : 0);
+    }
+    g_b.vid_bound = 0;
+    d9_set_render_target(g_b.rt, g_b.ds);
+    memset(g_b.ub_sent, 0, sizeof g_b.ub_sent);
+    g_b.adjust_sent = g_b.clamp_sent = 0;
+    g_b.ds_dirty = g_b.samp_dirty = 1;
+    g_ff_proj_dirty = 1;
+}
+
+static int reset_device(void)
+{
+    D3DPRESENT_PARAMETERS pp = g_pp;    /* Reset may write to it */
+    HRESULT hr;
+    int bad;
+
+    scene_end();
+    keep_device_state();
+    release_default_pool();
+    hr = IDirect3DDevice9_Reset(g_dev, &pp);
+    /* Made again either way: the title's next map and draw must find them. */
+    bad = make_default_pool();
+    if (FAILED(hr)) {
+        fprintf(stderr, "[RHI] d3d9: the device could not be reset (0x%08lX)\n", (unsigned long)hr);
+        return 0;
+    }
+    set_again();
+    if (bad)
+        fprintf(stderr, "[RHI] d3d9: %d objects could not be made again after a reset\n", bad);
+    fprintf(stderr, "[RHI] d3d9: the device was reset\n");
+    return 1;
+}
+
+/* At a present, while the device is lost: it comes back when it can be reset. */
+static void device_lost(void)
+{
+    HRESULT hr = IDirect3DDevice9_TestCooperativeLevel(g_dev);
+
+    if (hr == D3DERR_DEVICENOTRESET) {
+        if (reset_device())
+            g_lost = 0;
+    } else if (SUCCEEDED(hr)) {
+        g_lost = 0;
+    }
 }
 
 /* ---- the draw ------------------------------------------------------------------------ */
