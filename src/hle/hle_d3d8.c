@@ -2790,6 +2790,8 @@ int hle_d3d8_title_ltcg(void)
     return g_title_ltcg;
 }
 
+uint32_t hle_d3d8_draw_stream(uint32_t *data, uint32_t *stride, uint32_t *first);  /* hle_d3d8_vertex.c */
+
 /* The running title, as the mods are handed it (recomp_mods.h). */
 static void *mods_guest_pointer(uint32_t va)
 {
@@ -2803,6 +2805,7 @@ static const RecompModsHost g_mods_host = {
     .guest_pointer    = mods_guest_pointer,
     .vertex_constants = xbox_D3D8VertexConstants,
     .capture_note     = hle_d3d8_capture_note,
+    .draw_stream      = hle_d3d8_draw_stream,
 };
 
 /* HRESULT Direct3D_CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType,

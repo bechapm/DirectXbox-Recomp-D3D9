@@ -17,6 +17,7 @@ typedef struct RecompModsHost {
     void       *(*guest_pointer)(uint32_t va);
     uint32_t    (*vertex_constants)(uint32_t first, uint32_t count, float (*out)[4]);
     void        (*capture_note)(uint32_t tag, const void *data, uint32_t bytes);
+    uint32_t    (*draw_stream)(uint32_t *data, uint32_t *stride, uint32_t *first);
 } RecompModsHost;
 
 /* Loads the mods beside the program, once; later calls do nothing. Both

@@ -70,6 +70,20 @@ static uint32_t api_vertex_constants(uint32_t first, uint32_t count, float (*out
     return g_host.vertex_constants ? g_host.vertex_constants(first, count, out) : 0;
 }
 
+static uint32_t api_draw_vertex_buffer(uint32_t *data, uint32_t *stride, uint32_t *first)
+{
+    if (!g_host.draw_stream) {
+        if (data)
+            *data = 0;
+        if (stride)
+            *stride = 0;
+        if (first)
+            *first = 0;
+        return 0;
+    }
+    return g_host.draw_stream(data, stride, first);
+}
+
 static void api_log(const char *line)
 {
     fprintf(stderr, "[MOD] %s\n", line ? line : "");
@@ -131,6 +145,7 @@ static const RecompModApi g_api = {
     .capture_note                 = api_capture_note,
     .replay_on_note               = api_replay_on_note,
     .d3d9_on_copy                 = rhi_d3d9_mod_on_copy,
+    .draw_vertex_buffer           = api_draw_vertex_buffer,
 };
 
 /* ---- loading ---------------------------------------------------------------- */

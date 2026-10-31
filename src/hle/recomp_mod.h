@@ -40,7 +40,7 @@
 extern "C" {
 #endif
 
-#define RECOMP_MOD_API_VERSION 3
+#define RECOMP_MOD_API_VERSION 4
 
 /* ---- the Direct3D 9 renderer (RECOMP_D3D8_BACKEND=d3d9) ----
  *
@@ -206,6 +206,17 @@ typedef struct RecompModApi {
     /* fn before each copy of the picture into a texture, in a run and in a
      * replay. Up to 8 across mods, the first answer standing; 0 when full. */
     int   (*d3d9_on_copy)(RecompModCopyFn fn, void *user);
+
+    /* ---- version 4 ---- */
+
+    /* The title's own vertex buffer the draw in hand reads its vertices
+     * from, from a d3d9_on_draw before or after: returns the guest address
+     * of its D3DVertexBuffer (0 when the draw's vertices came from no buffer
+     * of the title's, or in a replay), and fills the guest address of the
+     * buffer's data, its stride, and the first vertex the draw reads from it
+     * (the base vertex, for an indexed draw). This is how a mod tells which
+     * of the title's models a draw is: the title keeps its buffers. */
+    uint32_t (*draw_vertex_buffer)(uint32_t *data, uint32_t *stride, uint32_t *first);
 } RecompModApi;
 
 typedef int (*RecompModInitFn)(const RecompModApi *api);
