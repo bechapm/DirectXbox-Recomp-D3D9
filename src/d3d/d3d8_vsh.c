@@ -326,6 +326,39 @@ static int vsh_name_input(VshAttr *attr, uint16_t *named, int reg, const char *n
 }
 
 /**
+ * The input a program rotates by a matrix, if it has one: three DP3s of it in
+ * a row filling x, y and z of one temporary, which is how a program takes a
+ * normal out of its model's space. Returns the input, or -1. temp is that
+ * temporary and last the third DP3: the temporary may be used for something
+ * else later, so the rotated value has to be read there.
+ */
+static int vsh_rotated_input(const NV2AVshProgram *program, int *temp, int *last)
+{
+    int i, k;
+
+    for (i = 0; i + 2 < program->length; i++) {
+        const NV2AVshInstruction *first = &program->insns[i];
+
+        for (k = 0; k < 3; k++) {
+            const NV2AVshInstruction *inst = &program->insns[i + k];
+
+            if (inst->mac_op != NV2A_VSH_MAC_DP3 ||
+                inst->mac_src[0].reg_type != NV2A_VSH_REG_INPUT ||
+                inst->mac_src[0].reg_index != first->mac_src[0].reg_index ||
+                inst->mac_dst.temp_reg != first->mac_dst.temp_reg ||
+                inst->mac_dst.write_mask != (8u >> k))
+                break;
+        }
+        if (k == 3) {
+            *temp = first->mac_dst.temp_reg;
+            *last = i + 2;
+            return first->mac_src[0].reg_index;
+        }
+    }
+    return -1;
+}
+
+/**
  * What each input register holds, from where the program sends it.
  *
  * A title lays out its own programs' inputs. The Xbox's usual meanings (v0
@@ -339,10 +372,12 @@ static int vsh_name_input(VshAttr *attr, uint16_t *named, int reg, const char *n
  * fade.
  *
  * So each input is followed through the temporaries to the outputs. What goes
- * to oPos is the position; what alone reaches oDn is colour n and oTn texture
- * n; what goes through a DP3 otherwise is the normal. An output two inputs feed
- * tells nothing, and those inputs, and any left over, keep their usual meaning,
- * or a spare name when a neighbour has taken it: each name may be used once.
+ * to oPos is the position; what a matrix rotates is the normal, even when, as
+ * in a lit program, it feeds nothing but oD0; what alone reaches oDn is colour n
+ * and oTn texture n; what goes through a DP3 otherwise is the normal. An output
+ * two inputs feed tells nothing, and those inputs, and any left over, keep their
+ * usual meaning, or a spare name when a neighbour has taken it: each name may be
+ * used once.
  */
 static void vsh_input_attrs(const NV2AVshProgram *program, VshAttr *attr)
 {
@@ -395,6 +430,13 @@ static void vsh_input_attrs(const NV2AVshProgram *program, VshAttr *attr)
         for (i = 0; !(pos & (1u << i)); i++)
             ;
         vsh_name_input(attr, &named, i, "POSITION", 0);
+    }
+    {
+        int unused_temp, unused_last;
+        int rotated = vsh_rotated_input(program, &unused_temp, &unused_last);
+
+        if (rotated >= 0 && (read & (1u << rotated)))
+            vsh_name_input(attr, &named, rotated, "NORMAL", 0);
     }
     for (n = 0; n < 2; n++) {
         uint16_t c = out[n ? NV2A_VSH_OUT_D1 : NV2A_VSH_OUT_D0] & read & ~named;
@@ -934,6 +976,7 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
 {
     StrBuf sb;
     int i;
+    int rotated_input, rotated_temp = 0, rotated_last = -1;
     uint16_t inputs = program->inputs_read;
 
     sb_init(&sb, buf, bufsize);
@@ -1050,7 +1093,19 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "    float  oPts : PSIZE;\n"
         "#endif\n"
         "    float4 oB0  : TEXCOORD6;\n"
-        "    float4 oB1  : TEXCOORD7;\n"
+        "    float4 oB1  : TEXCOORD7;\n");
+    /* The normal as the program rotated it, for a mod that defines
+     * RHI_MOD_NORMAL(n) (recomp_mod.h), so that a tool reading vertex outputs
+     * gets it after the program's own skinning. Only for a program that has
+     * one: a tool would take a zero from any other program as its normal. With
+     * no such mod the compiled program is what it was. */
+    rotated_input = vsh_rotated_input(program, &rotated_temp, &rotated_last);
+    if (rotated_input >= 0)
+        sb_append(&sb,
+            "#ifdef RHI_MOD_NORMAL\n"
+            "    float3 oNormal : NORMAL;\n"
+            "#endif\n");
+    sb_append(&sb,
         /* Vulkan: a vertex stage feeding a point list must write the point
          * size; D3D11 has none (oPts above goes nowhere, every point is one
          * pixel). __spirv__ is DXC's macro for a SPIR-V compile, so
@@ -1131,6 +1186,12 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "    float4 oT3  = float4(0,0,0,1);\n"
         "\n");
 
+    if (rotated_input >= 0)
+        sb_append(&sb,
+            "#ifdef RHI_MOD_NORMAL\n"
+            "    float3 xboxNormal = float3(0,0,0);\n"
+            "#endif\n");
+
     /* R12 is aliased to oPos on NV2A */
     sb_append(&sb, "    /* R12 is aliased to oPos */\n");
     sb_append(&sb, "    #define R12 oPos\n\n");
@@ -1210,6 +1271,11 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
             emit_dest_assign(&sb, &inst->ilu_dst, "_ilu");
 
         sb_append(&sb, "    }\n");
+        if (rotated_input >= 0 && i == rotated_last)
+            sb_append(&sb,
+                "#ifdef RHI_MOD_NORMAL\n"
+                "    xboxNormal = R%d.xyz;\n"
+                "#endif\n", rotated_temp);
     }
 
     /* Undo the R12 alias */
@@ -1281,7 +1347,14 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         /* D3D9: the viewport correction rhi_d3d9.c keeps (rhi_d3d9.h) */
         "#ifdef RHI_VP_ADJUST\n"
         "    RHI_VP_ADJUST(o.oPos);\n"
-        "#endif\n"
+        "#endif\n");
+    if (rotated_input >= 0)
+        sb_append(&sb,
+            "#ifdef RHI_MOD_NORMAL\n"
+            "    o.oNormal = xboxNormal;\n"
+            "    RHI_MOD_NORMAL(o.oNormal);\n"
+            "#endif\n");
+    sb_append(&sb,
         "    return o;\n"
         "}\n");
 

@@ -115,7 +115,9 @@ static const char kVsPrelude[] =
     "float4 rhi_vp_adjust : register(c255);\n"
     "float4 rhi_depth_clamp : register(c254);\n";
 /* After a mod's own vertex HLSL (rhi_d3d9_mod_vertex_hlsl), which may
- * define RHI_MOD_POSITION(p) to be run on every output position. */
+ * define RHI_MOD_POSITION(p) to be run on every output position, and
+ * RHI_MOD_NORMAL(n) to have a program's rotated normal written out
+ * (d3d8_vsh_generate_hlsl). */
 static const char kVsPreludeEnd[] =
     "#ifndef RHI_MOD_POSITION\n"
     "#define RHI_MOD_POSITION(p)\n"

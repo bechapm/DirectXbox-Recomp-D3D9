@@ -211,6 +211,9 @@ static int locals_before_writes(const char *hlsl)
     return 1;
 }
 
+/* Put in front of the generated source by compile_program, when set. */
+static const char *g_source_prefix;
+
 static void compile_program(const char *name, const uint32_t *words, int count)
 {
     static NV2AVshProgram prog;
@@ -233,6 +236,13 @@ static void compile_program(const char *name, const uint32_t *words, int count)
     check(len > 0, name, "the generator produces source");
     if (len <= 0)
         return;
+    if (g_source_prefix) {
+        int extra = (int)strlen(g_source_prefix);
+
+        memmove(hlsl + extra, hlsl, (size_t)len + 1);
+        memcpy(hlsl, g_source_prefix, (size_t)extra);
+        len += extra;
+    }
 
 #if defined(_WIN32)
     hr = D3DCompile(hlsl, (SIZE_T)len, name, NULL, NULL, "main", "vs_5_0",
@@ -399,6 +409,57 @@ static void test_hor_plus(void)
     recomp_widescreen_title(RECOMP_WIDE_UNKNOWN, 60);
 }
 
+/* A lit program: input 5 rotated into R3 by three DP3s, as a program takes a
+ * normal out of its model's space, and nothing but colour from it. R3 is then
+ * used for something else, so the rotated value is only there just after. */
+static void lit_program(uint32_t *w)
+{
+    int k;
+
+    for (k = 0; k < 3; k++) {
+        mac_slot(w + k * 4, 5, 3);
+        set_field(w + k * 4, F_INPUT, 4, 5);
+        set_field(w + k * 4, F_OUT_MAC_MASK, 4, 8u >> k);
+        set_field(w + k * 4, F_OUT_O_MASK, 4, 0);
+        set_field(w + k * 4, F_FINAL, 1, 0);
+    }
+    mac_slot(w + 12, 1, 3);                     /* MOV oD0 and R3, v5's result */
+    set_field(w + 12, F_A_MUX, 2, BANK_TEMP);
+    set_field(w + 12, F_A_TEMP, 4, 3);
+    set_field(w + 12, F_OUT_ADDRESS, 8, 3);     /* oD0 */
+}
+
+static void test_rotated_normal(void)
+{
+    static NV2AVshProgram prog;
+    static char hlsl[1 << 17];
+    static uint32_t w[4 * 4];
+    uint32_t one[4];
+    const char *t = "rotated_normal";
+
+    lit_program(w);
+    nv2a_vsh_parse(w, 4, &prog);
+    check(d3d8_vsh_generate_hlsl(&prog, hlsl, (int)sizeof hlsl) > 0, t, "the generator produces source");
+    check(strstr(hlsl, "v5 : NORMAL0") != NULL, t,
+          "a rotated input is the normal, though only colour comes of it");
+    check(strstr(hlsl, "v5 : COLOR0") == NULL, t, "and not a colour");
+    check(strstr(hlsl, "float3 oNormal : NORMAL") != NULL, t, "a mod can have it written out");
+    check(strstr(hlsl, "xboxNormal = R3.xyz") != NULL, t, "read just after the third DP3");
+
+    /* A lone DP3, a colour's brightness say, rotates nothing. */
+    mac_slot(one, 5, 3);
+    nv2a_vsh_parse(one, 1, &prog);
+    check(d3d8_vsh_generate_hlsl(&prog, hlsl, (int)sizeof hlsl) > 0, t, "the generator produces source");
+    check(strstr(hlsl, "oNormal") == NULL, t,
+          "no output for a program that rotates nothing: a tool would take its zero as the normal");
+
+    compile_program("rotated_normal_no_mod", w, 4);
+    g_source_prefix = "#define RHI_MOD_NORMAL(n) n = normalize(n)\n";
+    compile_program("rotated_normal_mod", w, 4);
+    compile_program("no_normal_mod", one, 1);
+    g_source_prefix = NULL;
+}
+
 int main(void)
 {
     uint32_t w[4];
@@ -411,6 +472,7 @@ int main(void)
     set_env("RECOMP_DISPLAY_CONFIG", "nv2a_vsh_hlsl_no_settings.conf");
 
     test_hor_plus();
+    test_rotated_normal();
 
     compile_program("frontend", FRONTEND, 12);
 

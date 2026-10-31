@@ -167,7 +167,11 @@ typedef struct RecompModApi {
      * the first is compiled). It may define RHI_MOD_POSITION(p), which is
      * then run on each output position (float4, clip space); the
      * renderer's own rhi_depth_clamp (c254) is declared before it, and its
-     * w is always 0. Returns 0 if it does not fit. */
+     * w is always 0. It may also define RHI_MOD_NORMAL(n): a program that
+     * rotates a normal then writes it to a NORMAL output, and this is run on
+     * it first (float3, in whatever space the program rotated it to), so a
+     * tool reading vertex outputs gets a normal after the program's skinning.
+     * Returns 0 if it does not fit. */
     int   (*d3d9_vertex_hlsl)(const char *hlsl);
 
     /* A render state as the renderer last set it: returns 0 if it has not
