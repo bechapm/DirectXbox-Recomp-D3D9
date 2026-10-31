@@ -46,7 +46,7 @@ not code.
 | Area | What the contract gives |
 | --- | --- |
 | The title | its ID and name; read access to its memory (`guest_pointer`); a call once a frame; the vertex-program constants of the draw in hand; a log line |
-| Draws (Direct3D 9 renderer) | a call before and after every draw, with what the renderer knows of it (the title's or the toolkit's, 2D or 3D, fixed function or program, the program's projection, textures and screen copies bound, depth state, vertices and indices); the draw may be changed for that one call or left out |
+| Draws (Direct3D 9 renderer) | a call before and after every draw, with what the renderer knows of it (the title's or the toolkit's, 2D or 3D, fixed function or program, the program's projection, textures and screen copies bound, depth state, vertices and indices, and which of the title's own vertex buffers it reads: see [Telling a title's models apart](#telling-a-titles-models-apart)); the draw may be changed for that one call or left out |
 | Device events | device made, clears, copies of the screen into a texture (the mod may supply the surface to read instead), before `Present` |
 | Shaders and state | vertex HLSL added in front of every program (`RHI_MOD_POSITION`); render states as last set; the fixed-function transforms; the projection |
 | Textures | textures the CPU rewrites after they were drawn with can be made anew, for tools that recognise a texture by its contents |
@@ -84,6 +84,91 @@ int recomp_mod_init(const RecompModApi *api)
     return 1;
 }
 ```
+
+## Telling a title's models apart
+
+A mod that changes one thing in a title (one character, one gun, one kind
+of wall) first has to recognise that thing's draws. What the renderer hands
+a mod is the host's copy: host vertex buffers that are filled and refilled,
+so their addresses say nothing about where the vertices came from. The
+title's own buffers do. A title loads a model into vertex buffers of its own
+and keeps them, and its own data says which model is where.
+`draw_vertex_buffer` (version 4) gives the mod that link: from inside a
+draw's `before` or `after`, which of the title's `D3DVertexBuffer`s the draw
+reads.
+
+```mermaid
+flowchart LR
+    subgraph title["The title (guest memory)"]
+        M["Its model table<br/>model: buffer, first vertex, count"]
+        VB["Its D3DVertexBuffer<br/>(guest address)"]
+        M --> VB
+    end
+    subgraph toolkit["The toolkit"]
+        R["Direct3D 9 renderer<br/>host buffers, refilled"]
+    end
+    subgraph mod["A mod"]
+        H["before(draw)"]
+        Q["draw_vertex_buffer()<br/>buffer, data, stride, first"]
+        I["draw->indices<br/>lowest index + base_vertex"]
+        L["Look it up in the title's table:<br/>which model, which part"]
+    end
+    VB -- "the title draws from it" --> R
+    R -- "calls" --> H
+    H --> Q
+    H --> I
+    Q --> L
+    I --> L
+    M -. "read through guest_pointer" .-> L
+```
+
+What it gives, for the draw in hand:
+
+| Out | Meaning |
+| --- | --- |
+| return value | the guest address of the title's `D3DVertexBuffer`, or 0 when the vertices came from no buffer of the title's (drawn from memory, a toolkit draw) or in a replay |
+| `*data` | the guest address of that buffer's vertex data |
+| `*stride` | bytes per vertex, as the title set the stream |
+| `*first` | the first vertex the draw reads from it (the base vertex, for an indexed draw) |
+
+The vertices a draw uses are then `first` plus the draw's own range: for an
+indexed draw the lowest of `draw->indices` plus `draw->base_vertex`, for any
+other `draw->first_vertex`. Buffer, stride and vertex range together are
+what a mod looks up in the title's own tables, read through
+`guest_pointer`. Those tables are the title's business, so the lookup lives
+in the mod (or the title's port); the toolkit only says which buffer.
+
+```c
+static int before(RecompModDraw *d, void *user)
+{
+    uint32_t data, stride, first, lo;
+
+    if (!RECOMP_MOD_HAS(g_api, draw_vertex_buffer) ||
+        !g_api->draw_vertex_buffer(&data, &stride, &first))
+        return RECOMP_DRAW_AS_IS;       /* not from one of the title's buffers */
+    lo = first + (d->indexed ? lowest_index(d) + d->base_vertex : d->first_vertex);
+    if (is_the_model_i_want(data, stride, lo))   /* the title's own tables */
+        return RECOMP_DRAW_SKIP;        /* or change it, or draw something else */
+    return RECOMP_DRAW_AS_IS;
+}
+```
+
+`RECOMP_MOD_HAS(api, field)` says whether the toolkit a mod is loaded into
+has a field newer than the oldest one the mod supports, so one build of a
+mod runs on an older toolkit too, with that feature off.
+
+Things to know:
+
+- It answers only inside a draw's `before` or `after`, and only for the
+  title's own draws.
+- With the title's draws deferred to the end of the frame
+  (`RECOMP_HLE_D3D8_DEFER`), the buffer is still right, but whatever else a
+  mod reads from guest memory at the draw shows the end of the frame.
+- In a replay there is no guest memory, and it returns 0.
+- A title that writes each frame's vertices into one ring buffer (particles,
+  text, some skinned meshes) gives the ring's address every time; a mod
+  tells those draws apart some other way (the vertex constants, the
+  textures).
 
 ## Where a change belongs
 
