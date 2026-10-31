@@ -34,6 +34,7 @@
 #ifndef RECOMP_MOD_H
 #define RECOMP_MOD_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -220,6 +221,11 @@ typedef struct RecompModApi {
 } RecompModApi;
 
 typedef int (*RecompModInitFn)(const RecompModApi *api);
+
+/* Whether the toolkit's api has a field (one added after the mod's oldest
+ * supported version): its size covers it. */
+#define RECOMP_MOD_HAS(api, field) \
+    ((api)->size >= offsetof(RecompModApi, field) + sizeof((api)->field))
 
 #ifdef __cplusplus
 }
