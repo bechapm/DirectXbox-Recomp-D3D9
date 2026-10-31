@@ -2371,8 +2371,8 @@ static int           g_mod_called;      /* how many befores ran for it */
 /* After prepare_draw: the mods' befores, in the order they asked. 0 when
  * the draw is to be left out (the befores after that one are not asked,
  * and no after is called). */
-static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, int indexed, uint32_t first,
-                           uint32_t vertices)
+static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, const void *indices,
+                           uint32_t index_bytes, int32_t base, uint32_t first, uint32_t vertices)
 {
     RecompModDraw *d = &g_mod_d;
     const RhiDepthDesc *dd = g_b.depth ? &g_b.depth->d : NULL;
@@ -2416,9 +2416,13 @@ static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, int indexed, uint3
     d->program_projection_set = g_b.vs && g_prog_proj_set;
     if (d->program_projection_set)
         memcpy(d->program_projection, g_prog_proj, sizeof d->program_projection);
-    d->indexed = indexed;
+    d->indexed = indices != NULL;
     d->first_vertex = first;
     d->vertices = vertices;
+    d->indices = indices;
+    d->index_bytes = index_bytes;
+    d->index_count = indices ? vertices : 0;
+    d->base_vertex = base;
     for (i = 0; i < g_mod_draw_n; i++) {
         if (!g_mod_draw[i].before) {
             g_mod_called++;
@@ -2460,7 +2464,7 @@ static void d9_draw(uint32_t n, uint32_t first)
         return;
     if (!g_b.layout && first + n > VID_COUNT)
         return;
-    if (!mod_before_draw(type, prims, 0, first, n))
+    if (!mod_before_draw(type, prims, NULL, 0, 0, first, n))
         return;
     hr = IDirect3DDevice9_DrawPrimitive(g_dev, type, first, prims);
     if (FAILED(hr))
@@ -2504,7 +2508,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     memcpy(dst, src, bytes);
     IDirect3DIndexBuffer9_Unlock(g_iring[which]);
     IDirect3DDevice9_SetIndices(g_dev, g_iring[which]);
-    if (mod_before_draw(type, prims, 1, 0, 0)) {
+    if (mod_before_draw(type, prims, src, isz, base, 0, n)) {
         hr = IDirect3DDevice9_DrawIndexedPrimitive(g_dev, type, base, lo, hi - lo + 1,
                                                    g_iring_pos[which] / isz, prims);
         if (FAILED(hr))

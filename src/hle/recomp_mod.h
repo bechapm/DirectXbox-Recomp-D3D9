@@ -83,6 +83,13 @@ typedef struct RecompModDraw {
     int      indexed;               /* drawn through an index buffer; if not: */
     uint32_t first_vertex;          /* its vertices in the stream the device has */
     uint32_t vertices;
+    /* If indexed: the draw's indices, for this call only. Each is added to
+     * base_vertex to give a vertex in that stream (GetStreamSource), read as
+     * the device's vertex declaration says. */
+    const void *indices;
+    uint32_t index_bytes;           /* 2 or 4 */
+    uint32_t index_count;
+    int32_t  base_vertex;
 } RecompModDraw;
 
 #define RECOMP_DRAW_AS_IS 0         /* before's answers */
