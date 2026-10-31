@@ -120,6 +120,12 @@ int  recomp_mouse_sensitivity(void);
 void recomp_pointer_want(int on);
 int  recomp_pointer_wanted(void);
 
+/* The pointer is wanted but hidden: a key or pad press since the mouse last
+ * moved or clicked, so the keys are driving the menu. The window hides the
+ * arrow, and recomp_pointer_read says it is over nothing, until the mouse
+ * moves a few pixels or a button goes down. */
+int  recomp_pointer_hidden(void);
+
 typedef struct RecompPointer {
     int      inside;    /* over the picture, with the game window in front */
     float    x, y;      /* 0..1 across the picture as shown, from its top left */

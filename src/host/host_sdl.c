@@ -575,6 +575,28 @@ void host_window_set_relative_mouse(host_window *w, int on)
     recomp_host_call_main(relative_on_main, &op);
 }
 
+static void cursor_on_main(void *arg)
+{
+    window_op *op = arg;
+
+    if (op->on)
+        SDL_ShowCursor();
+    else
+        SDL_HideCursor();
+}
+
+void host_window_show_cursor(host_window *w, int on)
+{
+    window_op op;
+
+    if (!w)
+        return;
+    memset(&op, 0, sizeof op);
+    op.w = w;
+    op.on = on;
+    recomp_host_call_main(cursor_on_main, &op);
+}
+
 int host_window_pointer(host_window *w, float *x, float *y, float *width, float *height)
 {
     if (!w || !SDL_GetAtomicInt(&w->ptr_in) || !SDL_GetAtomicInt(&w->focus))

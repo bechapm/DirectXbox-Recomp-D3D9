@@ -122,6 +122,10 @@ void host_window_set_relative_mouse(host_window *w, int on);
  * window does not have the focus. Any thread. */
 int  host_window_pointer(host_window *w, float *x, float *y, float *width, float *height);
 
+/* Show or hide the free pointer over the window (a menu driven by the keys
+ * hides it until the mouse moves). Any thread. */
+void host_window_show_cursor(host_window *w, int on);
+
 /* Whether the window has the keyboard focus right now. Any thread. */
 int  host_window_has_focus(host_window *w);
 

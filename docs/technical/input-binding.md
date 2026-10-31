@@ -254,6 +254,13 @@ renderer's thread reads it each frame. A background run's window never
 reports a pointer; its title may move one itself with `recomp_pointer_set`
 (TimeSplitters 2 does, for scripted tests).
 
+The arrow hides while the keys or a pad drive the menu, as a PC program
+hides it while the keyboard is in use: a new press on controller 1 (a
+button, a trigger, a stick pushed well over) hides it, and the mouse moving
+a few pixels or a mouse button going down shows it again
+(`recomp_pointer_hidden`). While it is hidden `recomp_pointer_read` reports
+it over nothing, so nothing under a resting arrow stays lit.
+
 ## The UI
 
 ```

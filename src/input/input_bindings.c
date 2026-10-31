@@ -991,6 +991,11 @@ static volatile long g_pointer_want;
 static volatile long g_pointer_inside, g_pointer_x, g_pointer_y, g_pointer_aspect;
 static volatile long g_pointer_moved;
 static volatile long g_pointer_held, g_pointer_pressed, g_pointer_wheel;
+/* The pointer is hidden while the keys or a pad drive the menu, and shown
+ * again when the mouse moves or clicks (recomp_pointer_hidden): where it
+ * was hidden, so a twitch of the hand does not bring it back. */
+static volatile long g_pointer_hidden, g_pointer_hide_x, g_pointer_hide_y;
+#define POINTER_SHOW_MOVE 4000      /* millionths of the picture: about 3 pixels in 640 */
 
 void recomp_mouse_button(int button, int down)
 {
@@ -999,6 +1004,7 @@ void recomp_mouse_button(int button, int down)
     if (g_pointer_want) {
         /* A click on a menu: the title's, not a binding's. */
         if (down) {
+            g_pointer_hidden = 0;
             MOUSE_OR(&g_pointer_held, 1L << button);
             MOUSE_OR(&g_pointer_pressed, 1L << button);
         } else {
@@ -1033,6 +1039,7 @@ void recomp_pointer_want(int on)
     MOUSE_TAKE(&g_pointer_wheel);
     MOUSE_TAKE(&g_mouse_dx);
     MOUSE_TAKE(&g_mouse_dy);
+    g_pointer_hidden = 0;
     g_pointer_want = on;
 }
 
@@ -1041,12 +1048,43 @@ int recomp_pointer_wanted(void)
     return g_pointer_want != 0;
 }
 
+int recomp_pointer_hidden(void)
+{
+    return g_pointer_want && g_pointer_hidden;
+}
+
+/* Controller 1 was sampled while a pointer is wanted: a key or pad press
+ * that was not there before (a button, a trigger, a stick pushed well
+ * over) hides the pointer, as a PC program hides it while the keyboard is
+ * in use. Only on a new press, so a key held into the menu does not. The
+ * mouse's buttons and wheel are the pointer's then, and never reach out. */
+static void pointer_hide_on_keys(const XBOX_GAMEPAD *out)
+{
+    static int was;
+    int i, now = out->wButtons != 0;
+
+    for (i = 0; i < 8 && !now; i++)
+        now = out->bAnalogButtons[i] >= 64;
+    if (!now)
+        now = abs(out->sThumbLX) > 16000 || abs(out->sThumbLY) > 16000 ||
+              abs(out->sThumbRX) > 16000 || abs(out->sThumbRY) > 16000;
+    if (now && !was && g_pointer_want && !g_pointer_hidden) {
+        g_pointer_hide_x = g_pointer_x;
+        g_pointer_hide_y = g_pointer_y;
+        g_pointer_hidden = 1;
+    }
+    was = now;
+}
+
 void recomp_pointer_set(int inside, float x, float y, float aspect)
 {
     long nx = (long)(x * POINTER_FIXED), ny = (long)(y * POINTER_FIXED);
 
     if (nx != g_pointer_x || ny != g_pointer_y || (inside ? 1 : 0) != g_pointer_inside)
         MOUSE_ADD(&g_pointer_moved, 1);
+    if (g_pointer_hidden && (labs(nx - g_pointer_hide_x) > POINTER_SHOW_MOVE ||
+                             labs(ny - g_pointer_hide_y) > POINTER_SHOW_MOVE))
+        g_pointer_hidden = 0;
     g_pointer_x = nx;
     g_pointer_y = ny;
     g_pointer_aspect = (long)(aspect * POINTER_FIXED);
@@ -1060,7 +1098,8 @@ int recomp_pointer_read(RecompPointer *p)
     memset(p, 0, sizeof *p);
     if (!g_pointer_want)
         return 0;
-    p->inside = g_pointer_inside != 0;
+    /* A hidden pointer is over nothing: nothing under it lights up. */
+    p->inside = g_pointer_inside != 0 && !g_pointer_hidden;
     p->x = (float)g_pointer_x / POINTER_FIXED;
     p->y = (float)g_pointer_y / POINTER_FIXED;
     p->aspect = (float)g_pointer_aspect / POINTER_FIXED;
@@ -1393,6 +1432,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         default:      out->sThumbRY = (SHORT)v; break;
         }
     }
+    if (port == 0)
+        pointer_hide_on_keys(out);
     /* Mouse look goes on top of the right stick's bindings rather than in
      * place of them: the pad's stick, or keys bound to it, still turn. */
     if (port == 0 && g_look.on && !g_mouse_direct) {

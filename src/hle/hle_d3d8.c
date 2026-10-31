@@ -464,11 +464,12 @@ static void shadow_mouse_raw(LPARAM lp)
  * picture that changes shape under a still pointer (a screen shown at 4:3
  * after one at 16:9) is measured again. Leaving the menu takes the pointer
  * back for mouse look, if the window is in front. */
-static int g_pointer_on;
+static int g_pointer_on, g_pointer_hid;
 
 static void shadow_pointer_track(HWND hwnd)
 {
     int want = recomp_pointer_wanted();
+    int hid = want && recomp_pointer_hidden();
     POINT pt;
     RECT rc;
     UINT sw = 0, sh = 0;
@@ -485,6 +486,18 @@ static void shadow_pointer_track(HWND hwnd)
         if (want && front)
             SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
     }
+    /* The keys took the menu over (recomp_pointer_hidden), or the mouse
+     * took it back: the arrow goes or comes back now, not at the next
+     * WM_SETCURSOR, which only a move would send. */
+    if (want && hid != g_pointer_hid && front) {
+        POINT cp;
+        RECT cr;
+
+        if (GetCursorPos(&cp) && ScreenToClient(hwnd, &cp) && GetClientRect(hwnd, &cr) &&
+            PtInRect(&cr, cp))
+            SetCursor(hid ? NULL : LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
+    }
+    g_pointer_hid = hid;
     /* A background run's window is not the person's to point with: its
      * title moves a pointer of its own, if any (recomp_pointer_set). */
     if (!want || shadow_background())
@@ -610,7 +623,7 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         /* A menu the title lets the mouse point at: the arrow, fullscreen
          * or not. */
         if (g_pointer_on && LOWORD(lp) == HTCLIENT) {
-            SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
+            SetCursor(recomp_pointer_hidden() ? NULL : LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
             return TRUE;
         }
         /* The game has no pointer; over a fullscreen picture it is in the
@@ -916,7 +929,7 @@ static void shadow_host_mouse_button(void *user, int button, int down)
  * and where it is over the picture is told to the title once a frame. */
 static void shadow_pointer_frame(void)
 {
-    static int on;
+    static int on, hid;
     int want = recomp_pointer_wanted(), inside = 0;
     float px = 0.0f, py = 0.0f, cw = 0.0f, ch = 0.0f, x = 0.0f, y = 0.0f;
     float aspect = 4.0f / 3.0f;
@@ -924,6 +937,13 @@ static void shadow_pointer_frame(void)
 
     if (!g_shadow_host || host_window_background())
         return;
+    /* The keys took the menu over (recomp_pointer_hidden): no arrow until
+     * the mouse moves or clicks. Shown again before mouse look takes the
+     * pointer, so the next menu does not open with it still hidden. */
+    if ((want && recomp_pointer_hidden()) != hid) {
+        hid = !hid;
+        host_window_show_cursor(g_shadow_host, !hid);
+    }
     if (want != on) {
         on = want;
         if (recomp_mouse_look())
