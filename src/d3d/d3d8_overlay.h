@@ -41,9 +41,10 @@ void d3d8_overlay_set_text(const char *text);
 
 /* Draws the line over `out` (the swap chain, w x h pixels) at the top-left
  * of the picture, which the display put at (pic_x, pic_y), pic_h pixels
- * tall; the glyphs are scaled with the picture, as they were when the line
- * was drawn into a 480-line frame. The bitmap is only re-rendered when the
- * text changes. A failure to create anything it needs disables it for the
+ * tall, at the size it would have in a 480-line frame scaled with the
+ * picture: the font and bitmap are made at that scale and drawn one texel
+ * to one pixel, so the text stays sharp at any window size. The bitmap is
+ * only re-rendered when the text or the scale changes. A failure to create anything it needs disables it for the
  * rest of the run, once, with a line on stderr -- an overlay must never be
  * the reason a title stops drawing. */
 void d3d8_overlay_present(RhiView *out, unsigned w, unsigned h,
