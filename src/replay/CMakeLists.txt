@@ -6,7 +6,9 @@
 #
 # It compiles d3d8_capture.c directly rather than linking xbox_hle, because
 # the container has no dependencies and xbox_hle would drag in the kernel
-# layer, XAudio2 and XInput for a tool that needs none of them.
+# layer, XAudio2 and XInput for a tool that needs none of them. The mods'
+# loader (recomp_mods.c) likewise: it is handed the title rather than
+# reaching for it, so a replay loads the same mods a title does.
 
 # nv2a_vsh.c is built in rather than linked: xbox_d3d8's vertex program
 # translator calls the microcode decoder, which lives in src/kernel and is
@@ -15,6 +17,7 @@
 add_executable(d3d8_replay
     d3d8_replay.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../hle/d3d8_capture.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../hle/recomp_mods.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../kernel/nv2a_vsh.c
 )
 target_include_directories(d3d8_replay PRIVATE

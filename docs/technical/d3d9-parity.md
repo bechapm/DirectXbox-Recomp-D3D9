@@ -3,7 +3,7 @@
 `rhi_d3d9.c` is meant to draw what the D3D11 backend draws, for every title,
 not only for TimeSplitters 2 under RTX Remix. This page lists every place the
 two take different paths, what each costs, and how it is tested, so that a gap
-shows up here before a title trips over it. [d3d9-remix.md](d3d9-remix.md) is
+shows up here before a title trips over it. [d3d9-backend.md](d3d9-backend.md) is
 the design; this is the audit.
 
 Three kinds of difference are kept apart, because each has a different owner:
@@ -11,7 +11,7 @@ Three kinds of difference are kept apart, because each has a different owner:
 | Kind | Meaning | Fixed in |
 |---|---|---|
 | **Backend** | Plain D3D9 (no Remix) draws something other than D3D11. | `rhi_d3d9.c`, the D3D9 branches in `src/d3d` |
-| **Remix hint** | Plain D3D9 is right, but what Remix is told about a draw (UI, sky, camera) is wrong. | `remix_draw` in `rhi_d3d9.c`, the title's camera source |
+| **Remix hint** | Plain D3D9 is right, but what Remix is told about a draw (UI, sky, camera) is wrong. | The title's Remix mod (`recomp_mod.h`) |
 | **Remix side** | Remix gets the right description and still needs settings, lights or replacement assets. | `rtx.conf`, the Remix project |
 
 Gaps that every backend shares (vertex blending, point sprites) are not the
@@ -26,7 +26,7 @@ it.
    `RECOMP_ANISO=1`, `RECOMP_FRAME_INTERP=1` (off), no FPS overlay. Each
    enhancement is then checked on its own, one backend at 1x against the
    same with it on. Plain D3D9 is `RECOMP_D3D8_BACKEND=d3d9` with the
-   system's `d3d9.dll` and `RECOMP_D3D9_REMIX_2D=0`. Frames are matched by
+   system's `d3d9.dll` and no mods (`RECOMP_MOD_LIBS=0`). Frames are matched by
    number: the input script runs on the title's Swaps
    (`RECOMP_INPUT_SEQ_SWAPS=1`), the title's clock waits for them
    (`RECOMP_VBLANK_LOCKSTEP=1`, since a renderer that presents slower would
@@ -39,10 +39,11 @@ it.
    from one run instead: `RECOMP_D3D8_CAPTURE_AT=<from>:<count>:<every>`
    captures the frames, and `d3d8_replay` draws each through D3D11 and
    through plain D3D9, so both pictures are of the very same frame.
-   Captures also hold the camera handed to Remix (`D3D8CAP_REMIX_VIEW`,
-   format 11), so the same capture replayed from Remix's folder gives a
-   repeatable frame for comparing one Remix setting or hint against
-   another. Mean absolute difference
+   `d3d8_replay` loads the same mods a title does, and a mod stores what it
+   needs from the title's memory in the capture as it is made
+   (`capture_note`, format 12), so the same capture replayed from Remix's
+   folder gives a repeatable frame for comparing one Remix setting or hint
+   against another. Mean absolute difference
    and the share of pixels past a small threshold, per frame. Anything real
    here is a **backend** difference.
 2. **Plain D3D9 against Remix, in the same run.** Under Remix every draw is
@@ -66,7 +67,7 @@ it.
 | Pixel stage under fixed function | Shader Model 5 | Texture stages as D3D9 states; register combiners as ps_2_a, since D3D9 pairs fixed-function vertices with ps_2_x only | A combiner program too long for ps_2_a is approximated (stage 0's texture times diffuse); its fog register reads no fog | **High** for titles with long combiner programs on fixed-function geometry |
 | Pixel stage under a vertex program | Shader Model 5 | ps_3_0 (combiners) or a ps_3_0 written from the texture stages | Matches on TS2 | Medium: ps_3_0 limits (no integer ops, 224 constants) |
 | Vertex programs | Shader Model 5 | vs_3_0; constants as registers (c0-191 program, c192-195 screen-space undo, c196 inputs, c254-255 backend) | Matches on TS2 | Medium: a title that relies on b0 (not uploaded) or on more than 192 constants |
-| Depth clamp | Raster state | Emulated per vertex in `RHI_VP_ADJUST` (z clamped to 0..w when w > 0) | Matches on TS2 | Low; a triangle crossing w = 0 can differ from true clamping |
+| Depth clamp | Raster state | Emulated per vertex in `RHI_VP_ADJUST` when w > 0: every title draw is clamped at the far plane, and at the near plane only if screen-space, or additive without depth writes (`near_clamp`) | Matches on TS2: clamping every 3D vertex at the near plane tilted triangles passing the eye, and overlays on them failed their depth test | Medium: an opaque or alpha-blended 3D draw in front of the near plane is clipped, where D3D11 keeps it at depth 0; a triangle reaching past the far plane still tilts |
 | Pixel centres, viewport | D3D10 rules, viewport at fractions of a pixel | Corrected in clip space (`RHI_VP_ADJUST`, the fixed-function projection); the whole-pixel viewport D3D9 needs is rounded outwards and cut back to D3D11's pixels with the scissor | Fixed: rounding to the nearest pixel lost the target's first column and row for every title (the console's half-pixel offset), found by the synthetic capture | Low |
 | Formats | DXGI | Converted where D3D9 has no equal (RGBA swapped, R8/R8G8/16-bit widened, A8 stored white, R11G11B10 widened to half float); sampled depth is `INTZ` | All RHI colour formats mapped | Low; costs upload time and memory |
 | Screen copies | A draw | `StretchRect` with point filtering (a draw would be taken by Remix for the scene) | Matches on TS2 | Low; a scaled copy filters as point, not as a draw would |
@@ -81,22 +82,14 @@ it.
 
 ## What Remix is told (Remix hints)
 
-These apply only when Remix's `d3d9.dll` is loaded (it exports
-`remixapi_InitializeLibrary`), or with `RECOMP_D3D9_REMIX_2D=1`; plain D3D9
-draws as above. They read draw state the renderer already has, never a
-title's own data.
-
-| Hint | Rule | Assumption | Known limits |
-|---|---|---|---|
-| Camera | Each program draw gets WORLD, VIEW and PROJECTION; VIEW comes from the title's camera source when it registers one (`xbox_D3D8SetRemixViewSource`), else from the renderer's guess | A title's real camera is known to its project | Titles with no camera source get the guess; TS2 PAL has none yet |
-| 2D as UI | A title's program draw the renderer judges screen-space (its program uses no projection, or an orthographic one: the same verdict widescreen uses) is marked UI with a fixed texture in `rtx.uiTextures` | Remix composites at the first UI draw, so UI must come after the frame's 3D | Fixed-function 2D is left to Remix's own rule (orthographic, no depth write), unless the title's own test (`xbox_D3D8SetScreenSpaceTest`) calls it screen-space, once the frame has drawn some 3D, and is then handed to D3D9 flat, with WORLD and VIEW identity and an orthographic PROJECTION that puts every vertex where it was (`flat_2d`; not under lighting or fog; `RECOMP_D3D9_FLAT_2D=0` turns it off). Max Payne's HUD, and its graphic novel (after a draw of the novel's own camera), come out as in D3D11. A frame of nothing but such draws (Max Payne's menus) is left traced, washed out: marked UI, flat or not, it came out black Without a test such 2D is not caught; under a register combiner program it is not marked (Remix looks only at the pixel shader's samplers) |
-| Mid-frame 2D | A kind of 2D draw (program, texture, blend, topology) that was followed by 3D in the previous frame is left out | Frame structure changes slowly | One wrong frame when it changes; such 2D (TS2's muzzle glow) is not shown under Remix |
-| Screen-copy passes | 2D that samples a copy of the screen is left out | The copy holds the rasterised picture, not Remix's | Post effects built on screen copies (blur, glow) are lost under Remix |
-| Post passes into textures | A title's fixed-function draw whose WORLD x VIEW x PROJECTION leaves w alone (identity or orthographic) into a texture it renders into, rather than its back buffer, is left out | Such quads build post effects; they never belong in the ray-traced scene | Rainbow Six 3's blur and bloom passes, into a screen-sized texture with every transform identity, were traced and gave Remix their camera (at the origin): the level came out black. The effects they build are lost under Remix |
-| Colour-less draws | A title draw that cannot change colour (blend ZERO, ONE, or no colour written) is left out | It writes only depth or stencil, which Remix does not use | Rainbow Six 3's full-screen depth reset was traced as a red wall |
-| Sky zone | A fixed-function 3D draw before the frame's depth reset (a clear, or a colour-less pass that always passes) gets the sky viewport when the frame before began with fewer draws through another eye, then a reset, then the world, and this draw's eye is far from the world's last one (over half the sky zone's distance) | Unreal draws its sky zone first, through a camera turned as the world's but standing in the sky box | One wrong frame when the layout changes; a camera that jumps far in one frame (a respawn) is taken for sky for a frame |
-| Textures rewritten | Under Remix, a managed texture whose first level (the one Remix hashes) changes after a draw used it is made anew (its contents copied over) before the write, at most once between draws that use it; a whole write of the same texels does not count. Each one is logged | Remix hashes a texture once, at its first use, and keeps that hash when the texels change (unless `rtx.recomputeTextureHashOnWrite`) | Max Payne's graphic novel pages, filled after their first use, were blank under Remix. A texture whose texels really change every frame is made anew every frame, and Remix loads it again every frame |
-| Sky | A title's 3D program draw before any depth-writing draw in the frame, with depth not written and a test every depth passes (off, ALWAYS, or LESSEQUAL against a buffer cleared to 1 this frame: Planet X's backdrop), gets a viewport with minimum depth 1 (Remix's `rtx.skyMinZThreshold`) | Sky is drawn first, with depth off | A sky drawn after the world, or with a depth test, is ray traced as a box and blocks Remix's light |
+The renderer draws what the title asks and tells Remix nothing more.
+Everything Remix needs told about a title's draws (the camera of its program
+draws, which 2D is UI, the sky, passes Remix would mistake for the scene,
+textures to make anew when rewritten) is a mod's job: `recomp_mod.h` calls a
+mod before and after every draw with what the renderer knows of it (the
+program's projection among it), at clears and at `Present`, and lets it set
+the device's transforms and state for that draw or leave the draw out. A
+title's Remix project carries such a mod.
 
 ## Remix settings a title needs (Remix side)
 

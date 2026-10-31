@@ -379,10 +379,11 @@ flowchart LR
 
 | Area | Documents |
 |---|---|
-| Rendering | [Shadow mode](docs/technical/shadow-mode.md) · [Vulkan backend](docs/technical/vulkan-backend.md) · [NV2A shader translation](docs/technical/nv2a-shaders.md) · [Frame interpolation](docs/technical/frame-interpolation.md) · [Resolution and frame rate](docs/technical/resolution-and-framerate.md) · [Widescreen](docs/technical/widescreen-and-resolution.md) |
+| Rendering | [Shadow mode](docs/technical/shadow-mode.md) · [Vulkan backend](docs/technical/vulkan-backend.md) · [D3D9 backend](docs/technical/d3d9-backend.md) · [NV2A shader translation](docs/technical/nv2a-shaders.md) · [Frame interpolation](docs/technical/frame-interpolation.md) · [Resolution and frame rate](docs/technical/resolution-and-framerate.md) · [Widescreen](docs/technical/widescreen-and-resolution.md) |
 | Runtime | [Register model](docs/technical/register-model.md) · [Memory layout](docs/technical/memory-layout.md) · [Indirect calls](docs/technical/indirect-calls.md) · [Kernel replacement](docs/technical/kernel-replacement.md) · [SEH](docs/technical/seh-handling.md) · [C++ exceptions](docs/technical/cpp-exceptions.md) |
 | Debugging | [Memory watchpoints](docs/technical/memory-watchpoints.md) · [xemu as an oracle](docs/technical/xemu-debugging.md) · [Conformance testing](docs/technical/conformance-testing.md) |
-| Project | [Lessons learned](docs/technical/lessons-learned.md) · [Gap analysis vs xemu](docs/technical/gap-analysis.md) · [Candidate games](docs/technical/candidate-games.md) · [Modding models and textures](docs/technical/modding-models-textures.md) |
+| Modding | [Mods: the modder's guide](docs/technical/mods.md) · [Modding models and textures](docs/technical/modding-models-textures.md) |
+| Project | [Lessons learned](docs/technical/lessons-learned.md) · [Gap analysis vs xemu](docs/technical/gap-analysis.md) · [Candidate games](docs/technical/candidate-games.md) |
 | Formats | [XBE](docs/formats/xbe.md) · [Kernel exports](docs/formats/kernel-exports.md) |
 
 ## 🗂️ Repository layout

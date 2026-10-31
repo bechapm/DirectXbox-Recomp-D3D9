@@ -1251,7 +1251,7 @@ static int ff_op_reads_texture(DWORD op, DWORD arg1, DWORD arg2)
 }
 
 /* ================================================================
- * Direct3D 9, for RTX Remix (rhi_d3d9.h)
+ * Direct3D 9, for D3D9 tools (rhi_d3d9.h)
  *
  * Under the D3D9 backend a fixed-function draw is drawn by D3D9's own
  * fixed-function pipeline: no shader, and the title's transforms, lights,
@@ -1263,7 +1263,7 @@ static int ff_op_reads_texture(DWORD op, DWORD arg1, DWORD arg2)
  * time with integer constants and bit tests, which Shader Model 3 does not
  * have. The alpha test is D3D9's own under both. Register combiner programs
  * are not translated here: their draws take stage 0's texture times the
- * diffuse colour (docs/technical/d3d9-remix.md).
+ * diffuse colour (docs/technical/d3d9-backend.md).
  * ================================================================ */
 
 static const float g_d9_identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };

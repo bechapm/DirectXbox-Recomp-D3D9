@@ -87,6 +87,10 @@
  * D3D8 layer (src/d3d) directly and creates the device the same way
  * hle_d3d8.c's shadow_create does.
  *
+ * The mods beside it (src/hle/recomp_mod.h) are loaded as a title's are,
+ * before the device, and are told they are in a replay; what they stored
+ * in the capture as it was made is handed back at the same point.
+ *
  * Between loops every program, texture and depth surface this tool created
  * is deleted and the back buffer is made the target again, so each loop
  * starts from the capture's snapshot alone. What the snapshot does
@@ -103,6 +107,7 @@
 #include "d3d8_vsh.h"
 #include "d3d8_combiners.h"
 #include "d3d8_capture.h"
+#include "recomp_mods.h"
 #if defined(REPLAY_HAVE_HOST)
 #include "host.h"
 #include <pthread.h>
@@ -1655,16 +1660,21 @@ static void replay_chunk(Replay *r, const D3D8CapChunk *c)
     case D3D8CAP_DEPTH_COPY:
         do_depth_copy(r, c);
         break;
-    case D3D8CAP_REMIX_VIEW: {
-        /* The title's camera, for Remix under the D3D9 backend: a replay
-         * has no guest memory for the title's view source to read. */
-        const D3D8CapRemixView *p = c->data;
+    case D3D8CAP_V11_VIEW:
+        /* Version 11's camera for D3D9 tools: what a title-specific tool
+         * needs from its memory is now its mod's notes. */
+        break;
+    case D3D8CAP_TITLE:
+        break;                           /* read before the mods (capture_title) */
+    case D3D8CAP_MOD_NOTE: {
+        const D3D8CapModNote *p = c->data;
 
         if (c->bytes < sizeof *p) {
             r->malformed++;
             break;
         }
-        xbox_D3D8SetRemixCamera(p->m);
+        recomp_mods_replay_note(p->tag, d3d8cap_tail(c, sizeof *p, 0),
+                                c->bytes - (uint32_t)sizeof *p);
         break;
     }
     case D3D8CAP_DEPTH_SURFACE:
@@ -1761,6 +1771,7 @@ static void replay_pass(Replay *r, D3D8CapReader *cap, int loop)
 static void finish_pass(Replay *r, int loop, const char *present_path)
 {
     r->dev->lpVtbl->Swap(r->dev, 0);
+    recomp_mods_frame();                 /* as the title's run does after its Swap */
     if (present_path) {
         UINT pw, ph;
         const uint8_t *px = xbox_D3D8Presented(&pw, &ph);
@@ -1773,6 +1784,42 @@ static void finish_pass(Replay *r, int loop, const char *present_path)
     pump();
     report_loop(r, loop);
     end_loop(r);
+}
+
+/* ------------------------------------------------------------------ mods */
+
+/* The mods beside this tool are loaded as a title's are (recomp_mods.c), so
+ * that what one changes in the picture can be looked at on a captured frame.
+ * There is no title running: no guest memory and no vertex constants of its
+ * own, and its ID only if the capture holds it (version 12). What a mod
+ * needs from the title's memory it stored in the capture as notes, which
+ * replay_chunk hands back. */
+static uint32_t g_title_id;
+
+static uint32_t replay_title_id(void)
+{
+    return g_title_id;
+}
+
+static const RecompModsHost g_mods_host = {
+    .replaying = 1,
+    .title_id  = replay_title_id,
+};
+
+/* The title ID from the snapshot, which carries it first; 0 when it does
+ * not (a capture before version 12). */
+static uint32_t capture_title(D3D8CapReader *cap)
+{
+    D3D8CapChunk c;
+    uint32_t id = 0;
+
+    while (d3d8cap_next(cap, &c) && c.type != D3D8CAP_FRAME_START)
+        if (c.type == D3D8CAP_TITLE && c.bytes >= sizeof(D3D8CapTitle)) {
+            id = ((const D3D8CapTitle *)c.data)->title_id;
+            break;
+        }
+    d3d8cap_rewind(cap);
+    return id;
 }
 
 static void usage(void)
@@ -1911,8 +1958,9 @@ static int replay_main(int argc, char **argv)
         return 1;
     }
     h = d3d8cap_header(cap);
-    note("[replay] %s: frame %u, %ux%u, %u chunks\n",
-         path, h->frame, h->width, h->height, h->chunk_count);
+    g_title_id = capture_title(cap);
+    note("[replay] %s: frame %u, %ux%u, %u chunks, title %08X\n",
+         path, h->frame, h->width, h->height, h->chunk_count, g_title_id);
 
     memset(&r, 0, sizeof r);
     r.width  = h->width  ? h->width  : 640;
@@ -1952,6 +2000,10 @@ static int replay_main(int argc, char **argv)
 #else
         setenv("RECOMP_D3D8_BACKEND", backend, 1);
 #endif
+    /* Before the device, as hle_d3d8.c loads them before the title's: a
+     * mod's device hooks then hear of this one, and its vertex HLSL is in
+     * the first program. */
+    recomp_mods_load(&g_mods_host);
     d3d = xbox_Direct3DCreate8(0);
     hr = d3d ? d3d->lpVtbl->CreateDevice(d3d, 0, 1 /* HAL */, hwnd, 0, &pp, &r.dev)
              : E_FAIL;

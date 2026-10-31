@@ -82,6 +82,34 @@ static int textures_by_walk(void)
 static uint32_t g_stream0_vb;        /* guest X_D3DVertexBuffer */
 static uint32_t g_stream0_stride;
 static uint32_t g_stream_vb[16], g_stream_stride[16];   /* every stream, 0 included */
+
+static int guest_readable(uint32_t va, uint64_t bytes);
+uint32_t hle_d3d8_shadow_base_stream(void);
+
+/* The draw in hand's own buffer, while its shadow draw runs (for the mods:
+ * hle_d3d8_draw_stream); 0 outside one, or when it was not read from a
+ * buffer of the title's. */
+static uint32_t g_draw_vb, g_draw_vb_stride, g_draw_vb_first;
+
+uint32_t hle_d3d8_draw_stream(uint32_t *data, uint32_t *stride, uint32_t *first)
+{
+    if (data)
+        *data = g_draw_vb && guest_readable(g_draw_vb, 12u) ? HLE_MEM32(g_draw_vb + 4u) : 0;
+    if (stride)
+        *stride = g_draw_vb_stride;
+    if (first)
+        *first = g_draw_vb_first;
+    return g_draw_vb;
+}
+
+static void draw_stream_set(uint32_t first)
+{
+    uint32_t base = hle_d3d8_shadow_base_stream();
+
+    g_draw_vb = base ? g_stream_vb[base] : g_stream0_vb;
+    g_draw_vb_stride = base ? g_stream_stride[base] : g_stream0_stride;
+    g_draw_vb_first = first;
+}
 static uint32_t g_base_vertex;
 static int      g_base_vertex_seen;  /* CDevice_SetStateVB has run */
 static int      g_in_notinline;      /* inside SetVertexShaderConstantNotInline */
@@ -1373,7 +1401,9 @@ HLE_EXPORT(D3DDevice_DrawVertices)
         const void *verts = stream0_vertices(start, count, &stride);
         if (verts) {
             hle_d3d8_shadow_set_first_vertex(start);
+            draw_stream_set(start);
             hle_d3d8_shadow_draw(xpt, count, verts, stride, 1);
+            g_draw_vb = 0;
         }
         report();
     }
@@ -1439,7 +1469,9 @@ HLE_EXPORT(D3DDevice_DrawIndexedVertices)
         verts = stream0_vertices(g_base_vertex, vertices, &vstride);
         if (verts) {
             hle_d3d8_shadow_set_first_vertex(g_base_vertex);
+            draw_stream_set(g_base_vertex);
             hle_d3d8_shadow_draw_indexed(xpt, count, idx, verts, vstride, 1);
+            g_draw_vb = 0;
         }
         report();
     }

@@ -82,7 +82,8 @@ static void held_redraw(void);   /* with the overlay's switches, below */
 #include "hle_d3d8_record.h"
 #include "rhi.h"                         /* rhi_set_wait_hooks */
 #include "input_bindings.h"              /* the mouse, for mouse look and mouse: bindings */
-#include "../kernel/xbox_memory_layout.h"  /* the guest lock */
+#include "../kernel/xbox_memory_layout.h"  /* the guest lock, guest memory, the title's name */
+#include "recomp_mods.h"                 /* mods, loaded with the device */
 
 void hle_d3d8_push_constants_sync(void);   /* hle_d3d8_vertex.c */
 int  hle_d3d8_pb_walking(void);             /* hle_d3d8_vertex.c */
@@ -2929,6 +2930,24 @@ int hle_d3d8_title_ltcg(void)
     return g_title_ltcg;
 }
 
+uint32_t hle_d3d8_draw_stream(uint32_t *data, uint32_t *stride, uint32_t *first);  /* hle_d3d8_vertex.c */
+
+/* The running title, as the mods are handed it (recomp_mods.h). */
+static void *mods_guest_pointer(uint32_t va)
+{
+    return (void *)((uintptr_t)va + (uintptr_t)xbox_GetMemoryOffset());
+}
+
+static const RecompModsHost g_mods_host = {
+    .replaying        = 0,
+    .title_id         = recomp_config_title_id,
+    .title_name       = xbox_XbeTitleName,
+    .guest_pointer    = mods_guest_pointer,
+    .vertex_constants = xbox_D3D8VertexConstants,
+    .capture_note     = hle_d3d8_capture_note,
+    .draw_stream      = hle_d3d8_draw_stream,
+};
+
 /* HRESULT Direct3D_CreateDevice(UINT Adapter, D3DDEVTYPE DeviceType,
  *     HWND hFocusWindow, DWORD BehaviorFlags,
  *     D3DPRESENT_PARAMETERS *pPresentationParameters,
@@ -2943,6 +2962,7 @@ HLE_EXPORT(Direct3D_CreateDevice)
     uint32_t pp_va = g_hle_ltcg_nargs == 3 ? HLE_ARG(1) : HLE_ARG(4);
 
     first_call(&seen, "Direct3D_CreateDevice", pp_va);
+    recomp_mods_load(&g_mods_host);
     if (original_missing(hle_original_Direct3D_CreateDevice, "Direct3D_CreateDevice"))
         HLE_RETURN(0x80004005u);                 /* E_FAIL */
     g_in_create_device = 1;
@@ -3576,6 +3596,7 @@ static void frame_end_shadow(void)
             if (b.QuadPart - a.QuadPart > g_swap_present_max)
                 g_swap_present_max = b.QuadPart - a.QuadPart;
         }
+        recomp_mods_frame();
         /* The frame just shown is the one frame interpolation draws toward
          * next; it starts keeping the one after. */
         hle_d3d8_interp_frame_end();

@@ -544,7 +544,7 @@ static void present_scene(void)
     if (!rhi_swapchain_view() || !s->rhi_scene_srv)
         return;
 
-    /* D3D9 (RTX Remix): the scene is copied to a back buffer of its own
+    /* D3D9: the scene is copied to a back buffer of its own
      * size, which Present puts in the window at the picture's shape, so the
      * overlay is drawn over the whole of it. */
     if (rhi_d3d9_active()) {
@@ -714,9 +714,10 @@ static HRESULT create_device_and_swap_chain(
 #ifdef _DEBUG
     dd.debug = 1;
 #endif
-    /* D3D9, for RTX Remix: the back buffer is the scene's size and stays
-     * so (rhi_d3d9_present_scene), since Remix takes only the draws into a
-     * target of the back buffer's size for the scene's. */
+    /* D3D9: the back buffer is the scene's size and stays so
+     * (rhi_d3d9_present_scene), since D3D9 tools take the draws into a
+     * target of the back buffer's size for the scene's (RTX Remix only
+     * those). */
     if (strcmp(rhi_backend_name(), "d3d9") == 0)
         d3d8_display_scene_size(guest_w, guest_h, &dd.width, &dd.height);
     if (rhi_device_create(&dd) != 0)

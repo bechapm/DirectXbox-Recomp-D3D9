@@ -38,6 +38,8 @@ add_library(xbox_hle STATIC
     # The host pads behind the replaced XAPI input, through src/input's
     # bindings (SDL3 or XInput), plus RECOMP_FAKE_INPUT / RECOMP_INPUT_SEQ.
     input_host.c
+    # Mods beside the game (recomp_mod.h), loaded as the device is made.
+    recomp_mods.c
 )
 
 # Host audio: XAudio2 on Windows, SDL3 elsewhere, with the same switches
