@@ -3,7 +3,7 @@
 `rhi_d3d9.c` is meant to draw what the D3D11 backend draws, for every title,
 not only for TimeSplitters 2 under RTX Remix. This page lists every place the
 two take different paths, what each costs, and how it is tested, so that a gap
-shows up here before a title trips over it. [d3d9-remix.md](d3d9-remix.md) is
+shows up here before a title trips over it. [d3d9-backend.md](d3d9-backend.md) is
 the design; this is the audit.
 
 Three kinds of difference are kept apart, because each has a different owner:

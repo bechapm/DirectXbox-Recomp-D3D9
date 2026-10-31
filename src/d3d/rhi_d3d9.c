@@ -1,14 +1,14 @@
 /**
- * rhi_d3d9.c -- the Direct3D 9 backend of rhi.h, for NVIDIA RTX Remix.
+ * rhi_d3d9.c -- the Direct3D 9 backend of rhi.h, for D3D9 tools.
  *
- * Remix is a Direct3D 9 runtime (dxvk-remix): put its d3d9.dll beside the
- * executable and every D3D9 call this backend makes goes to it, and it
- * path-traces the scene those calls describe. The 64-bit runtime is used
- * directly, without the bridge that 32-bit titles need. Without Remix the
- * system's own d3d9.dll draws, which is how this backend is checked against
- * the others. RECOMP_D3D8_BACKEND=d3d9 chooses it.
- * docs/technical/d3d9-remix.md is the design; rhi_d3d9.h is what the
- * renderer does differently for it.
+ * Many PC tools sit between a game and Direct3D 9 and work from the calls
+ * it makes: RTX Remix (a D3D9 runtime, dxvk-remix, that path-traces the
+ * scene those calls describe), post-processing injectors, frame debuggers,
+ * texture dumpers. Put a tool's d3d9.dll beside the executable and every
+ * D3D9 call this backend makes goes to it; without one the system's own
+ * d3d9.dll draws, which is how this backend is checked against the others.
+ * RECOMP_D3D8_BACKEND=d3d9 chooses it. docs/technical/d3d9-backend.md is
+ * the design; rhi_d3d9.h is what the renderer does differently for it.
  *
  * What D3D9 lacks against D3D11, and what is done instead:
  *
@@ -508,8 +508,8 @@ static int d9_device_create(const RhiDeviceDesc *dd)
         fprintf(stderr, "[RHI] d3d9: needs a window\n");
         return -1;
     }
-    /* By name, so the d3d9.dll beside the executable -- Remix's -- is the
-     * one found before the system's. */
+    /* By name, so the d3d9.dll beside the executable -- a D3D9 tool's -- is
+     * the one found before the system's. */
     g_dll = LoadLibraryA("d3d9.dll");
     create = g_dll ? (PFN_Direct3DCreate9)(void *)GetProcAddress(g_dll, "Direct3DCreate9") : NULL;
     if (!create || !(g_d3d = create(D3D_SDK_VERSION))) {
@@ -2371,8 +2371,8 @@ static int           g_mod_called;      /* how many befores ran for it */
 /* After prepare_draw: the mods' befores, in the order they asked. 0 when
  * the draw is to be left out (the befores after that one are not asked,
  * and no after is called). */
-static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, int indexed, uint32_t first,
-                           uint32_t vertices)
+static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, const void *indices,
+                           uint32_t index_bytes, int32_t base, uint32_t first, uint32_t vertices)
 {
     RecompModDraw *d = &g_mod_d;
     const RhiDepthDesc *dd = g_b.depth ? &g_b.depth->d : NULL;
@@ -2416,9 +2416,13 @@ static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, int indexed, uint3
     d->program_projection_set = g_b.vs && g_prog_proj_set;
     if (d->program_projection_set)
         memcpy(d->program_projection, g_prog_proj, sizeof d->program_projection);
-    d->indexed = indexed;
+    d->indexed = indices != NULL;
     d->first_vertex = first;
     d->vertices = vertices;
+    d->indices = indices;
+    d->index_bytes = index_bytes;
+    d->index_count = indices ? vertices : 0;
+    d->base_vertex = base;
     for (i = 0; i < g_mod_draw_n; i++) {
         if (!g_mod_draw[i].before) {
             g_mod_called++;
@@ -2460,7 +2464,7 @@ static void d9_draw(uint32_t n, uint32_t first)
         return;
     if (!g_b.layout && first + n > VID_COUNT)
         return;
-    if (!mod_before_draw(type, prims, 0, first, n))
+    if (!mod_before_draw(type, prims, NULL, 0, 0, first, n))
         return;
     hr = IDirect3DDevice9_DrawPrimitive(g_dev, type, first, prims);
     if (FAILED(hr))
@@ -2504,7 +2508,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     memcpy(dst, src, bytes);
     IDirect3DIndexBuffer9_Unlock(g_iring[which]);
     IDirect3DDevice9_SetIndices(g_dev, g_iring[which]);
-    if (mod_before_draw(type, prims, 1, 0, 0)) {
+    if (mod_before_draw(type, prims, src, isz, base, 0, n)) {
         hr = IDirect3DDevice9_DrawIndexedPrimitive(g_dev, type, base, lo, hi - lo + 1,
                                                    g_iring_pos[which] / isz, prims);
         if (FAILED(hr))
@@ -2682,7 +2686,7 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     return 0;
 }
 
-/* ---- fixed function and Remix --------------------------------------------------------- */
+/* ---- fixed function ------------------------------------------------------------------ */
 
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value)
 {

@@ -1,14 +1,15 @@
 /**
  * rhi_d3d9.h -- what only the Direct3D 9 backend (rhi_d3d9.c) does.
  *
- * The D3D9 backend exists for NVIDIA RTX Remix, which hooks Direct3D 9 and
- * path-traces what a title draws. Remix does not read shaders: it rebuilds
- * the scene from the fixed-function state a D3D9 title sets around each draw
- * -- WORLD, VIEW and PROJECTION, the texture in stage 0, the vertex
- * declaration's POSITION, NORMAL and TEXCOORD -- and, for a draw through a
- * vertex shader, from the positions that shader writes, carried back into
- * world space through VIEW and PROJECTION. docs/technical/d3d9-remix.md is
- * the design.
+ * The D3D9 backend exists for tools that hook Direct3D 9 and work from what
+ * a title draws there. The most demanding, RTX Remix, does not read shaders:
+ * it rebuilds the scene from the fixed-function state a D3D9 title sets
+ * around each draw -- WORLD, VIEW and PROJECTION, the texture in stage 0,
+ * the vertex declaration's POSITION, NORMAL, COLOR0 and TEXCOORD -- and, for
+ * a draw through a vertex shader, from the positions that shader writes,
+ * carried back into world space through VIEW and PROJECTION. So the backend
+ * draws the way a PC D3D9 game of the era would.
+ * docs/technical/d3d9-backend.md is the design.
  *
  * So under this backend the renderer draws differently from D3D11 and
  * Vulkan in three places, and these are the calls it makes there:
@@ -24,12 +25,11 @@
  *  - A register-combiner program is translated as under the other backends,
  *    into Shader Model 3 under a vertex program and Shader Model 2 (ps_2_a)
  *    under fixed function, which D3D9 pairs only with ps_2_x
- *    (NV2ACombinerState.host). Remix ignores pixel shaders, so these only
- *    shape what is rasterised: 2D, the title's full-screen passes, and
- *    everything when Remix is not installed.
+ *    (NV2ACombinerState.host). A tool that ignores pixel shaders (Remix)
+ *    sees only the texture stages; the shaders shape what is rasterised.
  *  - Each program draw's projection is handed to mods
- *    (rhi_d3d9_program_projection), so that a mod for Remix can tell it how
- *    to follow the positions the program writes back into the world.
+ *    (rhi_d3d9_program_projection), so that a mod can tell a tool how to
+ *    follow the positions the program writes back into the world.
  *
  * Every call here does nothing unless the D3D9 backend is the one in use,
  * so the renderer calls them without asking first where that is simpler.
@@ -67,13 +67,12 @@ int  rhi_d3d9_active(void);
 #define RHI_D3D9_VSH_SCREENSPACE_REG  192
 #define RHI_D3D9_VSH_VERTEXDATA_REG   196
 
-/* The D3D9 input semantic NV2A vertex register v<reg> is declared as, in
- * both the generated vs_3_0 program (d3d8_vsh.c) and the vertex
- * declaration (rhi_d3d9.c reads "ATTR<reg>" elements through it). Remix
- * finds a draw's positions, normals and texture coordinates by these, so
- * they follow the XDK's register convention: v0 POSITION, v1 BLENDWEIGHT,
- * v2 NORMAL, v3 and v4 COLOR0 and 1, v9-v12 TEXCOORD0-3. *index receives
- * the semantic index. */
+/* The D3D9 input semantic NV2A vertex register v<reg> has by the XDK's
+ * register convention: v0 POSITION, v1 BLENDWEIGHT, v2 NORMAL, v3 and v4
+ * COLOR0 and 1, v9-v12 TEXCOORD0-3. It is the fallback: d3d8_vsh.c names a
+ * program's inputs by where they go (vsh_input_attrs), and rhi_d3d9.c reads
+ * any plain "ATTR<reg>" element through this. *index receives the semantic
+ * index. */
 const char *rhi_d3d9_attr_semantic(int reg, int *index);
 
 /* ---- fixed function ---------------------------------------------------------------- */
@@ -126,7 +125,7 @@ int  rhi_d3d9_clear_rects(RhiView *color, RhiView *depth, uint32_t width, uint32
 int  rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                         const RhiRect *dst_rect);
 
-/* ---- what Remix is told ----------------------------------------------------------- */
+/* ---- what a D3D9 tool is told ---------------------------------------------------- */
 
 /* The projection of the next draw's vertex program, as a D3D row-vector
  * PROJECTION (d3d8_vsh.c), or NULL when the program projects through

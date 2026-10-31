@@ -1660,9 +1660,9 @@ static void replay_chunk(Replay *r, const D3D8CapChunk *c)
     case D3D8CAP_DEPTH_COPY:
         do_depth_copy(r, c);
         break;
-    case D3D8CAP_REMIX_VIEW:
-        /* Version 11's camera for Remix: what a title's Remix support needs
-         * from its memory is now its mod's notes. */
+    case D3D8CAP_V11_VIEW:
+        /* Version 11's camera for D3D9 tools: what a title-specific tool
+         * needs from its memory is now its mod's notes. */
         break;
     case D3D8CAP_TITLE:
         break;                           /* read before the mods (capture_title) */

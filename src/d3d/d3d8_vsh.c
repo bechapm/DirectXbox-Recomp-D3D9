@@ -84,6 +84,12 @@ static RhiBuffer *g_vsh_cb = NULL;
  * layout, which reads the vertex at the wrong offsets. */
 #define VSH_LAYOUTS 64
 
+/* What an input register holds, as Direct3D 9 names it (vsh_input_attrs). */
+typedef struct {
+    const char *name;
+    int         index;
+} VshAttr;
+
 /* Shader cache: maps microcode hash to compiled shader + input layout */
 typedef struct {
     uint32_t            hash;
@@ -98,6 +104,7 @@ typedef struct {
     int                 decl_layout_count;
     int                 decl_layout_next;
     uint16_t            inputs_read;  /* Which v registers are read */
+    VshAttr             attrs[NV2A_VS_MAX_INPUTS];  /* what each one holds */
     int                 proj_reg;     /* the projection register it reads, or -1 */
     int                 pos_input;    /* v# oPos is copied from, or -1 */
     int                 pos_scale;    /* oPos.x = v.x * c[pos_scale].x + c[pos_offset].x, */
@@ -257,6 +264,172 @@ static uint32_t fnv1a_hash(const void *data, size_t len)
         h *= 0x01000193;
     }
     return h;
+}
+
+/* ================================================================
+ * What a Program's Inputs Hold
+ * ================================================================ */
+
+/* The inputs a source reads, directly or through the temporaries. */
+static uint16_t vsh_src_feeds(const NV2AVshSrcOperand *src, const uint16_t *temp)
+{
+    if (src->reg_type == NV2A_VSH_REG_INPUT && src->reg_index >= 0 &&
+        src->reg_index < NV2A_VS_MAX_INPUTS)
+        return (uint16_t)(1u << src->reg_index);
+    if (src->reg_type == NV2A_VSH_REG_TEMP && src->reg_index >= 0 && src->reg_index <= 12)
+        return temp[src->reg_index];
+    return 0;
+}
+
+static void vsh_dst_feeds(const NV2AVshDstOperand *dst, uint16_t from, uint16_t *temp,
+                          uint16_t *out)
+{
+    if (dst->output_reg != NV2A_VSH_OUT_NONE && (int)dst->output_reg < NV2A_VSH_OUT_COUNT &&
+        nv2a_vsh_output_write_mask(dst))
+        out[dst->output_reg] |= from;
+    if (dst->temp_reg >= 0 && dst->temp_reg <= 12 && dst->write_mask) {
+        temp[dst->temp_reg] = dst->write_mask == 0xF ? from : temp[dst->temp_reg] | from;
+        if (dst->temp_reg == 12)
+            out[NV2A_VSH_OUT_POS] |= from;      /* R12 is oPos */
+    }
+}
+
+static int vsh_one_input(uint16_t inputs)
+{
+    int i;
+
+    if (!inputs || (inputs & (inputs - 1)))
+        return -1;
+    for (i = 0; !(inputs & (1u << i)); i++)
+        ;
+    return i;
+}
+
+static int vsh_attr_taken(const VshAttr *attr, uint16_t named, const char *name, int index)
+{
+    int i;
+
+    for (i = 0; i < NV2A_VS_MAX_INPUTS; i++)
+        if ((named & (1u << i)) && attr[i].index == index && strcmp(attr[i].name, name) == 0)
+            return 1;
+    return 0;
+}
+
+static int vsh_name_input(VshAttr *attr, uint16_t *named, int reg, const char *name, int index)
+{
+    if (reg < 0 || (*named & (1u << reg)) || vsh_attr_taken(attr, *named, name, index))
+        return 0;
+    attr[reg].name = name;
+    attr[reg].index = index;
+    *named |= (uint16_t)(1u << reg);
+    return 1;
+}
+
+/**
+ * What each input register holds, from where the program sends it.
+ *
+ * A title lays out its own programs' inputs. The Xbox's usual meanings (v0
+ * position, v2 normal, v3 colour, v9 texture) are only a habit: TimeSplitters
+ * 2 keeps its level's position in v1, its colour in v2 and its texture
+ * coordinates in v3. Direct3D 9 names each input in the vertex declaration, so
+ * naming them by habit called the colour a normal and the coordinates a colour.
+ * The draw does not care, as long as the program and the declaration agree,
+ * but anything reading the declaration does: RTX Remix threw away every
+ * vertex colour ("unsupported color0"), and with it all baked light and every
+ * fade.
+ *
+ * So each input is followed through the temporaries to the outputs. What goes
+ * to oPos is the position; what alone reaches oDn is colour n and oTn texture
+ * n; what goes through a DP3 otherwise is the normal. An output two inputs feed
+ * tells nothing, and those inputs, and any left over, keep their usual meaning,
+ * or a spare name when a neighbour has taken it: each name may be used once.
+ */
+static void vsh_input_attrs(const NV2AVshProgram *program, VshAttr *attr)
+{
+    uint16_t temp[13], out[NV2A_VSH_OUT_COUNT], dp3 = 0, read = program->inputs_read, pos;
+    uint16_t named = 0;
+    int i, n, spare = 8;
+
+    memset(temp, 0, sizeof temp);
+    memset(out, 0, sizeof out);
+    for (i = 0; i < program->length; i++) {
+        const NV2AVshInstruction *inst = &program->insns[i];
+        uint16_t mac = 0, ilu = 0;
+
+        switch (inst->mac_op) {
+        case NV2A_VSH_MAC_NOP:
+        case NV2A_VSH_MAC_ARL:
+            break;
+        case NV2A_VSH_MAC_MOV:
+            mac = vsh_src_feeds(&inst->mac_src[0], temp);
+            break;
+        case NV2A_VSH_MAC_ADD:
+            mac = vsh_src_feeds(&inst->mac_src[0], temp) | vsh_src_feeds(&inst->mac_src[2], temp);
+            break;
+        case NV2A_VSH_MAC_MAD:
+            mac = vsh_src_feeds(&inst->mac_src[2], temp);
+            /* fall through */
+        default:
+            mac |= vsh_src_feeds(&inst->mac_src[0], temp) | vsh_src_feeds(&inst->mac_src[1], temp);
+            break;
+        }
+        if (inst->mac_op == NV2A_VSH_MAC_DP3)
+            dp3 |= mac;
+        if (inst->ilu_op != NV2A_VSH_ILU_NOP)
+            ilu = vsh_src_feeds(&inst->ilu_src, temp);
+        /* The two units read the registers as they stood before the slot. */
+        if (inst->mac_op != NV2A_VSH_MAC_NOP && inst->mac_op != NV2A_VSH_MAC_ARL)
+            vsh_dst_feeds(&inst->mac_dst, mac, temp, out);
+        if (inst->ilu_op != NV2A_VSH_ILU_NOP)
+            vsh_dst_feeds(&inst->ilu_dst, ilu, temp, out);
+    }
+
+    for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
+        attr[i].name = rhi_d3d9_attr_semantic(i, &attr[i].index);
+    }
+
+    pos = out[NV2A_VSH_OUT_POS] & read;
+    if (pos & 1)
+        vsh_name_input(attr, &named, 0, "POSITION", 0);
+    else if (pos) {
+        for (i = 0; !(pos & (1u << i)); i++)
+            ;
+        vsh_name_input(attr, &named, i, "POSITION", 0);
+    }
+    for (n = 0; n < 2; n++) {
+        uint16_t c = out[n ? NV2A_VSH_OUT_D1 : NV2A_VSH_OUT_D0] & read & ~named;
+
+        if (vsh_one_input(c) < 0)
+            c &= (uint16_t)~dp3;
+        vsh_name_input(attr, &named, vsh_one_input(c), "COLOR", n);
+    }
+    for (n = 0; n < 4; n++) {
+        uint16_t t = out[NV2A_VSH_OUT_T0 + n] & read & ~named;
+
+        vsh_name_input(attr, &named, vsh_one_input(t), "TEXCOORD", n);
+    }
+    {
+        uint16_t d = dp3 & read & ~named;
+
+        if (d) {
+            for (i = 0; !(d & (1u << i)); i++)
+                ;
+            vsh_name_input(attr, &named, i, "NORMAL", 0);
+        }
+    }
+
+    /* The rest keep their usual name unless it has gone. */
+    for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
+        int index;
+        const char *name;
+
+        if (!(read & (1u << i)) || (named & (1u << i)))
+            continue;
+        name = rhi_d3d9_attr_semantic(i, &index);
+        if (!vsh_name_input(attr, &named, i, name, index))
+            while (spare < 15 && !vsh_name_input(attr, &named, i, "TEXCOORD", spare++))
+                ;
+    }
 }
 
 /* ================================================================
@@ -823,21 +996,21 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
 
     /* Input structure - only declare used inputs. Direct3D 9 matches a
      * vertex declaration to a shader by usage, which has no generic one, so
-     * there each register takes the semantic rhi_d3d9_attr_semantic gives it
-     * -- POSITION, NORMAL, TEXCOORD0 -- which is also what tells RTX Remix
-     * what each one holds. */
+     * there each register is named for what it holds (vsh_input_attrs),
+     * which is also what tells RTX Remix. */
     sb_append(&sb, "struct VS_IN {\n");
-    for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
-        if (inputs & (1u << i)) {
-            int sem_index;
-            const char *sem = rhi_d3d9_attr_semantic(i, &sem_index);
+    {
+        VshAttr attrs[NV2A_VS_MAX_INPUTS];
 
-            sb_append(&sb,
-                "#ifdef RHI_D3D9\n"
-                "    float4 v%d : %s%d;\n"
-                "#else\n"
-                "    float4 v%d : ATTR%d;\n"
-                "#endif\n", i, sem, sem_index, i, i);
+        vsh_input_attrs(program, attrs);
+        for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
+            if (inputs & (1u << i))
+                sb_append(&sb,
+                    "#ifdef RHI_D3D9\n"
+                    "    float4 v%d : %s%d;\n"
+                    "#else\n"
+                    "    float4 v%d : ATTR%d;\n"
+                    "#endif\n", i, attrs[i].name, attrs[i].index, i, i);
         }
     }
     sb_append(&sb, "};\n\n");
@@ -1200,8 +1373,17 @@ static UINT input_format_size(RhiFormat fmt)
     }
 }
 
+/* An input's element: what the program calls it, on any renderer. */
+static void vsh_elem_name(RhiVertexElement *elem, const VshAttr *attrs, int reg)
+{
+    int d3d9 = rhi_d3d9_active();
+
+    elem->semantic       = d3d9 ? attrs[reg].name : "ATTR";
+    elem->semantic_index = d3d9 ? (UINT)attrs[reg].index : (UINT)reg;
+}
+
 static RhiVertexLayout *create_vsh_input_layout(
-    uint16_t inputs_read, DWORD fvf, const RhiShader *vs)
+    uint16_t inputs_read, DWORD fvf, const RhiShader *vs, const VshAttr *attrs)
 {
     RhiVertexElement elems[NV2A_VS_MAX_INPUTS];
     UINT elem_count = 0;
@@ -1215,8 +1397,7 @@ static RhiVertexLayout *create_vsh_input_layout(
 
         RhiFormat fmt = default_input_format(i, fvf);
 
-        elems[elem_count].semantic       = "ATTR";
-        elems[elem_count].semantic_index = (UINT)i;
+        vsh_elem_name(&elems[elem_count], attrs, i);
         elems[elem_count].format         = fmt;
         elems[elem_count].slot           = 0;
         elems[elem_count].offset         = offset;
@@ -1371,6 +1552,7 @@ static VshCacheEntry *compile_shader(const DWORD *microcode, int num_insns,
 
     entry->vs          = vs;
     entry->inputs_read = program.inputs_read;
+    vsh_input_attrs(&program, entry->attrs);
     entry->proj_reg    = g_emit_proj_reg;
     entry->pos_input   = g_emit_pos_input;
     entry->pos_scale   = g_emit_pos_scale;
@@ -1407,12 +1589,12 @@ static int vertex_format_components(RhiFormat f)
 }
 
 static RhiVertexLayout *create_vsh_input_layout_decl(
-    uint16_t inputs_read, const NV2AVshSlot *vsh, const RhiShader *vs)
+    uint16_t inputs_read, const NV2AVshSlot *vsh, const RhiShader *vs, const VshAttr *attrs)
 {
     RhiVertexElement elems[NV2A_VS_MAX_INPUTS + 1];
     RhiVertexLayout *layout = NULL;
     UINT elem_count = 0;
-    int i, j, has_v0 = 0;
+    int i, j, has_pos = 0;
     const D3D8VshInput *pos = NULL;
 
     for (i = 0; i < NV2A_VS_MAX_INPUTS; i++) {
@@ -1432,14 +1614,13 @@ static RhiVertexLayout *create_vsh_input_layout_decl(
         /* D3D9 binds only what is fed, and its R8_UNORM is a real PBYTE1. */
         if (!in && rhi_d3d9_active())
             continue;
-        elems[elem_count].semantic       = "ATTR";
-        elems[elem_count].semantic_index = (UINT)i;
+        vsh_elem_name(&elems[elem_count], attrs, i);
         elems[elem_count].format         = in ? in->format : RHI_FORMAT_R8_UNORM;
         elems[elem_count].slot           = 0;
         elems[elem_count].offset         = in ? in->offset : 0;
         elem_count++;
-        if (i == 0)
-            has_v0 = 1;
+        if (strcmp(attrs[i].name, "POSITION") == 0)
+            has_pos = 1;
         if (in && !pos && (in->format == RHI_FORMAT_R32G32B32_FLOAT ||
                            in->format == RHI_FORMAT_R32G32B32A32_FLOAT))
             pos = in;
@@ -1447,15 +1628,13 @@ static RhiVertexLayout *create_vsh_input_layout_decl(
     if (elem_count == 0)
         return NULL;
     /* RTX Remix takes a draw's vertices from the element whose usage is
-     * POSITION, and leaves out a draw that has none. v0 is that usage here
-     * (rhi_d3d9_attr_semantic), but a program need not keep its position
-     * there: TimeSplitters 2's level is v1, and none of it was ray traced.
-     * Without a v0, the first three- or four-float register the program
-     * reads is given to Remix as the position too; the program itself never
-     * reads the extra element. Remix's vertex capture takes the program's
-     * own output position anyway; this one gives it the vertices to count
-     * and hash. */
-    if (rhi_d3d9_active() && !has_v0 && pos) {
+     * POSITION, and leaves out a draw that has none. A program that sends no
+     * input to oPos has none by name (vsh_input_attrs): then the first three-
+     * or four-float register it reads is given to Remix as the position too;
+     * the program itself never reads the extra element. Remix's vertex
+     * capture takes the program's own output position anyway; this one gives
+     * it the vertices to count and hash. */
+    if (rhi_d3d9_active() && !has_pos && pos) {
         elems[elem_count].semantic       = "POSITION";
         elems[elem_count].semantic_index = 0;
         elems[elem_count].format         = pos->format;
@@ -1496,7 +1675,7 @@ static RhiVertexLayout *get_cached_layout(VshCacheEntry *entry, DWORD fvf)
         entry->layout_next = (entry->layout_next + 1) % VSH_LAYOUTS;
         rhi_vertex_layout_destroy(entry->layouts[i]);
     }
-    entry->layouts[i]      = create_vsh_input_layout(mask, fvf, entry->vs);
+    entry->layouts[i]      = create_vsh_input_layout(mask, fvf, entry->vs, entry->attrs);
     entry->layout_masks[i] = key;
     return entry->layouts[i];
 }
@@ -1518,7 +1697,7 @@ static RhiVertexLayout *get_cached_layout_decl(VshCacheEntry *entry, const NV2AV
         entry->decl_layout_next = (entry->decl_layout_next + 1) % VSH_LAYOUTS;
         rhi_vertex_layout_destroy(entry->decl_layouts[i]);
     }
-    entry->decl_layouts[i] = create_vsh_input_layout_decl(entry->inputs_read, vsh, entry->vs);
+    entry->decl_layouts[i] = create_vsh_input_layout_decl(entry->inputs_read, vsh, entry->vs, entry->attrs);
     entry->decl_keys[i] = vsh->decl_hash;
     return entry->decl_layouts[i];
 }
@@ -2139,7 +2318,7 @@ uint32_t xbox_D3D8VertexConstants(uint32_t first, uint32_t count, float (*out)[4
 
 /* RECOMP_D3D9_SKIP_VS=<hash>[,<hash>...]: a test switch. Under D3D9, draws
  * through those programs (hex, as the logs print them) are left out, to
- * find which draws a fault in Remix's picture comes with. */
+ * find which draws a fault in a D3D9 tool's picture comes with. */
 static int skip_vs_hash(uint32_t hash)
 {
     static uint32_t list[32];

@@ -108,7 +108,8 @@ extern "C" {
  * version 8 the screen copies (a title reading its own frame back into a
  * texture), version 9 the scene's pixels as the frame begins, version 10
  * the depth copies (a title reading its depth buffer as a colour texture),
- * version 11 the camera the D3D9 backend gave RTX Remix (no longer written),
+ * version 11 a camera for D3D9 tools, read from guest memory (no longer
+ * written: a mod stores what it needs as notes),
  * version 12 the title's ID and the mods' notes (recomp_mod.h). */
 #define D3D8CAP_VERSION      12u
 /* The oldest version the reader still accepts. A bump that only adds chunk
@@ -160,7 +161,7 @@ enum {
     D3D8CAP_SCREEN_COPY         = 31, /* D3D8CapScreenCopy (version 8) */
     D3D8CAP_SCENE               = 32, /* D3D8CapScene + rows (version 9) */
     D3D8CAP_DEPTH_COPY          = 33, /* D3D8CapScreenCopy, has_rect 0 (version 10) */
-    D3D8CAP_REMIX_VIEW          = 34, /* version 11 only: skipped */
+    D3D8CAP_V11_VIEW            = 34, /* version 11 only: skipped */
     D3D8CAP_TITLE               = 35, /* D3D8CapTitle (version 12) */
     D3D8CAP_MOD_NOTE            = 36, /* D3D8CapModNote + bytes (version 12) */
     D3D8CAP_CHUNK_KINDS         = 37  /* one past the last, for per-kind counters */
@@ -309,10 +310,10 @@ typedef struct {
     int32_t  at_x, at_y;
 } D3D8CapScreenCopy;
 
-/* D3D8CAP_REMIX_VIEW was the camera the D3D9 backend handed RTX Remix,
- * read from guest memory, which a replay has none of. What a title's Remix
- * support needs from its memory is now its mod's to store (MOD_NOTE), so
- * the chunk is no longer written, and a version 11 capture's are skipped. */
+/* D3D8CAP_V11_VIEW was a camera the D3D9 backend handed D3D9 tools, read
+ * from guest memory, which a replay has none of. What a title-specific
+ * tool needs from its memory is now its mod's to store (MOD_NOTE), so the
+ * chunk is no longer written, and a version 11 capture's are skipped. */
 
 /* The title the capture was made of: its certificate's title ID (0 if the
  * run had none), first in the snapshot. A replay hands it to the mods it
