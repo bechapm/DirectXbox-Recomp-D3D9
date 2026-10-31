@@ -204,6 +204,9 @@ struct host_window {
     void *layer;                        /* host_window_present_target */
     SDL_AtomicInt focus;
     SDL_AtomicInt fullscreen;
+    /* The free pointer (host_window_pointer): position and window size in
+     * 1/16 units, written by the event loop. */
+    SDL_AtomicInt ptr_in, ptr_x, ptr_y, ptr_w, ptr_h;
 };
 
 static host_window g_window;
@@ -572,6 +575,39 @@ void host_window_set_relative_mouse(host_window *w, int on)
     recomp_host_call_main(relative_on_main, &op);
 }
 
+static void cursor_on_main(void *arg)
+{
+    window_op *op = arg;
+
+    if (op->on)
+        SDL_ShowCursor();
+    else
+        SDL_HideCursor();
+}
+
+void host_window_show_cursor(host_window *w, int on)
+{
+    window_op op;
+
+    if (!w)
+        return;
+    memset(&op, 0, sizeof op);
+    op.w = w;
+    op.on = on;
+    recomp_host_call_main(cursor_on_main, &op);
+}
+
+int host_window_pointer(host_window *w, float *x, float *y, float *width, float *height)
+{
+    if (!w || !SDL_GetAtomicInt(&w->ptr_in) || !SDL_GetAtomicInt(&w->focus))
+        return 0;
+    if (x)      *x = (float)SDL_GetAtomicInt(&w->ptr_x) / 16.0f;
+    if (y)      *y = (float)SDL_GetAtomicInt(&w->ptr_y) / 16.0f;
+    if (width)  *width = (float)SDL_GetAtomicInt(&w->ptr_w) / 16.0f;
+    if (height) *height = (float)SDL_GetAtomicInt(&w->ptr_h) / 16.0f;
+    return 1;
+}
+
 void host_window_set_fullscreen(host_window *w, int on)
 {
     window_op op;
@@ -695,10 +731,25 @@ static void dispatch_event(const SDL_Event *e)
         break;
     case SDL_EVENT_MOUSE_MOTION:
         /* Only the held pointer's: a free one crossing the window is
-         * someone on their way to another. */
-        if (e->motion.windowID == w->id && w->cb.on_mouse_motion &&
-            SDL_GetWindowRelativeMouseMode(w->sdl))
-            w->cb.on_mouse_motion(w->cb.user, e->motion.xrel, e->motion.yrel);
+         * someone on their way to another -- or pointing at a menu, which
+         * is kept for host_window_pointer. */
+        if (e->motion.windowID == w->id && SDL_GetWindowRelativeMouseMode(w->sdl)) {
+            if (w->cb.on_mouse_motion)
+                w->cb.on_mouse_motion(w->cb.user, e->motion.xrel, e->motion.yrel);
+        } else if (e->motion.windowID == w->id) {
+            int ww = 0, wh = 0;
+
+            SDL_GetWindowSize(w->sdl, &ww, &wh);
+            SDL_SetAtomicInt(&w->ptr_x, (int)(e->motion.x * 16.0f));
+            SDL_SetAtomicInt(&w->ptr_y, (int)(e->motion.y * 16.0f));
+            SDL_SetAtomicInt(&w->ptr_w, ww * 16);
+            SDL_SetAtomicInt(&w->ptr_h, wh * 16);
+            SDL_SetAtomicInt(&w->ptr_in, 1);
+        }
+        break;
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        if (e->window.windowID == w->id)
+            SDL_SetAtomicInt(&w->ptr_in, 0);
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
