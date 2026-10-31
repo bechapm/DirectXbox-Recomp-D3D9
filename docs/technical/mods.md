@@ -447,6 +447,30 @@ api->d3d9_vertex_hlsl(
 The renderer's own `rhi_depth_clamp` (c254) is declared before the mod's text;
 its `w` is always 0. The call returns 0 if the text does not fit.
 
+### `RHI_MOD_NORMAL`
+
+A program that lights its vertices rotates a normal, through the model's matrix
+or a bone's. A tool that reads a program's outputs cannot see that: it has the
+input, in the model's or the bone's own space. A mod that defines
+`RHI_MOD_NORMAL(n)` has the rotated normal written to a `NORMAL` output, after
+running the macro on it, so the mod can put it in the space the tool expects.
+
+```c
+api->d3d9_vertex_hlsl(
+    "#define RHI_MOD_NORMAL(n) n = mod_normal(n)\n"
+    "float3 mod_normal(float3 n) { return normalize(n); }\n");
+```
+
+`n` is a `float3`, in whatever space the program rotated it to, usually the
+view's. Only a program that rotates a normal has the output: three `DP3`s in a
+row of one input, filling x, y and z of one temporary. Other programs are left
+as they were, since a tool would take a zero output for a normal. With no mod
+defining the macro, no program changes.
+
+Vertex programs under D3D9 compile to `vs_3_0`, which allows 11 outputs beside a
+point size and already had 11, so this output takes the place of `oB1`, the
+back specular colour, which no pixel shader here reads.
+
 ## Captures and replays
 
 A frame capture records every Direct3D call of a few frames

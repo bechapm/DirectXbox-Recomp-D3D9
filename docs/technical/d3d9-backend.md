@@ -109,7 +109,9 @@ flowchart TD
   reading the declaration got both wrong (Remix logged `Unsupported color0
   buffer format` and lost all vertex colour). So
   `vsh_input_attrs` (d3d8_vsh.c) follows each input through the program to its
-  outputs, and names it there. The habit is only the fallback, for an output
+  outputs, and names it there. An input rotated by three `DP3`s is the normal
+  even when, as in a lit program, nothing but `oD0` comes of it. The habit is
+  only the fallback, for an output
   two inputs feed. A program that sends no input to `oPos` still gets its
   first three- or four-float register as an unread `POSITION0`. A program and
   its declaration change together, so plain D3D9 draws the same pixels (35
