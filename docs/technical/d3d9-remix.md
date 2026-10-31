@@ -36,7 +36,7 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
 | --- | --- | --- |
 | Fixed-function draw | the generic FFP shaders | D3D9's own fixed function: no shader, transforms, lights, material, render and texture-stage states handed over (`d3d8_shaders.c`, `d9_ff_prepare_draw`) |
 | Pre-transformed (XYZRHW) | divide by the target's guest size in the VS | `POSITION` x, y, z under an orthographic `PROJECTION` of the guest target, so the viewport squeeze still applies and Remix sees 2D as orthographic |
-| Vertex program | vs_5_0 | vs_3_0 from the same generator: constants in registers c0, c192, c196; inputs by the XDK's register convention (v0 `POSITION`, v2 `NORMAL`, v3 `COLOR0`, v9 `TEXCOORD0`...) |
+| Vertex program | vs_5_0 | vs_3_0 from the same generator: constants in registers c0, c192, c196; inputs named by what the program does with them, the XDK's register convention (v0 `POSITION`, v2 `NORMAL`, v3 `COLOR0`, v9 `TEXCOORD0`...) as the fallback |
 | Pixel stage under a program | the generic FFP PS, or the combiner translator | a ps_3_0 written per combination of stage operations (`d9_ps_source`) |
 | Register combiner program | translated, Shader Model 5 | translated, ps_3_0 under a vertex program and ps_2_a under fixed function (D3D9 pairs fixed function only with ps_2_x); one too long for ps_2_a draws stage 0's texture times diffuse |
 | Alpha test | in the pixel shader | D3D9's own render state, title draws only (`rhi_d3d9_title_draw`) |
@@ -59,11 +59,21 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
   camera zoom applied) transposed to row-vector form. Without a mod the
   world Remix sees is whatever those transforms last were, and moves with
   the camera.
-- **A `POSITION` element.** Remix takes a draw's vertices from the
-  declaration's `POSITION` and leaves out a draw without one. v0 is
-  `POSITION`, but a program need not keep its position there (TimeSplitters 2
-  keeps its level's in v1), so a declaration without v0 also declares its
-  first three- or four-float register as `POSITION0`, unread by the program.
+- **Inputs named for what they hold.** Remix reads a draw through the
+  declaration's usages: `POSITION` for its vertices (it leaves out a draw
+  without one), `COLOR0` for vertex colour, in `D3DCOLOR` only. A title lays
+  out its own programs' inputs, and the XDK's habit (v0 position, v2 normal, v3
+  colour, v9 texture) is only a habit: TimeSplitters 2 keeps its level's
+  position in v1, its colour in v2 and its texture coordinates in v3. Named by
+  habit, the colour was a normal and the coordinates a colour, so Remix
+  logged `Unsupported color0 buffer format` and lost all vertex colour. So
+  `vsh_input_attrs` (d3d8_vsh.c) follows each input through the program to its
+  outputs, and names it there. The habit is only the fallback, for an output
+  two inputs feed. A program that sends no input to `oPos` still gets its
+  first three- or four-float register as an unread `POSITION0`. A program and
+  its declaration change together, so plain D3D9 draws the same pixels (35
+  TimeSplitters 2 frames compared, none different), and any other tool reading
+  the declaration gets the truth too.
 - **The viewport correction.** D3D9 needs the viewport inside the target and
   puts pixel centres half a pixel off D3D10's. The backend clamps the viewport
   and corrects clip space with `RHI_VP_ADJUST` (c255) in every vertex shader,

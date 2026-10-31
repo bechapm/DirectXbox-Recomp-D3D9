@@ -67,13 +67,12 @@ int  rhi_d3d9_active(void);
 #define RHI_D3D9_VSH_SCREENSPACE_REG  192
 #define RHI_D3D9_VSH_VERTEXDATA_REG   196
 
-/* The D3D9 input semantic NV2A vertex register v<reg> is declared as, in
- * both the generated vs_3_0 program (d3d8_vsh.c) and the vertex
- * declaration (rhi_d3d9.c reads "ATTR<reg>" elements through it). Remix
- * finds a draw's positions, normals and texture coordinates by these, so
- * they follow the XDK's register convention: v0 POSITION, v1 BLENDWEIGHT,
- * v2 NORMAL, v3 and v4 COLOR0 and 1, v9-v12 TEXCOORD0-3. *index receives
- * the semantic index. */
+/* The D3D9 input semantic NV2A vertex register v<reg> has by the XDK's
+ * register convention: v0 POSITION, v1 BLENDWEIGHT, v2 NORMAL, v3 and v4
+ * COLOR0 and 1, v9-v12 TEXCOORD0-3. It is the fallback: d3d8_vsh.c names a
+ * program's inputs by where they go (vsh_input_attrs), and rhi_d3d9.c reads
+ * any plain "ATTR<reg>" element through this. *index receives the semantic
+ * index. */
 const char *rhi_d3d9_attr_semantic(int reg, int *index);
 
 /* ---- fixed function ---------------------------------------------------------------- */
