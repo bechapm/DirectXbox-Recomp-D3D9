@@ -1092,19 +1092,25 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "#ifndef RHI_D3D9\n"
         "    float  oPts : PSIZE;\n"
         "#endif\n"
-        "    float4 oB0  : TEXCOORD6;\n"
-        "    float4 oB1  : TEXCOORD7;\n");
+        "    float4 oB0  : TEXCOORD6;\n");
     /* The normal as the program rotated it, for a mod that defines
      * RHI_MOD_NORMAL(n) (recomp_mod.h), so that a tool reading vertex outputs
      * gets it after the program's own skinning. Only for a program that has
      * one: a tool would take a zero from any other program as its normal. With
-     * no such mod the compiled program is what it was. */
+     * no such mod the compiled program is what it was.
+     *
+     * vs_3_0 has 11 outputs beside a point size, and these are 11 already, so
+     * it takes oB1's place: no pixel shader here reads the back colours. */
     rotated_input = vsh_rotated_input(program, &rotated_temp, &rotated_last);
     if (rotated_input >= 0)
         sb_append(&sb,
             "#ifdef RHI_MOD_NORMAL\n"
             "    float3 oNormal : NORMAL;\n"
+            "#else\n"
+            "    float4 oB1  : TEXCOORD7;\n"
             "#endif\n");
+    else
+        sb_append(&sb, "    float4 oB1  : TEXCOORD7;\n");
     sb_append(&sb,
         /* Vulkan: a vertex stage feeding a point list must write the point
          * size; D3D11 has none (oPts above goes nowhere, every point is one
@@ -1339,8 +1345,15 @@ int d3d8_vsh_generate_hlsl(const NV2AVshProgram *program,
         "#ifndef RHI_D3D9\n"
         "    o.oPts = oPts.x;\n"
         "#endif\n"
-        "    o.oB0  = saturate(oB0);\n"
-        "    o.oB1  = saturate(oB1);\n"
+        "    o.oB0  = saturate(oB0);\n");
+    if (rotated_input >= 0)
+        sb_append(&sb,
+            "#ifndef RHI_MOD_NORMAL\n"
+            "    o.oB1  = saturate(oB1);\n"
+            "#endif\n");
+    else
+        sb_append(&sb, "    o.oB1  = saturate(oB1);\n");
+    sb_append(&sb,
         "#ifdef __spirv__\n"
         "    o.vk_point_size = 1.0;\n"
         "#endif\n"

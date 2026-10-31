@@ -1478,14 +1478,37 @@ static RhiImage *d9_view_image(const RhiView *v)
 
 #define D3D9_CACHE_TAG "d3d9-fxc-2"
 
+/* A shader's whole text as it is compiled: the prelude, and for a vertex
+ * program a mod's HLSL, in front of its source. Allocated; NULL if not. */
+static char *d9_shader_text(int vertex, const char *hlsl, size_t len, size_t *total)
+{
+    const char *prelude = vertex ? kVsPrelude : kPsPrelude;
+    size_t plen = strlen(prelude), mlen = vertex ? strlen(g_mod_vs_hlsl) : 0;
+    size_t elen = vertex ? strlen(kVsPreludeEnd) : 0;
+    char *text = malloc(plen + mlen + elen + len + 1);
+
+    if (!text)
+        return NULL;
+    memcpy(text, prelude, plen);
+    memcpy(text + plen, g_mod_vs_hlsl, mlen);
+    memcpy(text + plen + mlen, kVsPreludeEnd, elen);
+    plen += mlen + elen;
+    memcpy(text + plen, hlsl, len);
+    text[plen + len] = 0;
+    *total = plen + len;
+    return text;
+}
+
+char *rhi_d3d9_vertex_text(const char *hlsl, size_t len, size_t *total)
+{
+    return d9_shader_text(1, hlsl, len, total);
+}
+
 static RhiShader *d9_shader_create(uint32_t stage, const RhiShaderSource *src, char *err,
                                    size_t err_len)
 {
     D3D_SHADER_MACRO macros[16];
     int vertex = stage == RHI_STAGE_VERTEX;
-    const char *prelude = vertex ? kVsPrelude : kPsPrelude;
-    size_t plen = strlen(prelude), mlen = vertex ? strlen(g_mod_vs_hlsl) : 0;
-    size_t elen = vertex ? strlen(kVsPreludeEnd) : 0;
     RhiShaderSource full = *src;
     ID3DBlob *code = NULL, *errors = NULL;
     const DWORD *bytes;
@@ -1496,17 +1519,10 @@ static RhiShader *d9_shader_create(uint32_t stage, const RhiShaderSource *src, c
 
     if (err && err_len)
         err[0] = 0;
-    text = malloc(plen + mlen + elen + src->len + 1);
+    text = d9_shader_text(vertex, src->hlsl, src->len, &full.len);
     if (!text)
         return NULL;
-    memcpy(text, prelude, plen);
-    memcpy(text + plen, g_mod_vs_hlsl, mlen);
-    memcpy(text + plen + mlen, kVsPreludeEnd, elen);
-    plen += mlen + elen;
-    memcpy(text + plen, src->hlsl, src->len);
-    text[plen + src->len] = 0;
     full.hlsl = text;
-    full.len = plen + src->len;
     /* Shader Model 3, whatever the source was written for, except a pixel
      * shader asked for as Shader Model 2: the one D3D9 runs under its
      * fixed-function vertex pipeline (the register combiners' NV2A_HOST_SM2). */

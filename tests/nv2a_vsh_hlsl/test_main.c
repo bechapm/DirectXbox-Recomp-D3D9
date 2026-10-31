@@ -31,6 +31,7 @@
 #if defined(_WIN32)
 #include <d3d11.h>   /* this test drives D3D11 itself */
 #include <d3dcompiler.h>
+#include "rhi_d3d9.h"
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -214,6 +215,35 @@ static int locals_before_writes(const char *hlsl)
 /* Put in front of the generated source by compile_program, when set. */
 static const char *g_source_prefix;
 
+#if defined(_WIN32)
+/* The same source for Direct3D 9, through the text its renderer compiles.
+ * vs_3_0 is stricter than vs_5_0, above all about how many outputs a program
+ * has, and a program that does not compile there stops a game. */
+static void compile_for_d3d9(const char *name, const char *hlsl, int len)
+{
+    ID3DBlob *code = NULL;
+    ID3DBlob *errors = NULL;
+    HRESULT hr;
+    size_t total = 0;
+    char *text = rhi_d3d9_vertex_text(hlsl, (size_t)len, &total);
+
+    check(text != NULL, name, "the Direct3D 9 text is made");
+    if (!text)
+        return;
+    hr = D3DCompile(text, total, name, NULL, NULL, "main", "vs_3_0",
+                    D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
+    if (FAILED(hr))
+        printf("---- %s: vs_3_0 failed ----\n%s\n", name,
+               errors ? (const char *)ID3D10Blob_GetBufferPointer(errors) : "(no message)");
+    check(SUCCEEDED(hr), name, "the generated HLSL compiles for vs_3_0");
+    if (code)
+        ID3D10Blob_Release(code);
+    if (errors)
+        ID3D10Blob_Release(errors);
+    free(text);
+}
+#endif
+
 static void compile_program(const char *name, const uint32_t *words, int count)
 {
     static NV2AVshProgram prog;
@@ -259,6 +289,7 @@ static void compile_program(const char *name, const uint32_t *words, int count)
         ID3D10Blob_Release(code);
     if (errors)
         ID3D10Blob_Release(errors);
+    compile_for_d3d9(name, hlsl, len);
 #else
     memset(&src, 0, sizeof src);
     src.hlsl = hlsl;

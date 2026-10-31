@@ -164,6 +164,10 @@ void rhi_d3d9_mod_remake_written_textures(int on);
 int  rhi_d3d9_mod_on_copy(RecompModCopyFn fn, void *user);
 void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16]);
 
+/* A vertex program's whole text as this renderer compiles it for vs_3_0, for a
+ * test that has no device: malloc'd, *total its length. Windows only. */
+char *rhi_d3d9_vertex_text(const char *hlsl, size_t len, size_t *total);
+
 #ifdef __cplusplus
 }
 #endif
