@@ -115,6 +115,30 @@ typedef struct {
 
 static VshCacheEntry g_vsh_cache[NV2A_VS_CACHE_SIZE];
 
+/* Programs that would not compile, by hash. Compiling one again gives the same
+ * answer, and a title drawing with it would pay for that on every draw and
+ * might never reach its next frame. So each is logged once, and its draws are
+ * left out from then on. */
+#define VSH_FAILED_MAX 64
+static uint32_t g_vsh_failed[VSH_FAILED_MAX];
+static int g_vsh_failed_count;
+
+static int vsh_failed_before(uint32_t hash)
+{
+    int i, n = g_vsh_failed_count < VSH_FAILED_MAX ? g_vsh_failed_count : VSH_FAILED_MAX;
+
+    for (i = 0; i < n; i++)
+        if (g_vsh_failed[i] == hash)
+            return 1;
+    return 0;
+}
+
+static void vsh_note_failed(uint32_t hash)
+{
+    g_vsh_failed[g_vsh_failed_count++ % VSH_FAILED_MAX] = hash;
+    fprintf(stderr, "D3D8 VSH: program 0x%08X did not compile: its draws are left out\n", hash);
+}
+
 /* ================================================================
  * Hash Function (FNV-1a)
  * ================================================================ */
@@ -1798,6 +1822,7 @@ HRESULT d3d8_vsh_init(void)
 
     memset(g_vsh_slots, 0, sizeof(g_vsh_slots));
     memset(g_vsh_cache, 0, sizeof(g_vsh_cache));
+    g_vsh_failed_count = 0;     /* another renderer may compile what this one would not */
     memset(&g_vsh_constants, 0, sizeof(g_vsh_constants));
     g_vsh_slot_count = 0;
     g_vsh_constants_dirty = TRUE;
@@ -2505,10 +2530,14 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
     /* Look up in cache */
     entry = cache_lookup(hash);
     if (!entry) {
+        if (vsh_failed_before(hash))
+            return FALSE;
         /* Cache miss: parse, generate HLSL, compile */
         entry = compile_shader(vsh->microcode, vsh->length, hash);
-        if (!entry)
+        if (!entry) {
+            vsh_note_failed(hash);
             return FALSE;
+        }
     }
 
     /* Bind the vertex shader */
