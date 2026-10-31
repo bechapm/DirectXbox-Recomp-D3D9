@@ -235,6 +235,46 @@ accept.
 `tests/input_mouse` drives both through `recomp_bindings_sample` with no
 window and no pad.
 
+**A pointer for a title's menus** (Oct 2026). A console title's menus are
+made for a pad, but a title that knows where its menu items are can let the
+mouse point at them: while it calls `recomp_pointer_want(1)` the game window
+gives the pointer back from mouse look and shows the system's arrow (in
+fullscreen too), and the mouse's buttons and wheel go to the title through
+`recomp_pointer_read` instead of to the bindings, so a click on a menu item
+is not also a press of whatever the left button is bound to. Everything held
+is let go at each switch. The pointer is given as 0..1 across the picture as
+it is shown, bars left out (`xbox_D3D8PictureShape` says the picture's shape;
+the window fits it to the client area as the renderer does), with the
+picture's aspect, so a title with 4:3 menus in a 16:9 picture can measure
+from the middle. On Windows the window's thread follows the pointer from
+`WM_MOUSEMOVE` and its 30 ms key timer (so a picture that changes shape
+under a still pointer is measured again); on the SDL shell
+`host_window_pointer` keeps the free pointer's last position and the
+renderer's thread reads it each frame. A background run's window never
+reports a pointer; its title may move one itself with `recomp_pointer_set`
+(TimeSplitters 2 does, for scripted tests).
+
+The arrow hides while the keys or a pad drive the menu, as a PC program
+hides it while the keyboard is in use: a new press on controller 1 (a
+button, a trigger, a stick pushed well over) hides it, and the mouse moving
+a few pixels or a mouse button going down shows it again
+(`recomp_pointer_hidden`). While it is hidden `recomp_pointer_read` reports
+it over nothing, so nothing under a resting arrow stays lit.
+
+`recomp_input_using_keys()` says whose hands are on controller 1, for a
+title's prompts: 1 (the start) while the keyboard and mouse are, until a
+pad's button, trigger or stick is pressed; 1 again after a key press, a
+click or real mouse movement. Only new presses count, so a drifting stick
+does not take it back. TimeSplitters 2 writes its menus' A and B prompts as
+Enter and Esc while it is 1.
+
+`recomp_bindings_key_name(port, control, out, n)` names the first key bound
+to a control ("y", "dpad_left", as the config file names them) the way a
+keycap does ("R", "Enter", "Backspace", "Left"), from the bindings actually
+loaded, so a prompt follows the player's own rebinding. It returns 0 when
+only a pad or mouse source is bound, and the prompt keeps the pad's picture.
+TimeSplitters 2 names the keys bound to Y and X this way in MapMaker.
+
 ## The UI
 
 ```

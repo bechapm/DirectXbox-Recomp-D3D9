@@ -343,15 +343,19 @@ static int  g_mouse_look = -1;          /* -1 not asked yet */
 static int  g_mouse_captured;
 static UINT g_mouse_down;               /* buttons this window saw go down */
 
+static int shadow_background(void)
+{
+    const char *bg = getenv("RECOMP_WINDOW_BACKGROUND");
+
+    return bg && *bg && strcmp(bg, "0") != 0;
+}
+
 static int shadow_mouse_look(void)
 {
-    if (g_mouse_look < 0) {
-        const char *bg = getenv("RECOMP_WINDOW_BACKGROUND");
-
-        /* Never for a background run: it must not take anything from the
-         * person at the desk, the pointer least of all. */
-        g_mouse_look = recomp_mouse_look() && !(bg && *bg && strcmp(bg, "0") != 0);
-    }
+    /* Never for a background run: it must not take anything from the
+     * person at the desk, the pointer least of all. */
+    if (g_mouse_look < 0)
+        g_mouse_look = recomp_mouse_look() && !shadow_background();
     return g_mouse_look;
 }
 
@@ -415,7 +419,7 @@ static int shadow_mouse_button(HWND hwnd, UINT msg, WPARAM wp)
     }
     down = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN ||
            msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN;
-    if (down && shadow_mouse_look() && !g_mouse_captured) {
+    if (down && shadow_mouse_look() && !g_mouse_captured && !recomp_pointer_wanted()) {
         shadow_mouse_capture(hwnd, 1);
         return 1;
     }
@@ -451,6 +455,77 @@ static void shadow_mouse_raw(LPARAM lp)
         return;
     if (ri.data.mouse.lLastX || ri.data.mouse.lLastY)
         recomp_mouse_move((float)ri.data.mouse.lLastX, (float)ri.data.mouse.lLastY);
+}
+
+/* The pointer, while the title wants one for its menus
+ * (recomp_pointer_want): mouse look gives the pointer back, the arrow shows
+ * over the window, and where it is over the picture is told to the title.
+ * Followed from the key timer below as well as from WM_MOUSEMOVE, so a
+ * picture that changes shape under a still pointer (a screen shown at 4:3
+ * after one at 16:9) is measured again. Leaving the menu takes the pointer
+ * back for mouse look, if the window is in front. */
+static int g_pointer_on, g_pointer_hid;
+
+static void shadow_pointer_track(HWND hwnd)
+{
+    int want = recomp_pointer_wanted();
+    int hid = want && recomp_pointer_hidden();
+    POINT pt;
+    RECT rc;
+    UINT sw = 0, sh = 0;
+    int front = GetForegroundWindow() == hwnd, inside = 0;
+    float x = 0.0f, y = 0.0f, aspect = 4.0f / 3.0f;
+
+    if (want != g_pointer_on) {
+        g_pointer_on = want;
+        if (want)
+            shadow_mouse_capture(hwnd, 0);
+        else if (front)
+            shadow_mouse_capture(hwnd, 1);
+        /* The arrow now rather than at the next move. */
+        if (want && front)
+            SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
+    }
+    /* The keys took the menu over (recomp_pointer_hidden), or the mouse
+     * took it back: the arrow goes or comes back now, not at the next
+     * WM_SETCURSOR, which only a move would send. */
+    if (want && hid != g_pointer_hid && front) {
+        POINT cp;
+        RECT cr;
+
+        if (GetCursorPos(&cp) && ScreenToClient(hwnd, &cp) && GetClientRect(hwnd, &cr) &&
+            PtInRect(&cr, cp))
+            SetCursor(hid ? NULL : LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
+    }
+    g_pointer_hid = hid;
+    /* A background run's window is not the person's to point with: its
+     * title moves a pointer of its own, if any (recomp_pointer_set). */
+    if (!want || shadow_background())
+        return;
+    if (front && GetCursorPos(&pt) && ScreenToClient(hwnd, &pt) && GetClientRect(hwnd, &rc) &&
+        rc.right > 0 && rc.bottom > 0) {
+        /* The picture: the largest rectangle of its shape that fits the
+         * client area, centred (d3d8_display_fit; Present does the same
+         * under D3D9). */
+        double cw = rc.right, ch = rc.bottom, pw = cw, ph = ch, px = 0.0, py = 0.0;
+
+        if (!xbox_D3D8PictureShape(&sw, &sh) || !sw || !sh) {
+            sw = 4;
+            sh = 3;
+        }
+        aspect = (float)sw / (float)sh;
+        if (cw * sh > ch * sw) {
+            pw = ch * sw / sh;
+            px = (cw - pw) / 2.0;
+        } else {
+            ph = cw * sh / sw;
+            py = (ch - ph) / 2.0;
+        }
+        x = (float)((pt.x - px) / pw);
+        y = (float)((pt.y - py) / ph);
+        inside = x >= 0.0f && x < 1.0f && y >= 0.0f && y < 1.0f;
+    }
+    recomp_pointer_set(inside, x, y, aspect);
 }
 
 /* Alt+F4 and Alt+Enter, read from the keyboard rather than from the
@@ -503,7 +578,7 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
          * -- one on the title bar is someone moving the window. */
         if (LOWORD(wp) == WA_INACTIVE)
             shadow_mouse_capture(hwnd, 0);
-        else if (LOWORD(wp) == WA_ACTIVE && !HIWORD(wp))   /* not minimised */
+        else if (LOWORD(wp) == WA_ACTIVE && !HIWORD(wp) && !g_pointer_on)  /* not minimised */
             shadow_mouse_capture(hwnd, 1);
         break;
     case WM_CANCELMODE:
@@ -523,6 +598,7 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     case WM_TIMER:
         if (wp == SHADOW_KEY_TIMER) {
             shadow_poll_keys(hwnd);
+            shadow_pointer_track(hwnd);
             return 0;
         }
         break;
@@ -539,7 +615,17 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         if (wp == '\r')
             return 0;                   /* no beep for Alt+Enter */
         break;
+    case WM_MOUSEMOVE:
+        if (g_pointer_on)
+            shadow_pointer_track(hwnd);
+        break;
     case WM_SETCURSOR:
+        /* A menu the title lets the mouse point at: the arrow, fullscreen
+         * or not. */
+        if (g_pointer_on && LOWORD(lp) == HTCLIENT) {
+            SetCursor(recomp_pointer_hidden() ? NULL : LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
+            return TRUE;
+        }
         /* The game has no pointer; over a fullscreen picture it is in the
          * way, and with mouse look the pointer is not a pointer at all. */
         if ((g_shadow_fullscreen || g_mouse_captured) && LOWORD(lp) == HTCLIENT) {
@@ -765,6 +851,11 @@ static int shadow_key_down(int vk)
 #define SHADOW_KEY_F10  VK_F10
 #define SHADOW_KEY_F11  VK_F11
 
+/* The window's own thread follows the pointer (shadow_pointer_track). */
+static void shadow_pointer_frame(void)
+{
+}
+
 #else
 /* ------------------------------------------- the window, everywhere else
  *
@@ -831,6 +922,55 @@ static void shadow_host_mouse_button(void *user, int button, int down)
     case 5: recomp_mouse_button(RECOMP_MOUSE_X2, down);     break;
     default: break;
     }
+}
+
+/* The pointer, while the title wants one for its menus
+ * (recomp_pointer_want): the window gives the pointer back from mouse look,
+ * and where it is over the picture is told to the title once a frame. */
+static void shadow_pointer_frame(void)
+{
+    static int on, hid;
+    int want = recomp_pointer_wanted(), inside = 0;
+    float px = 0.0f, py = 0.0f, cw = 0.0f, ch = 0.0f, x = 0.0f, y = 0.0f;
+    float aspect = 4.0f / 3.0f;
+    UINT sw = 0, sh = 0;
+
+    if (!g_shadow_host || host_window_background())
+        return;
+    /* The keys took the menu over (recomp_pointer_hidden): no arrow until
+     * the mouse moves or clicks. Shown again before mouse look takes the
+     * pointer, so the next menu does not open with it still hidden. */
+    if ((want && recomp_pointer_hidden()) != hid) {
+        hid = !hid;
+        host_window_show_cursor(g_shadow_host, !hid);
+    }
+    if (want != on) {
+        on = want;
+        if (recomp_mouse_look())
+            host_window_set_relative_mouse(g_shadow_host, !want);
+    }
+    if (!want)
+        return;
+    if (host_window_pointer(g_shadow_host, &px, &py, &cw, &ch) && cw > 0.0f && ch > 0.0f) {
+        float pw = cw, ph = ch, ox = 0.0f, oy = 0.0f;
+
+        if (!xbox_D3D8PictureShape(&sw, &sh) || !sw || !sh) {
+            sw = 4;
+            sh = 3;
+        }
+        aspect = (float)sw / (float)sh;
+        if (cw * (float)sh > ch * (float)sw) {
+            pw = ch * aspect;
+            ox = (cw - pw) / 2.0f;
+        } else {
+            ph = cw / aspect;
+            oy = (ch - ph) / 2.0f;
+        }
+        x = (px - ox) / pw;
+        y = (py - oy) / ph;
+        inside = x >= 0.0f && x < 1.0f && y >= 0.0f && y < 1.0f;
+    }
+    recomp_pointer_set(inside, x, y, aspect);
 }
 
 static HWND shadow_window(UINT width, UINT height)
@@ -3426,6 +3566,7 @@ static void frame_end_shadow(void)
         g_inline_vdata_frame = 0;
         g_frame_draws = 0;
         overlay_frame();                 /* after the dump: not in the captures */
+        shadow_pointer_frame();
         {
             LARGE_INTEGER a, b;
             QueryPerformanceCounter(&a);
