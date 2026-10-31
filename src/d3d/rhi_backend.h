@@ -85,7 +85,7 @@ typedef struct RhiBackend {
 
 extern const RhiBackend rhi_d3d11_backend;
 extern const RhiBackend rhi_vulkan_backend;     /* rhi_vulkan.c, RHI_HAVE_VULKAN */
-extern const RhiBackend rhi_d3d9_backend;       /* rhi_d3d9.c, Windows: for RTX Remix */
+extern const RhiBackend rhi_d3d9_backend;       /* rhi_d3d9.c, Windows: for D3D9 tools */
 
 /* The backend in use (rhi.c). */
 extern const RhiBackend *g_rhi;

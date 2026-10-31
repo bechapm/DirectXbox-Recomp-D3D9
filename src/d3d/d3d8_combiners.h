@@ -279,7 +279,7 @@ typedef struct NV2ACombinerState {
     BYTE alpha_test;
     /* --- The host shader language --- */
     /* NV2A_HOST_*: what the shader is generated for. Only the Direct3D 9
-     * backend (rhi_d3d9.c, for RTX Remix) changes it, per draw: D3D9 pairs
+     * backend (rhi_d3d9.c) changes it, per draw: D3D9 pairs
      * a vertex program's vs_3_0 only with a ps_3_0, and its fixed-function
      * vertex pipeline only with a ps_2_x. */
     BYTE host;

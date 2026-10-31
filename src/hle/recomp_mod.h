@@ -1,8 +1,10 @@
 /*
  * Mods: libraries a player drops beside the game, loaded when the game's
  * Direct3D device is made (recomp_mods.c). A mod changes or adds to a title
- * without being built into it -- RTX Remix support for one game, a tool,
- * a fix someone wants to try -- so the title's own build stays the port.
+ * without being built into it -- a texture pack, an overlay, a debugging
+ * tool, support for a D3D9 tool such as RTX Remix in one game, a fix someone
+ * wants to try -- so the title's own build stays the port.
+ * docs/technical/mods.md is the overview.
  *
  * Where: the folder `mods` beside the executable; every .dll (Windows) or
  * .so (elsewhere) in it, in name order. RECOMP_MOD_LIBS=0 loads none;

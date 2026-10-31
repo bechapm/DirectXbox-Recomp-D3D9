@@ -1,14 +1,14 @@
 /**
- * rhi_d3d9.c -- the Direct3D 9 backend of rhi.h, for NVIDIA RTX Remix.
+ * rhi_d3d9.c -- the Direct3D 9 backend of rhi.h, for D3D9 tools.
  *
- * Remix is a Direct3D 9 runtime (dxvk-remix): put its d3d9.dll beside the
- * executable and every D3D9 call this backend makes goes to it, and it
- * path-traces the scene those calls describe. The 64-bit runtime is used
- * directly, without the bridge that 32-bit titles need. Without Remix the
- * system's own d3d9.dll draws, which is how this backend is checked against
- * the others. RECOMP_D3D8_BACKEND=d3d9 chooses it.
- * docs/technical/d3d9-remix.md is the design; rhi_d3d9.h is what the
- * renderer does differently for it.
+ * Many PC tools sit between a game and Direct3D 9 and work from the calls
+ * it makes: RTX Remix (a D3D9 runtime, dxvk-remix, that path-traces the
+ * scene those calls describe), post-processing injectors, frame debuggers,
+ * texture dumpers. Put a tool's d3d9.dll beside the executable and every
+ * D3D9 call this backend makes goes to it; without one the system's own
+ * d3d9.dll draws, which is how this backend is checked against the others.
+ * RECOMP_D3D8_BACKEND=d3d9 chooses it. docs/technical/d3d9-backend.md is
+ * the design; rhi_d3d9.h is what the renderer does differently for it.
  *
  * What D3D9 lacks against D3D11, and what is done instead:
  *
@@ -508,8 +508,8 @@ static int d9_device_create(const RhiDeviceDesc *dd)
         fprintf(stderr, "[RHI] d3d9: needs a window\n");
         return -1;
     }
-    /* By name, so the d3d9.dll beside the executable -- Remix's -- is the
-     * one found before the system's. */
+    /* By name, so the d3d9.dll beside the executable -- a D3D9 tool's -- is
+     * the one found before the system's. */
     g_dll = LoadLibraryA("d3d9.dll");
     create = g_dll ? (PFN_Direct3DCreate9)(void *)GetProcAddress(g_dll, "Direct3DCreate9") : NULL;
     if (!create || !(g_d3d = create(D3D_SDK_VERSION))) {
@@ -2686,7 +2686,7 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     return 0;
 }
 
-/* ---- fixed function and Remix --------------------------------------------------------- */
+/* ---- fixed function ------------------------------------------------------------------ */
 
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value)
 {

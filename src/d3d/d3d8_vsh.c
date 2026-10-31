@@ -2318,7 +2318,7 @@ uint32_t xbox_D3D8VertexConstants(uint32_t first, uint32_t count, float (*out)[4
 
 /* RECOMP_D3D9_SKIP_VS=<hash>[,<hash>...]: a test switch. Under D3D9, draws
  * through those programs (hex, as the logs print them) are left out, to
- * find which draws a fault in Remix's picture comes with. */
+ * find which draws a fault in a D3D9 tool's picture comes with. */
 static int skip_vs_hash(uint32_t hash)
 {
     static uint32_t list[32];
