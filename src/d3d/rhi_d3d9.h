@@ -1,14 +1,15 @@
 /**
  * rhi_d3d9.h -- what only the Direct3D 9 backend (rhi_d3d9.c) does.
  *
- * The D3D9 backend exists for NVIDIA RTX Remix, which hooks Direct3D 9 and
- * path-traces what a title draws. Remix does not read shaders: it rebuilds
- * the scene from the fixed-function state a D3D9 title sets around each draw
- * -- WORLD, VIEW and PROJECTION, the texture in stage 0, the vertex
- * declaration's POSITION, NORMAL and TEXCOORD -- and, for a draw through a
- * vertex shader, from the positions that shader writes, carried back into
- * world space through VIEW and PROJECTION. docs/technical/d3d9-remix.md is
- * the design.
+ * The D3D9 backend exists for tools that hook Direct3D 9 and work from what
+ * a title draws there. The most demanding, RTX Remix, does not read shaders:
+ * it rebuilds the scene from the fixed-function state a D3D9 title sets
+ * around each draw -- WORLD, VIEW and PROJECTION, the texture in stage 0,
+ * the vertex declaration's POSITION, NORMAL, COLOR0 and TEXCOORD -- and, for
+ * a draw through a vertex shader, from the positions that shader writes,
+ * carried back into world space through VIEW and PROJECTION. So the backend
+ * draws the way a PC D3D9 game of the era would.
+ * docs/technical/d3d9-backend.md is the design.
  *
  * So under this backend the renderer draws differently from D3D11 and
  * Vulkan in three places, and these are the calls it makes there:
@@ -24,11 +25,11 @@
  *  - A register-combiner program is translated as under the other backends,
  *    into Shader Model 3 under a vertex program and Shader Model 2 (ps_2_a)
  *    under fixed function, which D3D9 pairs only with ps_2_x
- *    (NV2ACombinerState.host). Remix ignores pixel shaders, so these only
- *    shape what is rasterised: 2D, the title's full-screen passes, and
- *    everything when Remix is not installed.
- *  - Each program draw is told the camera (rhi_d3d9_set_camera), so Remix
- *    can follow the positions the program writes back into the world.
+ *    (NV2ACombinerState.host). A tool that ignores pixel shaders (Remix)
+ *    sees only the texture stages; the shaders shape what is rasterised.
+ *  - Each program draw's projection is handed to mods
+ *    (rhi_d3d9_program_projection), so that a mod can tell a tool how to
+ *    follow the positions the program writes back into the world.
  *
  * Every call here does nothing unless the D3D9 backend is the one in use,
  * so the renderer calls them without asking first where that is simpler.
@@ -66,13 +67,12 @@ int  rhi_d3d9_active(void);
 #define RHI_D3D9_VSH_SCREENSPACE_REG  192
 #define RHI_D3D9_VSH_VERTEXDATA_REG   196
 
-/* The D3D9 input semantic NV2A vertex register v<reg> is declared as, in
- * both the generated vs_3_0 program (d3d8_vsh.c) and the vertex
- * declaration (rhi_d3d9.c reads "ATTR<reg>" elements through it). Remix
- * finds a draw's positions, normals and texture coordinates by these, so
- * they follow the XDK's register convention: v0 POSITION, v1 BLENDWEIGHT,
- * v2 NORMAL, v3 and v4 COLOR0 and 1, v9-v12 TEXCOORD0-3. *index receives
- * the semantic index. */
+/* The D3D9 input semantic NV2A vertex register v<reg> has by the XDK's
+ * register convention: v0 POSITION, v1 BLENDWEIGHT, v2 NORMAL, v3 and v4
+ * COLOR0 and 1, v9-v12 TEXCOORD0-3. It is the fallback: d3d8_vsh.c names a
+ * program's inputs by where they go (vsh_input_attrs), and rhi_d3d9.c reads
+ * any plain "ATTR<reg>" element through this. *index receives the semantic
+ * index. */
 const char *rhi_d3d9_attr_semantic(int reg, int *index);
 
 /* ---- fixed function ---------------------------------------------------------------- */
@@ -86,13 +86,13 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index);
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value);
 /* The next draw is the title's, under the alpha test it set. Every other
  * draw -- the overlay, the display passes -- is drawn without one. `two_d`
- * is the renderer's verdict that it is screen-space (d3d8_SetTwoDSqueeze),
- * which decides what Remix is told it is; `offscreen`, that it goes to a
- * texture the title renders into rather than its back buffer. */
+ * is the renderer's verdict that it is screen-space (d3d8_SetTwoDSqueeze);
+ * `offscreen`, that it goes to a texture the title renders into rather than
+ * its back buffer. Both are passed on to mods (RecompModDraw). */
 void rhi_d3d9_title_draw(int two_d, int offscreen);
 /* After rhi_d3d9_title_draw: the title's own test (xbox_D3D8SetScreenSpaceTest)
  * called the next draw, a fixed-function one through the world's projection,
- * screen-space. Remix is told it is UI, as it is not by itself. `w` is the
+ * screen-space, which mods are told (RecompModDraw.title_2d). `w` is the
  * draw's clip w (its depth in front of the camera), the same at every vertex
  * of such a draw, or 0 if not known. */
 void rhi_d3d9_title_says_2d(float w);
@@ -125,16 +125,13 @@ int  rhi_d3d9_clear_rects(RhiView *color, RhiView *depth, uint32_t width, uint32
 int  rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                         const RhiRect *dst_rect);
 
-/* ---- what Remix is told ----------------------------------------------------------- */
+/* ---- what a D3D9 tool is told ---------------------------------------------------- */
 
-/* The camera for a draw through a vertex program: VIEW and PROJECTION as
- * D3D row-vector matrices, so that a world position p reaches the clip
- * space the program writes as p * view * proj, and WORLD, which takes the
- * draw's own vertices to that world (identity when the program's input is
- * already in it, or when nothing better is known). NULL leaves one as it
- * was. Remix carries the program's output back through proj and view to
- * world space, and through world to the object's own. */
-void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16]);
+/* The projection of the next draw's vertex program, as a D3D row-vector
+ * PROJECTION (d3d8_vsh.c), or NULL when the program projects through
+ * nothing it can tell. For mods (RecompModDraw.program_projection): D3D9
+ * itself ignores the transforms under a program. */
+void rhi_d3d9_program_projection(const float proj[16]);
 
 /* A test switch: leave out the next draw (d3d8_vsh.c's RECOMP_D3D9_SKIP_VS). */
 void rhi_d3d9_skip_next_draw(void);
@@ -146,6 +143,26 @@ void rhi_d3d9_skip_next_draw(void);
  * with bars around it. The D3D9 replacement for d3d8_display_resolve: a
  * copy, not a draw, so Remix never sees it. 0 on success. */
 int  rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h);
+
+/* ---- mods (src/hle/recomp_mod.h, version 2) --------------------------------------- */
+
+#include "../hle/recomp_mod.h"
+
+/* What recomp_mods.c hands a mod as d3d9_*: hooks on the device being made,
+ * each draw, each clear and each present; HLSL for every vertex program;
+ * the render states as set; the fixed-function projection with the
+ * viewport correction; and textures made anew when written after use.
+ * Each on_* returns 0 when full. No-ops off Windows. */
+int  rhi_d3d9_mod_on_device(RecompModDeviceFn fn, void *user);
+int  rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, void *user);
+int  rhi_d3d9_mod_on_clear(RecompModClearFn fn, void *user);
+int  rhi_d3d9_mod_on_present(RecompModDeviceFn fn, void *user);
+int  rhi_d3d9_mod_vertex_hlsl(const char *hlsl);
+int  rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value);
+void rhi_d3d9_mod_set_projection(const float m[16]);
+void rhi_d3d9_mod_remake_written_textures(int on);
+int  rhi_d3d9_mod_on_copy(RecompModCopyFn fn, void *user);
+void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16]);
 
 #ifdef __cplusplus
 }

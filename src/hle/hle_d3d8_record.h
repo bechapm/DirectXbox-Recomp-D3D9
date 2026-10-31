@@ -57,6 +57,12 @@ void hle_d3d8_capture_swap(unsigned long swaps, uint32_t width, uint32_t height)
 /* True while a frame is being recorded. */
 int hle_d3d8_capture_active(void);
 
+/* A mod's note (recomp_mod.h, capture_note): bytes stored under tag as a
+ * MOD_NOTE chunk at this point of the frame being recorded, in order with
+ * the calls around it (queued with them when frames are deferred).
+ * Nothing when no frame is. */
+void hle_d3d8_capture_note(uint32_t tag, const void *data, uint32_t bytes);
+
 /* Capture the next frame, whatever swap it turns out to be. This is the
  * answer to "it looks wrong here": a swap number has to be guessed before
  * the run, and nobody knows in advance which swap they will be standing on

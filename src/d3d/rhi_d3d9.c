@@ -1,14 +1,14 @@
 /**
- * rhi_d3d9.c -- the Direct3D 9 backend of rhi.h, for NVIDIA RTX Remix.
+ * rhi_d3d9.c -- the Direct3D 9 backend of rhi.h, for D3D9 tools.
  *
- * Remix is a Direct3D 9 runtime (dxvk-remix): put its d3d9.dll beside the
- * executable and every D3D9 call this backend makes goes to it, and it
- * path-traces the scene those calls describe. The 64-bit runtime is used
- * directly, without the bridge that 32-bit titles need. Without Remix the
- * system's own d3d9.dll draws, which is how this backend is checked against
- * the others. RECOMP_D3D8_BACKEND=d3d9 chooses it.
- * docs/technical/d3d9-remix.md is the design; rhi_d3d9.h is what the
- * renderer does differently for it.
+ * Many PC tools sit between a game and Direct3D 9 and work from the calls
+ * it makes: RTX Remix (a D3D9 runtime, dxvk-remix, that path-traces the
+ * scene those calls describe), post-processing injectors, frame debuggers,
+ * texture dumpers. Put a tool's d3d9.dll beside the executable and every
+ * D3D9 call this backend makes goes to it; without one the system's own
+ * d3d9.dll draws, which is how this backend is checked against the others.
+ * RECOMP_D3D8_BACKEND=d3d9 chooses it. docs/technical/d3d9-backend.md is
+ * the design; rhi_d3d9.h is what the renderer does differently for it.
  *
  * What D3D9 lacks against D3D11, and what is done instead:
  *
@@ -33,8 +33,14 @@
  *    c255) and by the projection a fixed-function draw is given.
  *  - No depth clamp: D3D9 always clips to 0 <= z <= w. Where the raster
  *    state asks for clamping (depth_clip 0, the title's draws by default)
- *    RHI_VP_ADJUST clamps each vertex's z into that range instead (flag at
- *    c254), so geometry past the far plane is drawn at it, not cut away.
+ *    RHI_VP_ADJUST clamps each vertex's z instead (flags at c254), so
+ *    geometry past the far plane is drawn at it, not cut away. Only some
+ *    draws are clamped at the near plane too (near_clamp): a screen-space
+ *    draw's panels can sit just in front of it, all at one depth, so nothing
+ *    tilts. Any other 3D vertex in front of it is left alone, and D3D9 clips
+ *    there: moved to z = 0 it tilted its whole triangle, and an overlay on a
+ *    wall then failed its depth test across the wall (TimeSplitters 2's
+ *    Hospital).
  *    A vertex behind the eye is left as it is: giving it z = w / 2 kept an
  *    edge to it inside 0 <= z <= w only at that vertex, and the floor under
  *    the eye, which reaches w = 0 on screen, was cut away by the far plane.
@@ -58,6 +64,7 @@
 #include <string.h>
 
 #include "rhi_backend.h"
+#include "../hle/recomp_mod.h"      /* what a mod is told of each draw */
 #include "rhi_d3d9.h"
 #include "rhi_shader_cache.h"
 
@@ -106,16 +113,22 @@ static const char kVsPrelude[] =
     "#define RHI_D3D9_VS 1\n"
     "#define RHI_VERTEX_ID TEXCOORD15\n"
     "float4 rhi_vp_adjust : register(c255);\n"
-    "float4 rhi_depth_clamp : register(c254);\n"
-    /* Sampled so that Remix sees what is bound there (the UI marker,
-     * remix_draw); c254.w is always 0, so it changes nothing. */
-    "sampler2D rhi_ui_mark : register(s3);\n"
+    "float4 rhi_depth_clamp : register(c254);\n";
+/* After a mod's own vertex HLSL (rhi_d3d9_mod_vertex_hlsl), which may
+ * define RHI_MOD_POSITION(p) to be run on every output position. */
+static const char kVsPreludeEnd[] =
+    "#ifndef RHI_MOD_POSITION\n"
+    "#define RHI_MOD_POSITION(p)\n"
+    "#endif\n"
     "void rhi_vp_adjust_pos(inout float4 p)\n"
     "{\n"
     "    p.xy = p.xy * rhi_vp_adjust.xy + rhi_vp_adjust.zw * p.w;\n"
-    "    if (rhi_depth_clamp.x != 0 && p.w > 0)\n"
-    "        p.z = clamp(p.z, 0, p.w);\n"
-    "    p.z += tex2Dlod(rhi_ui_mark, float4(0, 0, 0, 0)).x * rhi_depth_clamp.w;\n"
+    "    if (rhi_depth_clamp.x != 0 && p.w > 0) {\n"
+    "        p.z = min(p.z, p.w);\n"
+    "        if (rhi_depth_clamp.y != 0)\n"
+    "            p.z = max(p.z, 0);\n"
+    "    }\n"
+    "    RHI_MOD_POSITION(p);\n"
     "}\n"
     "#define RHI_VP_ADJUST(p) rhi_vp_adjust_pos(p)\n"
     "#line 1\n";
@@ -162,7 +175,7 @@ struct RhiImage {
     IDirect3DSurface9     *surf;    /* a depth image that is not sampled */
     int      screen_copy;           /* rhi_d3d9_copy_rect has copied the screen into it */
     uint64_t id;                    /* what it holds, for kind_2d (image_id) */
-    int      drawn;                 /* a draw has used it since it was made (remix_fresh_texture) */
+    int      drawn;                 /* a draw has used it since it was made (remake_texture) */
     uint64_t texels;                /* a hash of all of level 0 as last written whole */
 };
 
@@ -204,6 +217,91 @@ static int               g_vrr;
 static RECT              g_present_rect;     /* where Present puts the back buffer */
 static int               g_present_rect_set;
 static int               g_in_scene;         /* between BeginScene and EndScene */
+
+/* ---- mods (src/hle/recomp_mod.h) ------------------------------------------------------- */
+
+/* What mods asked to hear of. Registered at load, before the device. */
+#define MOD_HOOKS 8
+static struct { RecompModBeforeDraw before; RecompModAfterDraw after; void *user; }
+                         g_mod_draw[MOD_HOOKS];
+static struct { RecompModDeviceFn fn; void *user; } g_mod_device[MOD_HOOKS], g_mod_present[MOD_HOOKS];
+static struct { RecompModClearFn fn; void *user; } g_mod_clear[MOD_HOOKS];
+static struct { RecompModCopyFn fn; void *user; } g_mod_copy[MOD_HOOKS];
+static int  g_mod_draw_n, g_mod_device_n, g_mod_present_n, g_mod_clear_n, g_mod_copy_n;
+static char g_mod_vs_hlsl[4096];    /* added to every vertex program */
+static int  g_remake_written;       /* rhi_d3d9_mod_remake_written_textures */
+
+int rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, void *user)
+{
+    if (g_mod_draw_n >= MOD_HOOKS || (!before && !after))
+        return 0;
+    g_mod_draw[g_mod_draw_n].before = before;
+    g_mod_draw[g_mod_draw_n].after = after;
+    g_mod_draw[g_mod_draw_n].user = user;
+    g_mod_draw_n++;
+    return 1;
+}
+
+int rhi_d3d9_mod_on_device(RecompModDeviceFn fn, void *user)
+{
+    if (g_mod_device_n >= MOD_HOOKS || !fn)
+        return 0;
+    g_mod_device[g_mod_device_n].fn = fn;
+    g_mod_device[g_mod_device_n++].user = user;
+    return 1;
+}
+
+int rhi_d3d9_mod_on_present(RecompModDeviceFn fn, void *user)
+{
+    if (g_mod_present_n >= MOD_HOOKS || !fn)
+        return 0;
+    g_mod_present[g_mod_present_n].fn = fn;
+    g_mod_present[g_mod_present_n++].user = user;
+    return 1;
+}
+
+int rhi_d3d9_mod_on_clear(RecompModClearFn fn, void *user)
+{
+    if (g_mod_clear_n >= MOD_HOOKS || !fn)
+        return 0;
+    g_mod_clear[g_mod_clear_n].fn = fn;
+    g_mod_clear[g_mod_clear_n++].user = user;
+    return 1;
+}
+
+int rhi_d3d9_mod_on_copy(RecompModCopyFn fn, void *user)
+{
+    if (g_mod_copy_n >= MOD_HOOKS || !fn)
+        return 0;
+    g_mod_copy[g_mod_copy_n].fn = fn;
+    g_mod_copy[g_mod_copy_n++].user = user;
+    return 1;
+}
+
+int rhi_d3d9_mod_vertex_hlsl(const char *hlsl)
+{
+    size_t have = strlen(g_mod_vs_hlsl), n = hlsl ? strlen(hlsl) : 0;
+
+    if (have + n + 2 > sizeof g_mod_vs_hlsl)
+        return 0;
+    memcpy(g_mod_vs_hlsl + have, hlsl, n);
+    g_mod_vs_hlsl[have + n] = '\n';
+    g_mod_vs_hlsl[have + n + 1] = 0;
+    return 1;
+}
+
+void rhi_d3d9_mod_remake_written_textures(int on)
+{
+    g_remake_written = on != 0;
+}
+
+static void mod_cleared(uint32_t what, float z, int whole)
+{
+    int i;
+
+    for (i = 0; i < g_mod_clear_n; i++)
+        g_mod_clear[i].fn(what, z, whole, g_mod_clear[i].user);
+}
 
 /* D3D9 draws only inside BeginScene/EndScene, and refuses a draw outside one
  * (D3DERR_INVALIDCALL). The first draw opens a scene; Present, and the
@@ -263,7 +361,7 @@ static struct {
     int              ds_dirty;
     float            adjust[4];          /* RHI_VP_ADJUST for the current viewport */
     int              adjust_sent;
-    float            clamp[4];           /* and its depth clamp flag */
+    float            clamp[4];           /* and its depth clamp flags: on, and at the near plane */
     int              clamp_sent;
     int              vid_bound;
 } g_b;
@@ -283,12 +381,11 @@ static uint8_t g_samp_known[16][SAMP_COUNT];
 /* The fixed-function projection as the renderer gave it; the device gets
  * it with the viewport correction applied (apply_projection). */
 static int     g_title_draw;          /* rhi_d3d9_title_draw: the next draw is the title's */
+static int     g_draw_title;          /* it was, for the draw in hand (mod_before_draw) */
 static int     g_title_2d;            /* and is screen-space */
 static int     g_title_said_2d;       /* the title's own test said so (rhi_d3d9_title_says_2d) */
 static float   g_title_2d_w;          /* and the draw's clip w, or 0 */
 static float   g_dev_world[16], g_dev_view[16];  /* WORLD and VIEW as the device has them */
-static int     g_flat_applied;        /* the device holds a flat_2d draw's transforms */
-static int     g_draw_ui;             /* remix_draw marked the draw in hand UI */
 static int     g_title_offscreen;     /* the title's draw goes to a texture (rhi_d3d9_title_draw) */
 static DWORD   g_title_alpha_test;    /* its D3DRS_ALPHATESTENABLE */
 static float   g_ff_proj[16];
@@ -345,14 +442,6 @@ int rhi_d3d9_active(void)
     return g_rhi == &rhi_d3d9_backend && g_dev != NULL;
 }
 
-/* The title's 2D and sky under Remix (remix_draw). */
-static IDirect3DTexture9 *g_ui_mark;
-static int g_ui_mark_bound, g_remix_2d;
-static int g_frame_zwritten;    /* a draw this frame has written depth */
-static float g_frame_zclear = -1.0f; /* what depth was cleared to this frame, or -1 */
-static void learn_2d(void);
-static void learn_sky_zone(void);
-static int g_sky_viewport;      /* the viewport is set for a sky draw (remix_draw) */
 
 static void forget_state(void)
 {
@@ -362,8 +451,6 @@ static void forget_state(void)
     memset(&g_b, 0, sizeof g_b);
     g_b.vp_dirty = g_b.scissor_dirty = g_b.ds_dirty = g_b.samp_dirty = 1;
     g_ff_proj_set = g_ff_proj_dirty = 0;
-    g_ui_mark_bound = 0;
-    g_flat_applied = 0;
 }
 
 static RhiView *wrap_surface(IDirect3DSurface9 *s, uint32_t kind)
@@ -409,39 +496,6 @@ static int make_internal_streams(void)
     return 0;
 }
 
-/* The texture that tells Remix a draw is UI (remix_draw). Remix knows a
- * texture by the XXH3 hash of its first level's texels, so these never
- * change: rtx.uiTextures = 0xA2F17C4A8F3E3CEA. Whether Remix is the d3d9.dll
- * loaded decides whether it is used: Remix exports its API's entry point. */
-static void make_ui_mark(void)
-{
-    D3DLOCKED_RECT lr;
-    const char *e = getenv("RECOMP_D3D9_REMIX_2D");
-    uint32_t x, y;
-
-    g_remix_2d = e && e[0] ? e[0] == '1'
-               : GetProcAddress(g_dll, "remixapi_InitializeLibrary") != NULL;
-    if (!g_remix_2d)
-        return;
-    if (FAILED(IDirect3DDevice9_CreateTexture(g_dev, 16, 16, 1, 0, D3DFMT_A8R8G8B8,
-                                              D3DPOOL_MANAGED, &g_ui_mark, NULL))) {
-        g_ui_mark = NULL;
-        g_remix_2d = 0;
-        return;
-    }
-    if (SUCCEEDED(IDirect3DTexture9_LockRect(g_ui_mark, 0, &lr, NULL, 0))) {
-        for (y = 0; y < 16; y++)
-            for (x = 0; x < 16; x++) {
-                uint32_t v = 0xFF000000u | (x * 16u + 1u) << 16 | (y * 16u + 2u) << 8 |
-                             (((x ^ y) * 16u + 3u) & 0xFFu);
-                memcpy((uint8_t *)lr.pBits + y * (uint32_t)lr.Pitch + x * 4u, &v, 4);
-            }
-        IDirect3DTexture9_UnlockRect(g_ui_mark, 0);
-    }
-    fprintf(stderr, "[RHI] d3d9: Remix: the title's 2D is drawn as UI "
-            "(rtx.uiTextures = 0xA2F17C4A8F3E3CEA)\n");
-}
-
 static int d9_device_create(const RhiDeviceDesc *dd)
 {
     PFN_Direct3DCreate9 create;
@@ -454,8 +508,8 @@ static int d9_device_create(const RhiDeviceDesc *dd)
         fprintf(stderr, "[RHI] d3d9: needs a window\n");
         return -1;
     }
-    /* By name, so the d3d9.dll beside the executable -- Remix's -- is the
-     * one found before the system's. */
+    /* By name, so the d3d9.dll beside the executable -- a D3D9 tool's -- is
+     * the one found before the system's. */
     g_dll = LoadLibraryA("d3d9.dll");
     create = g_dll ? (PFN_Direct3DCreate9)(void *)GetProcAddress(g_dll, "Direct3DCreate9") : NULL;
     if (!create || !(g_d3d = create(D3D_SDK_VERSION))) {
@@ -511,12 +565,17 @@ static int d9_device_create(const RhiDeviceDesc *dd)
         fprintf(stderr, "[RHI] d3d9: the internal streams could not be made\n");
         return -1;
     }
-    make_ui_mark();
     /* D3D9's defaults that differ from what the renderer assumes: lighting
      * on, and no separate alpha blend. */
     set_rs(D3DRS_LIGHTING, FALSE);
     set_rs(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
     set_rs(D3DRS_TWOSIDEDSTENCILMODE, TRUE);
+    {
+        int i;
+
+        for (i = 0; i < g_mod_device_n; i++)
+            g_mod_device[i].fn(g_dev, g_mod_device[i].user);
+    }
     return 0;
 }
 
@@ -534,7 +593,6 @@ static void d9_device_destroy(void)
         if (g_iring[i]) { IDirect3DIndexBuffer9_Release(g_iring[i]); g_iring[i] = NULL; }
     if (g_vid_decl) { IDirect3DVertexDeclaration9_Release(g_vid_decl); g_vid_decl = NULL; }
     if (g_vid_vb)   { IDirect3DVertexBuffer9_Release(g_vid_vb); g_vid_vb = NULL; }
-    if (g_ui_mark)  { IDirect3DTexture9_Release(g_ui_mark); g_ui_mark = NULL; }
     if (g_dev) { IDirect3DDevice9_Release(g_dev); g_dev = NULL; }
     if (g_d3d) { IDirect3D9_Release(g_d3d); g_d3d = NULL; }
     /* d3d9.dll stays loaded: Remix does not expect to be unloaded. */
@@ -582,10 +640,12 @@ static int32_t d9_present(uint32_t interval)
         }
     }
     scene_end();
-    learn_2d();
-    learn_sky_zone();
-    g_frame_zwritten = 0;
-    g_frame_zclear = -1.0f;
+    {
+        int i;
+
+        for (i = 0; i < g_mod_present_n; i++)
+            g_mod_present[i].fn(g_dev, g_mod_present[i].user);
+    }
     h = rhi_wait_begin();
     hr = IDirect3DDevice9_Present(g_dev, NULL, g_present_rect_set ? &g_present_rect : NULL,
                                   NULL, NULL);
@@ -1067,20 +1127,19 @@ static IDirect3DSurface9 *level_surface(IDirect3DBaseTexture9 *t, int cube, uint
     return s;
 }
 
-/* Under Remix, a texture whose texels change after a draw has used it is
- * made anew first. Remix knows a texture by the hash of its first level,
- * taken once, when a draw first uses it (D3D9CommonTexture::SetupForRtxFrom),
- * and not again when the texels change unless rtx.recomputeTextureHashOnWrite
- * is set: Max Payne fills its graphic novel's pages after their first use,
- * and Remix kept them blank. A new D3D9 texture is hashed afresh. What the
+/* When a mod asks (rhi_d3d9_mod_remake_written_textures), a texture whose
+ * texels change after a draw has used it is made anew first, for a D3D9
+ * runtime that knows a texture by the hash of its first level, taken once,
+ * when a draw first uses it: RTX Remix does so (D3D9CommonTexture::
+ * SetupForRtxFrom), and kept Max Payne's graphic novel pages, filled after
+ * their first use, blank. A new D3D9 texture is hashed afresh. What the
  * old one held is copied over, so a write of a part lands on the rest as
  * before. Managed 2D and cube textures only: what a title fills from the CPU.
- * Only for writes to the level Remix hashes (subresource 0), and not for one
- * that writes it whole with what it already held: a title that uploads the
- * same texels every frame would otherwise get a new texture every frame,
- * which Remix would load again every frame. At most once between draws that
+ * Only for writes to level 0, and not for one that writes it whole with what
+ * it already held: a title that uploads the same texels every frame would
+ * otherwise get a new texture every frame. At most once between draws that
  * use it, however many writes come between. Each one is counted on stderr. */
-static void remix_fresh_texture(RhiImage *img)
+static void remake_texture(RhiImage *img)
 {
     const RhiImageDesc *d = &img->desc;
     uint32_t levels = d->mip_levels ? d->mip_levels : 1, faces = d->cube ? 6 : 1, f, m, i;
@@ -1088,7 +1147,7 @@ static void remix_fresh_texture(RhiImage *img)
     HRESULT hr;
 
     img->drawn = 0;
-    if (!g_remix_2d || img->pool != D3DPOOL_MANAGED || !old || d->type == RHI_IMAGE_3D)
+    if (!g_remake_written || img->pool != D3DPOOL_MANAGED || !old || d->type == RHI_IMAGE_3D)
         return;
     if (d->cube)
         hr = IDirect3DDevice9_CreateCubeTexture(g_dev, d->width, levels, 0, img->fmt,
@@ -1132,13 +1191,13 @@ static void remix_fresh_texture(RhiImage *img)
         static unsigned made;
 
         if (++made <= 16 || !(made & 255))
-            fprintf(stderr, "[RHI] d3d9: Remix: a %ux%u texture (D3D9 format %u) written "
+            fprintf(stderr, "[RHI] d3d9: a %ux%u texture (D3D9 format %u) written "
                     "after use is made anew (%u so far)\n", d->width, d->height,
                     (unsigned)img->fmt, made);
     }
 }
 
-/* All of a level's bytes, for remix_fresh_texture. */
+/* All of a level's bytes, for remake_texture. */
 static uint64_t texels_hash(const void *data, size_t bytes)
 {
     const uint8_t *p = data;
@@ -1172,11 +1231,11 @@ static void d9_image_update(RhiImage *img, uint32_t sub, const RhiBox *box,
     rows = img->block ? (h + 3) / 4 : h;
     if (sub == 0 && !box && data)
         img->id = image_id(img, data, (size_t)row_pitch * rows);
-    if (g_remix_2d && sub == 0 && data) {
+    if (g_remake_written && sub == 0 && data) {
         uint64_t t = box ? 0 : texels_hash(data, (size_t)row_pitch * rows);
 
         if (img->drawn && (box || t != img->texels))
-            remix_fresh_texture(img);
+            remake_texture(img);
         img->texels = t;                /* 0 after a part: not known */
     }
 
@@ -1421,8 +1480,10 @@ static RhiShader *d9_shader_create(uint32_t stage, const RhiShaderSource *src, c
                                    size_t err_len)
 {
     D3D_SHADER_MACRO macros[16];
-    const char *prelude = stage == RHI_STAGE_VERTEX ? kVsPrelude : kPsPrelude;
-    size_t plen = strlen(prelude);
+    int vertex = stage == RHI_STAGE_VERTEX;
+    const char *prelude = vertex ? kVsPrelude : kPsPrelude;
+    size_t plen = strlen(prelude), mlen = vertex ? strlen(g_mod_vs_hlsl) : 0;
+    size_t elen = vertex ? strlen(kVsPreludeEnd) : 0;
     RhiShaderSource full = *src;
     ID3DBlob *code = NULL, *errors = NULL;
     const DWORD *bytes;
@@ -1433,10 +1494,13 @@ static RhiShader *d9_shader_create(uint32_t stage, const RhiShaderSource *src, c
 
     if (err && err_len)
         err[0] = 0;
-    text = malloc(plen + src->len + 1);
+    text = malloc(plen + mlen + elen + src->len + 1);
     if (!text)
         return NULL;
     memcpy(text, prelude, plen);
+    memcpy(text + plen, g_mod_vs_hlsl, mlen);
+    memcpy(text + plen + mlen, kVsPreludeEnd, elen);
+    plen += mlen + elen;
     memcpy(text + plen, src->hlsl, src->len);
     text[plen + src->len] = 0;
     full.hlsl = text;
@@ -1946,8 +2010,8 @@ static void apply_viewport(void)
     vp.Y = (DWORD)y0;
     vp.Width = (DWORD)aw;
     vp.Height = (DWORD)ah;
-    vp.MinZ = g_sky_viewport ? 1.0f : g_b.vp.min_depth;
-    vp.MaxZ = g_sky_viewport ? 1.0f : g_b.vp.max_depth;
+    vp.MinZ = g_b.vp.min_depth;
+    vp.MaxZ = g_b.vp.max_depth;
     IDirect3DDevice9_SetViewport(g_dev, &vp);
 
     /* ndc' = ndc * (w / aw) + offset, so that a point lands on the pixel the
@@ -2015,80 +2079,20 @@ static void apply_projection(void)
         set_projection(g_ff_proj);
 }
 
-/* Whether the next draw, which the title's own test called screen-space
- * (rhi_d3d9_title_says_2d), is handed to Remix flat: with WORLD and VIEW
- * identity and, as PROJECTION, the draw's own WORLD x VIEW x PROJECTION
- * divided by its clip w, with w out of it (orthographic: its last column
- * 0, 0, 0, 1). The draw sits at one depth, so every vertex lands where it
- * did, and its texels too (perspective divides by the same w throughout);
- * but Remix sees an orthographic draw. A whole frame of Max Payne's 2D --
- * its menus, its graphic novel -- drawn under its perspective camera came
- * out black under Remix when marked UI, and washed out or grey when traced.
- * Only a draw marked UI (screen_draw_kind), so not in a frame that has drawn
- * no 3D yet: Max Payne's menus, nothing but such draws, stay black under
- * Remix flat or not, where its graphic novel, after one draw of its own
- * camera's, comes out as in D3D11. Not under lighting (WORLD and VIEW place the lights) or fog (VIEW gives
- * the fog depth). RECOMP_D3D9_FLAT_2D=0 turns it off; =2, a test switch,
- * marks and flattens such draws in a frame with no 3D too. */
-static int flat_2d_mode(void)
+/* recomp_mod.h's d3d9_set_projection and d3d9_render_state. */
+void rhi_d3d9_mod_set_projection(const float m[16])
 {
-    static int mode = -1;
-
-    if (mode < 0) {
-        const char *e = getenv("RECOMP_D3D9_FLAT_2D");
-        mode = e && e[0] >= '0' && e[0] <= '2' ? e[0] - '0' : 1;
-    }
-    return mode;
+    if (rhi_d3d9_active() && m)
+        set_projection(m);
 }
 
-static int flat_2d(void)
+int rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value)
 {
-    return flat_2d_mode() && g_remix_2d && g_title_draw && g_title_said_2d && g_draw_ui && g_title_2d_w > 0.0f && !g_b.vs &&
-           g_ff_proj_set && g_rs_known[D3DRS_LIGHTING] && !g_rs[D3DRS_LIGHTING] &&
-           !(g_rs_known[D3DRS_FOGENABLE] && g_rs[D3DRS_FOGENABLE]);
-}
-
-static void mat_mul(float *out, const float *a, const float *b)
-{
-    int r, c, k;
-
-    for (r = 0; r < 4; r++)
-        for (c = 0; c < 4; c++) {
-            float s = 0.0f;
-            for (k = 0; k < 4; k++)
-                s += a[r * 4 + k] * b[k * 4 + c];
-            out[r * 4 + c] = s;
-        }
-}
-
-/* The device's transforms for the next draw: a flat_2d draw's, or the
- * title's back after one. */
-static void apply_flat_2d(void)
-{
-    static const float identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-    float wv[16], m[16];
-    int i;
-
-    if (!flat_2d()) {
-        if (g_flat_applied) {
-            IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, (const D3DMATRIX *)g_dev_world);
-            IDirect3DDevice9_SetTransform(g_dev, D3DTS_VIEW, (const D3DMATRIX *)g_dev_view);
-            g_ff_proj_dirty = 1;
-            g_flat_applied = 0;
-        }
-        return;
-    }
-    mat_mul(wv, g_dev_world, g_dev_view);
-    mat_mul(m, wv, g_ff_proj);
-    for (i = 0; i < 16; i++)
-        m[i] /= g_title_2d_w;
-    m[3] = m[7] = m[11] = 0.0f;
-    m[15] = 1.0f;
-    IDirect3DDevice9_SetTransform(g_dev, D3DTS_WORLD, (const D3DMATRIX *)identity);
-    IDirect3DDevice9_SetTransform(g_dev, D3DTS_VIEW, (const D3DMATRIX *)identity);
-    set_projection(m);
-    g_ff_proj_dirty = 0;
-    g_flat_applied = 1;
+    if (state >= RS_COUNT || !g_rs_known[state])
+        return 0;
+    if (value)
+        *value = g_rs[state];
+    return 1;
 }
 
 static void stencil_face(const RhiStencilFace *f, int ccw)
@@ -2236,6 +2240,21 @@ static void apply_constants(void)
     }
 }
 
+/* Whether the draw in hand is clamped at the near plane too. Screen-space, or
+ * added to the picture without writing depth: a snowflake passing the eye is
+ * kept, and has no surface to stay level with. */
+static float near_clamp(void)
+{
+    const RhiDepthDesc *d = g_b.depth ? &g_b.depth->d : NULL;
+
+    if (!g_draw_title)
+        return 0.0f;
+    if (g_title_2d)
+        return 1.0f;
+    return d && !d->depth_write && g_rs[D3DRS_ALPHABLENDENABLE] &&
+           g_rs[D3DRS_DESTBLEND] == D3DBLEND_ONE ? 1.0f : 0.0f;
+}
+
 static int prepare_draw(void)
 {
     int i;
@@ -2243,10 +2262,10 @@ static int prepare_draw(void)
     if (!g_dev)
         return 0;
     scene_begin();
-    if (g_remix_2d)
+    if (g_remake_written)
         for (i = 0; i < 16; i++)
             if (g_b.tex[i] && g_b.tex[i]->image)
-                g_b.tex[i]->image->drawn = 1;   /* remix_fresh_texture */
+                g_b.tex[i]->image->drawn = 1;   /* remake_texture */
     if (g_b.vp_dirty) {
         apply_viewport();
         g_b.vp_dirty = 0;
@@ -2264,7 +2283,6 @@ static int prepare_draw(void)
         apply_samplers();
         g_b.samp_dirty = 0;
     }
-    apply_flat_2d();
     if (g_ff_proj_dirty) {
         apply_projection();
         g_ff_proj_dirty = 0;
@@ -2273,7 +2291,12 @@ static int prepare_draw(void)
      * too), and is the title's draws' alone: the overlay and the other
      * passes are drawn without it. */
     set_rs(D3DRS_ALPHATESTENABLE, g_title_draw ? g_title_alpha_test : FALSE);
+    g_draw_title = g_title_draw;
     g_title_draw = 0;
+    if (g_b.clamp[1] != near_clamp()) {
+        g_b.clamp[1] = near_clamp();
+        g_b.clamp_sent = 0;
+    }
     apply_constants();
     if (g_b.layout) {
         /* Stream 0 back from the vertex numbers to what rhi.h bound there:
@@ -2331,348 +2354,104 @@ static void draw_failed(const char *what, HRESULT hr)
             g_b.layout ? "title's" : "vertex numbers", tw, th, g_in_scene);
 }
 
-/* Remix ray traces every program draw as geometry. The title draws its 2D
- * (HUD, text, sprites, the screen glow and blur passes) with programs too,
- * in 640x480 pixels just in front of the camera under an orthographic
- * projection, and Remix took that for a wall across the view: black, grey
- * and garbage frames, and a dark scene until the 2D stopped.
- *
- * Remix rasterises a draw instead when a texture listed in rtx.uiTextures is
- * bound, and composites its ray-traced picture at the first such draw;
- * whatever comes after is rasterised on top. So under Remix a title's program
- * draw that the renderer judges screen-space (rhi_d3d9_title_draw: its
- * program uses no projection, or an orthographic one) is
- *  - left out when it samples a copy of the screen (the blur passes: the copy
- *    holds the rasterised picture, which they would paste over the ray-traced
- *    one), or when the same kind of 2D draw was followed by 3D in the frame
- *    before (TimeSplitters 2's muzzle glow, drawn before the weapon: as UI it
- *    would composite the picture before the weapon was drawn). A kind is
- *    the program, the texture, the blend and the topology; each frame
- *    relearns which kinds come mid-frame (learn_2d), so a frame whose layout
- *    changes is wrong for one frame at most;
- *  - marked as UI otherwise, by binding g_ui_mark to vertex sampler 3, which
- *    RHI_VP_ADJUST samples, and to pixel stage 6. Remix looks for it among
- *    the samplers the draw's shaders use, and a fixed-function draw has no
- *    vertex shader: its pixel stages 0 to 6 are what counts. An Xbox title
- *    has four stages, so stage 6 is never one it uses. (Under a register
- *    combiner program the pixel shader's own samplers count instead, and
- *    the mark is not among them: such a draw is not marked.)
- * A fixed-function draw Remix judges by itself (pre-transformed, or under an
- * orthographic projection), unless the title's own test said it is
- * screen-space (rhi_d3d9_title_says_2d): Max Payne draws its HUD, menus and
- * graphic novel as quads at one depth under the camera that draws the world,
- * which Remix traced as geometry far out in the level, behind its walls.
- * Such a draw is marked only once the frame has drawn some 3D: a frame of
- * nothing but such draws (Max Payne's menus), all marked UI, came out black
- * under Remix, where the same draws marked after 3D (its HUD) show.
- * Unmarked, they are traced, as before. Marked, it is handed to Remix flat,
- * orthographic (flat_2d), where it can be.
- * The sky is the frame's first draws, before any that writes depth, drawn
- * through the level's own program with depth always passing and not
- * written. As geometry it was a closed box around the level that kept out
- * Remix's light (a dark picture, lit only for a moment after the camera
- * moved). Remix takes a draw whose viewport's minimum depth is 1 for sky,
- * and these draws' depth goes nowhere, so they get that viewport.
- * RECOMP_D3D9_REMIX_2D=0 turns all of this off, =1 on without Remix.
- *
- * RECOMP_D3D9_SKIP_ORTHO=1 is a test switch, not for play: every such draw is
- * left out, to see what the 2D does to Remix's picture. */
+/* RECOMP_D3D9_SKIP_VS (d3d8_vsh.c), a test switch: the next draw is left out. */
 static int g_skip_next;
-
-#define UI_MARK_STAGE 6
-
-enum { DRAW_PLAIN, DRAW_SKIP, DRAW_UI };
-
-/* The kinds of 2D draw seen, and whether 3D came after one last frame. */
-#define KINDS_2D      256
-#define FRAME_2D_MAX  1024
-static struct { uint64_t kind; uint8_t used, mid; } g_kinds_2d[KINDS_2D];
-static uint64_t g_frame_2d[FRAME_2D_MAX];       /* this frame's 2D draws, in order */
-static uint32_t g_frame_2d_at[FRAME_2D_MAX];    /* and their draw numbers */
-static uint32_t g_frame_2d_n, g_frame_draws, g_frame_last_3d;
-
-static uint64_t kind_2d(void)
-{
-    RhiView *t0 = g_b.tex[0];
-    uint64_t h = 1469598103934665603ull, v[6];
-    int i;
-
-    /* What the program and the texture are, not where they live: a replayed
-     * frame makes both anew every time round (image_id). */
-    v[0] = g_b.vs ? g_b.vs->id : 0;
-    v[1] = t0 && t0->image ? t0->image->id : 0;
-    v[2] = g_rs[D3DRS_ALPHABLENDENABLE];
-    v[3] = g_rs[D3DRS_SRCBLEND];
-    v[4] = g_rs[D3DRS_DESTBLEND];
-    v[5] = g_b.topology;
-    for (i = 0; i < 6; i++)
-        h = (h ^ v[i]) * 1099511628211ull;
-    return h ? h : 1;
-}
-
-static int kind_slot(uint64_t kind)
-{
-    uint32_t i = (uint32_t)(kind ^ (kind >> 32)) % KINDS_2D, n;
-
-    for (n = 0; n < KINDS_2D; n++, i = (i + 1) % KINDS_2D)
-        if (!g_kinds_2d[i].used || g_kinds_2d[i].kind == kind)
-            return (int)i;
-    return -1;
-}
-
-/* At the end of a frame: a kind of 2D draw is mid-frame if 3D followed one
- * of its draws this frame. Kinds this frame did not draw keep what they were. */
-static void learn_2d(void)
-{
-    uint32_t i;
-
-    for (i = 0; i < g_frame_2d_n; i++) {
-        int s = kind_slot(g_frame_2d[i]);
-        if (s >= 0) {
-            g_kinds_2d[s].used = 1;
-            g_kinds_2d[s].kind = g_frame_2d[i];
-            g_kinds_2d[s].mid = 0;
-        }
-    }
-    /* Then any of a kind's draws before the last 3D draw makes it mid-frame. */
-    for (i = 0; i < g_frame_2d_n; i++) {
-        int s = kind_slot(g_frame_2d[i]);
-        if (s >= 0 && g_frame_2d_at[i] < g_frame_last_3d)
-            g_kinds_2d[s].mid = 1;
-    }
-    g_frame_2d_n = g_frame_draws = g_frame_last_3d = 0;
-}
-
-
-/* A fixed-function draw whose WORLD x VIEW x PROJECTION leaves w alone
- * (identity or orthographic: quads given in clip space or in pixels), into a
- * texture the title renders into rather than its back buffer: a post pass.
- * Rainbow Six 3 builds its blur and bloom so, with every transform identity,
- * into a texture the size of the screen, which Remix takes for the frame's
- * picture: it ray traced those quads and took their camera, at the origin
- * looking down z, for the frame's, and the whole level came out black. */
-/* A draw that cannot change the colour it is drawn over (blend ZERO, ONE;
- * or no colour written): it writes only depth or stencil, which Remix's
- * picture does not use. Traced, it is a wall of whatever it covers:
- * Rainbow Six 3's (Unreal's) full-screen pass that resets depth after its
- * sky stood as a red plane across the view. */
-static int colourless(void)
-{
-    if ((g_rs[D3DRS_COLORWRITEENABLE] & 7u) == 0)
-        return 1;
-    return g_rs[D3DRS_ALPHABLENDENABLE] && g_rs[D3DRS_SRCBLEND] == D3DBLEND_ZERO &&
-           g_rs[D3DRS_DESTBLEND] == D3DBLEND_ONE && g_rs[D3DRS_BLENDOP] == D3DBLENDOP_ADD;
-}
-
-/* The sky zone (sky_zone_draw): what this frame has seen so far, and what
- * the frame before taught. */
-static int   g_frame_ff3d;              /* fixed-function 3D draws this frame */
-static int   g_frame_reset;             /* depth was reset after some of them */
-static float g_frame_pre_eye[3], g_frame_main_eye[3];
-static int   g_frame_pre_set, g_frame_main_set;
-static int   g_frame_pre_n, g_frame_post_n;  /* draws before and after the reset */
-static int   g_sky_zone;                /* the frame before began with a sky zone */
-static float g_sky_main_eye[3], g_sky_dist;
-
-static void view_eye(const float *v, float eye[3])
-{
-    int j;
-
-    for (j = 0; j < 3; j++)
-        eye[j] = -(v[12] * v[j * 4 + 0] + v[13] * v[j * 4 + 1] + v[14] * v[j * 4 + 2]);
-}
-
-static float eye_dist(const float *a, const float *b)
-{
-    float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
-
-    return sqrtf(x * x + y * y + z * z);
-}
-
-/* Depth is reset mid-frame: cleared, or written by a colour-less pass that
- * always passes, after some 3D. */
-static void note_depth_reset(void)
-{
-    if (g_frame_ff3d)
-        g_frame_reset = 1;
-}
-
-/* Whether a fixed-function 3D draw is the frame's sky zone, as Unreal draws
- * it (Rainbow Six 3): the frame's first draws, through a camera turned as
- * the world's but standing elsewhere (inside a small box the level builds
- * its sky in), and then depth is reset before the world. Traced, that box
- * closed around the camera and hid the level. A frame does not know which
- * camera is the world's until after the reset, so the frame before teaches
- * it: it began so if a reset came after draws through one eye and before
- * more draws through another (fewer before than after: a world drawn
- * before a reset and a 3D gadget after it is not a sky zone). Then this frame's draws before any reset, through
- * an eye far from where the world's was (more than half as far as the sky
- * zone's was from it), are sky. A frame laid out otherwise is wrong for one
- * frame at most. */
-static int sky_zone_draw(void)
-{
-    float eye[3];
-
-    view_eye(g_dev_view, eye);
-    g_frame_ff3d++;
-    if (!g_frame_reset) {
-        g_frame_pre_n++;
-        if (!g_frame_pre_set) {
-            memcpy(g_frame_pre_eye, eye, sizeof eye);
-            g_frame_pre_set = 1;
-        }
-        return g_sky_zone && eye_dist(eye, g_sky_main_eye) > 0.5f * g_sky_dist;
-    }
-    g_frame_post_n++;
-    if (!g_frame_main_set) {
-        memcpy(g_frame_main_eye, eye, sizeof eye);
-        g_frame_main_set = 1;
-    }
-    return 0;
-}
-
-/* At the end of a frame: whether it began with a sky zone. */
-static void learn_sky_zone(void)
-{
-    float d = g_frame_pre_set && g_frame_main_set ? eye_dist(g_frame_pre_eye, g_frame_main_eye)
-                                                  : 0.0f;
-    float scale = sqrtf(g_frame_main_eye[0] * g_frame_main_eye[0] +
-                        g_frame_main_eye[1] * g_frame_main_eye[1] +
-                        g_frame_main_eye[2] * g_frame_main_eye[2]);
-
-    g_sky_zone = g_frame_reset && g_frame_pre_n < g_frame_post_n &&
-                 d > 1e-3f * (scale > 1.0f ? scale : 1.0f);
-    if (g_sky_zone) {
-        memcpy(g_sky_main_eye, g_frame_main_eye, sizeof g_sky_main_eye);
-        g_sky_dist = d;
-    }
-    g_frame_ff3d = g_frame_reset = g_frame_pre_set = g_frame_main_set = 0;
-    g_frame_pre_n = g_frame_post_n = 0;
-}
-
-static int offscreen_pass(void)
-{
-    float vp[4], c[4];
-    int r, k;
-
-    if (g_b.vs || !g_title_offscreen || !g_ff_proj_set)
-        return 0;
-    for (r = 0; r < 4; r++)
-        for (vp[r] = 0.0f, k = 0; k < 4; k++)
-            vp[r] += g_dev_view[r * 4 + k] * g_ff_proj[k * 4 + 3];
-    for (r = 0; r < 4; r++)
-        for (c[r] = 0.0f, k = 0; k < 4; k++)
-            c[r] += g_dev_world[r * 4 + k] * vp[k];
-    return fabsf(c[0]) < 1e-6f && fabsf(c[1]) < 1e-6f && fabsf(c[2]) < 1e-6f &&
-           fabsf(c[3] - 1.0f) < 1e-6f;
-}
-
-static int screen_draw_kind(void)
-{
-    static int skip_all = -1;
-    int title = g_title_draw, two_d = g_title_draw && g_title_2d, skip = g_skip_next;
-    RhiView *t0 = g_b.tex[0];
-
-    if (skip_all < 0) {
-        const char *e = getenv("RECOMP_D3D9_SKIP_ORTHO");
-        skip_all = e && e[0] == '1';
-    }
-    g_skip_next = 0;
-    if (skip || (skip_all && two_d))
-        return DRAW_SKIP;
-    if (!g_remix_2d || !title)
-        return DRAW_PLAIN;      /* the overlay and the display passes */
-    if (offscreen_pass())
-        return DRAW_SKIP;
-    if (colourless()) {
-        const RhiDepthDesc *d = g_b.depth ? &g_b.depth->d : NULL;
-
-        if (d && d->depth_enable && d->depth_write && d->depth_func == D3DCMP_ALWAYS)
-            note_depth_reset();
-        return DRAW_SKIP;
-    }
-    g_frame_draws++;
-    if (!two_d) {
-        g_frame_last_3d = g_frame_draws;
-        return DRAW_PLAIN;
-    }
-    if (!g_b.vs && !g_title_said_2d)
-        return DRAW_PLAIN;      /* fixed function: Remix judges its 2D itself */
-    if (!g_b.vs && !g_frame_last_3d && flat_2d_mode() != 2)
-        return DRAW_PLAIN;      /* title-declared, with no 3D yet this frame */
-    if (t0 && t0->image && t0->image->screen_copy)
-        return DRAW_SKIP;
-    {
-        uint64_t kind = kind_2d();
-        int s = kind_slot(kind);
-
-        if (g_frame_2d_n < FRAME_2D_MAX) {
-            g_frame_2d[g_frame_2d_n] = kind;
-            g_frame_2d_at[g_frame_2d_n++] = g_frame_draws;
-        }
-        if (s >= 0 && g_kinds_2d[s].used && g_kinds_2d[s].kind == kind && g_kinds_2d[s].mid)
-            return DRAW_SKIP;
-    }
-    return DRAW_UI;
-}
-
-/* Whether every depth, 1 (the sky viewport) among them, passes a depth test
- * against a buffer cleared to c and not yet written, so that moving the draw
- * to depth 1 changes nothing in the picture. */
-static int passes_at_far(uint32_t func, float c)
-{
-    if (func == D3DCMP_ALWAYS)
-        return 1;
-    if (c < 0.0f)
-        return 0;                       /* not cleared this frame: unknown */
-    if (func == D3DCMP_LESSEQUAL)
-        return c >= 1.0f;
-    if (func == D3DCMP_GREATEREQUAL)
-        return c <= 0.0f;               /* a reversed depth range */
-    return 0;
-}
-
-/* Tells Remix what the next draw is (UI, sky or neither); 0 if it is not to
- * be drawn. A sky is drawn before anything writes depth, and writes none:
- * with depth off or always passing, or tested against a buffer just cleared,
- * where it passes as it would at depth 1 (Planet X's backdrop tests with
- * LESSEQUAL against a buffer cleared to 1). */
-static int remix_draw(void)
-{
-    const RhiDepthDesc *d = g_b.depth ? &g_b.depth->d : NULL;
-    int kind = screen_draw_kind(), ui = kind == DRAW_UI;
-    int zwrite = d ? d->depth_enable && d->depth_write : 1;
-    int zalways = d && (!d->depth_enable || passes_at_far(d->depth_func, g_frame_zclear));
-    int title_3d = g_title_draw && !g_title_2d;
-    int sky = g_remix_2d && g_b.vs && title_3d && kind == DRAW_PLAIN && !g_frame_zwritten &&
-              !zwrite && zalways;
-
-    if (g_remix_2d && !g_b.vs && title_3d && kind == DRAW_PLAIN && sky_zone_draw())
-        sky = 1;
-
-    g_draw_ui = ui;
-
-    if (kind == DRAW_SKIP)
-        return 0;
-    if (zwrite && title_3d)
-        g_frame_zwritten = 1;
-    if (g_ui_mark && ui != g_ui_mark_bound) {
-        IDirect3DBaseTexture9 *t = ui ? (IDirect3DBaseTexture9 *)g_ui_mark : NULL;
-
-        IDirect3DDevice9_SetTexture(g_dev, D3DVERTEXTEXTURESAMPLER3, t);
-        IDirect3DDevice9_SetTexture(g_dev, UI_MARK_STAGE, t);
-        g_ui_mark_bound = ui;
-    }
-    if (sky != g_sky_viewport) {
-        g_sky_viewport = sky;
-        g_b.vp_dirty = 1;
-    }
-    return 1;
-}
 
 void rhi_d3d9_skip_next_draw(void)
 {
     g_skip_next = 1;
+}
+
+/* What the mods are told of the draw in hand (mod_before_draw). */
+static RecompModDraw g_mod_d;
+static float         g_prog_proj[16];   /* rhi_d3d9_program_projection */
+static int           g_prog_proj_set;
+static int           g_mod_called;      /* how many befores ran for it */
+
+/* After prepare_draw: the mods' befores, in the order they asked. 0 when
+ * the draw is to be left out (the befores after that one are not asked,
+ * and no after is called). */
+static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, const void *indices,
+                           uint32_t index_bytes, int32_t base, uint32_t first, uint32_t vertices)
+{
+    RecompModDraw *d = &g_mod_d;
+    const RhiDepthDesc *dd = g_b.depth ? &g_b.depth->d : NULL;
+    int i;
+
+    g_mod_called = 0;
+    if (!g_mod_draw_n)
+        return 1;
+    memset(d, 0, sizeof *d);
+    d->size = sizeof *d;
+    d->device = g_dev;
+    d->title = g_draw_title;
+    d->two_d = g_draw_title && g_title_2d;
+    d->title_2d = g_draw_title && g_title_said_2d;
+    d->clip_w = g_title_2d_w;
+    d->offscreen = g_title_offscreen;
+    d->program = g_b.vs != NULL;
+    d->program_id = g_b.vs ? g_b.vs->id : 0;
+    d->primitive = (uint32_t)type;
+    d->primitives = prims;
+    for (i = 0; i < 8; i++) {
+        RhiImage *img = g_b.tex[i] ? g_b.tex[i]->image : NULL;
+
+        if (!img)
+            continue;
+        d->textures[i] = img->tex;
+        d->texture_ids[i] = img->id;
+        if (img->screen_copy)
+            d->screen_copies |= 1u << i;
+    }
+    if (dd) {
+        d->depth_state = 1;
+        d->depth_enable = dd->depth_enable != 0;
+        d->depth_write = dd->depth_write != 0;
+        d->depth_func = dd->depth_func;
+    }
+    d->projection_set = g_ff_proj_set;
+    memcpy(d->projection, g_ff_proj, sizeof d->projection);
+    memcpy(d->world, g_dev_world, sizeof d->world);
+    memcpy(d->view, g_dev_view, sizeof d->view);
+    d->program_projection_set = g_b.vs && g_prog_proj_set;
+    if (d->program_projection_set)
+        memcpy(d->program_projection, g_prog_proj, sizeof d->program_projection);
+    d->indexed = indices != NULL;
+    d->first_vertex = first;
+    d->vertices = vertices;
+    d->indices = indices;
+    d->index_bytes = index_bytes;
+    d->index_count = indices ? vertices : 0;
+    d->base_vertex = base;
+    for (i = 0; i < g_mod_draw_n; i++) {
+        if (!g_mod_draw[i].before) {
+            g_mod_called++;
+            continue;
+        }
+        if (g_mod_draw[i].before(d, g_mod_draw[i].user) == RECOMP_DRAW_SKIP)
+            return 0;
+        g_mod_called++;
+    }
+    return 1;
+}
+
+static void mod_after_draw(void)
+{
+    int i;
+
+    for (i = g_mod_called - 1; i >= 0; i--)
+        if (g_mod_draw[i].after)
+            g_mod_draw[i].after(&g_mod_d, g_mod_draw[i].user);
+    g_mod_called = 0;
+}
+
+/* The test switch's draw is left out before anything else sees it. */
+static int skip_this_draw(void)
+{
+    int skip = g_skip_next;
+
+    g_skip_next = 0;
+    return skip;
 }
 
 static void d9_draw(uint32_t n, uint32_t first)
@@ -2681,13 +2460,16 @@ static void d9_draw(uint32_t n, uint32_t first)
     UINT prims = prim_count(g_b.topology, n, &type);
     HRESULT hr;
 
-    if (!remix_draw() || !prims || !prepare_draw())
+    if (skip_this_draw() || !prims || !prepare_draw())
         return;
     if (!g_b.layout && first + n > VID_COUNT)
+        return;
+    if (!mod_before_draw(type, prims, NULL, 0, 0, first, n))
         return;
     hr = IDirect3DDevice9_DrawPrimitive(g_dev, type, first, prims);
     if (FAILED(hr))
         draw_failed("DrawPrimitive", hr);
+    mod_after_draw();
 }
 
 static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
@@ -2701,7 +2483,7 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     DWORD flags = D3DLOCK_NOOVERWRITE;
     HRESULT hr;
 
-    if (!remix_draw() || !prims || !g_b.ib || !prepare_draw())
+    if (skip_this_draw() || !prims || !g_b.ib || !prepare_draw())
         return;
     src_off = g_b.ib_offset + first * isz;
     if (src_off + bytes > g_b.ib->desc.size || bytes > IRING_BYTES)
@@ -2726,10 +2508,13 @@ static void d9_draw_indexed(uint32_t n, uint32_t first, int32_t base)
     memcpy(dst, src, bytes);
     IDirect3DIndexBuffer9_Unlock(g_iring[which]);
     IDirect3DDevice9_SetIndices(g_dev, g_iring[which]);
-    hr = IDirect3DDevice9_DrawIndexedPrimitive(g_dev, type, base, lo, hi - lo + 1,
-                                               g_iring_pos[which] / isz, prims);
-    if (FAILED(hr))
-        draw_failed("DrawIndexedPrimitive", hr);
+    if (mod_before_draw(type, prims, src, isz, base, 0, n)) {
+        hr = IDirect3DDevice9_DrawIndexedPrimitive(g_dev, type, base, lo, hi - lo + 1,
+                                                   g_iring_pos[which] / isz, prims);
+        if (FAILED(hr))
+            draw_failed("DrawIndexedPrimitive", hr);
+        mod_after_draw();
+    }
     g_iring_pos[which] += (bytes + 15u) & ~15u;
 }
 
@@ -2751,6 +2536,7 @@ static void d9_clear_color(RhiView *v, const float *rgba)
         }
         g_b.vp_dirty = g_b.scissor_dirty = 1;
     }
+    mod_cleared(RECOMP_CLEAR_COLOR, 0.0f, 1);
 }
 
 static void d9_clear_depth(RhiView *v, uint32_t flags, float z, uint8_t s)
@@ -2764,10 +2550,8 @@ static void d9_clear_depth(RhiView *v, uint32_t flags, float z, uint8_t s)
     if (flags & RHI_CLEAR_STENCIL) f |= D3DCLEAR_STENCIL;
     if (!f)
         return;
-    if (f & D3DCLEAR_ZBUFFER) {
-        g_frame_zclear = z;
-        note_depth_reset();
-    }
+    mod_cleared(((f & D3DCLEAR_ZBUFFER) ? RECOMP_CLEAR_DEPTH : 0) |
+                ((f & D3DCLEAR_STENCIL) ? RECOMP_CLEAR_STENCIL : 0), z, 1);
     /* Clear works on what is bound, and clips to the viewport: bind the
      * surface, clear it whole, and put things back. */
     IDirect3DDevice9_GetDepthStencilSurface(g_dev, &cur);
@@ -2812,6 +2596,9 @@ int rhi_d3d9_clear_rects(RhiView *color, RhiView *depth, uint32_t width, uint32_
     }
     if (!f || !width || !height)
         return 0;
+    mod_cleared(((f & D3DCLEAR_TARGET) ? RECOMP_CLEAR_COLOR : 0) |
+                ((f & D3DCLEAR_ZBUFFER) ? RECOMP_CLEAR_DEPTH : 0) |
+                ((f & D3DCLEAR_STENCIL) ? RECOMP_CLEAR_STENCIL : 0), z, 0);
 
     /* Clear clears what is bound, inside the viewport and the scissor. */
     if (f & D3DCLEAR_TARGET)
@@ -2851,6 +2638,7 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     IDirect3DSurface9 *from;
     RECT sr, dr;
     HRESULT hr;
+    int i;
 
     if (!rhi_d3d9_active() || !src || !src->image || !dst || !dst->surf)
         return -1;
@@ -2858,6 +2646,28 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     if (!from)
         return -1;
     scene_end();
+    for (i = 0; i < g_mod_copy_n; i++) {
+        RecompModCopy c;
+        IDirect3DSurface9 *other;
+
+        memset(&c, 0, sizeof c);
+        c.size = sizeof c;
+        c.device = g_dev;
+        c.source = from;
+        c.dest = dst->surf;
+        if (src_rect) {
+            c.rect = 1;
+            c.left = src_rect->left; c.top = src_rect->top;
+            c.right = src_rect->right; c.bottom = src_rect->bottom;
+        }
+        other = (IDirect3DSurface9 *)g_mod_copy[i].fn(&c, g_mod_copy[i].user);
+        if (other) {
+            IDirect3DSurface9_AddRef(other);
+            IDirect3DSurface9_Release(from);
+            from = other;
+            break;
+        }
+    }
     if (src_rect) {
         sr.left = src_rect->left; sr.top = src_rect->top;
         sr.right = src_rect->right; sr.bottom = src_rect->bottom;
@@ -2876,7 +2686,7 @@ int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
     return 0;
 }
 
-/* ---- fixed function and Remix --------------------------------------------------------- */
+/* ---- fixed function ------------------------------------------------------------------ */
 
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value)
 {
@@ -2946,19 +2756,24 @@ void rhi_d3d9_set_material(const void *material)
         IDirect3DDevice9_SetMaterial(g_dev, (const D3DMATERIAL9 *)material);
 }
 
-void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16])
+/* d3d8_vsh.c's program projection, for the draw in hand (mod_before_draw). */
+void rhi_d3d9_program_projection(const float proj[16])
 {
-    if (!rhi_d3d9_active())
-        return;
-    if (world)
-        rhi_d3d9_set_transform(D3DTS_WORLD, world);
-    if (view)
-        rhi_d3d9_set_transform(D3DTS_VIEW, view);
-    /* The projection Remix inverts is the clip space the program writes
-     * after RHI_VP_ADJUST, which is what the fixed-function projection is
-     * given too: the one transform serves both kinds of draw. */
+    g_prog_proj_set = proj != NULL;
     if (proj)
-        rhi_d3d9_set_transform(D3DTS_PROJECTION, proj);
+        memcpy(g_prog_proj, proj, sizeof g_prog_proj);
+}
+
+/* recomp_mod.h's d3d9_set_transform: as the title's own, and from a mod's
+ * before, for the draw in hand too (whose projection prepare_draw has
+ * already applied). */
+void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16])
+{
+    rhi_d3d9_set_transform(type, m);
+    if (rhi_d3d9_active() && type == D3DTS_PROJECTION && g_ff_proj_dirty) {
+        apply_projection();
+        g_ff_proj_dirty = 0;
+    }
 }
 
 int rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h)
@@ -3035,6 +2850,19 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index)
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value) { (void)state; (void)value; }
 void rhi_d3d9_title_draw(int two_d, int offscreen) { (void)two_d; (void)offscreen; }
 void rhi_d3d9_title_says_2d(float w) { (void)w; }
+int rhi_d3d9_mod_on_device(RecompModDeviceFn fn, void *user) { (void)fn; (void)user; return 0; }
+int rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, void *user)
+{
+    (void)before; (void)after; (void)user;
+    return 0;
+}
+int rhi_d3d9_mod_on_clear(RecompModClearFn fn, void *user) { (void)fn; (void)user; return 0; }
+int rhi_d3d9_mod_on_present(RecompModDeviceFn fn, void *user) { (void)fn; (void)user; return 0; }
+int rhi_d3d9_mod_vertex_hlsl(const char *hlsl) { (void)hlsl; return 0; }
+int rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value) { (void)state; (void)value; return 0; }
+void rhi_d3d9_mod_set_projection(const float m[16]) { (void)m; }
+void rhi_d3d9_mod_remake_written_textures(int on) { (void)on; }
+int rhi_d3d9_mod_on_copy(RecompModCopyFn fn, void *user) { (void)fn; (void)user; return 0; }
 int rhi_d3d9_copy_rect(RhiView *src, const RhiRect *src_rect, RhiView *dst,
                        const RhiRect *dst_rect)
 {
@@ -3059,10 +2887,8 @@ void rhi_d3d9_set_light(uint32_t index, const void *light, int enable)
     (void)index; (void)light; (void)enable;
 }
 void rhi_d3d9_set_material(const void *material) { (void)material; }
-void rhi_d3d9_set_camera(const float world[16], const float view[16], const float proj[16])
-{
-    (void)world; (void)view; (void)proj;
-}
+void rhi_d3d9_program_projection(const float proj[16]) { (void)proj; }
+void rhi_d3d9_mod_set_transform(uint32_t type, const float m[16]) { (void)type; (void)m; }
 
 void rhi_d3d9_skip_next_draw(void)
 {
