@@ -551,6 +551,7 @@ static void present_scene(void)
         UINT shape_w, shape_h;
 
         d3d8_display_output_shape(s->width, s->height, &shape_w, &shape_h);
+        d3d8_display_note_shown(shape_w, shape_h);
         if (rhi_d3d9_present_scene(s->rhi_scene_srv, shape_w, shape_h) != 0)
             return;
         d3d8_overlay_present(rhi_swapchain_view(), s->swap_width, s->swap_height, 0, 0,
@@ -580,6 +581,7 @@ static void present_scene(void)
         UINT shape_w, shape_h;
 
         d3d8_display_output_shape(s->width, s->height, &shape_w, &shape_h);
+        d3d8_display_note_shown(shape_w, shape_h);
         fit = d3d8_display_fit(shape_w, shape_h, s->swap_width, s->swap_height);
     }
     d3d8_display_resolve(s->rhi_scene_srv, s->width, s->height, rhi_swapchain_view(), fit);

@@ -19,6 +19,8 @@
  * The mouse is whatever the game window was told (recomp_mouse_*): its
  * buttons are sources like any other, and its motion is mouse look, added
  * to controller 1's right stick after the bindings have had their say.
+ * While the title wants a pointer for its menus (recomp_pointer_want), the
+ * buttons and the wheel are the pointer's instead.
  */
 #include "input_bindings.h"
 #include "touch_controls.h"
@@ -229,6 +231,48 @@ static int key_code(const char *name)
         if (strcmp(KEYS[i].name, name) == 0)
             return KEYS[i].vk;
     return 0;
+}
+
+/* How a prompt names a key: the word on the keycap where there is one. */
+static const struct { int vk; const char *label; } KEY_LABELS[] = {
+    { 0x0D, "Enter" }, { 0x08, "Backspace" }, { 0x1B, "Esc" }, { 0x20, "Space" },
+    { 0x09, "Tab" }, { 0x25, "Left" }, { 0x26, "Up" }, { 0x27, "Right" },
+    { 0x28, "Down" }, { 0x10, "Shift" }, { 0xA0, "Shift" }, { 0xA1, "Shift" },
+    { 0x11, "Ctrl" }, { 0xA2, "Ctrl" }, { 0xA3, "Ctrl" }, { 0x12, "Alt" },
+    { 0xA4, "Alt" }, { 0xA5, "Alt" }, { 0x2D, "Ins" }, { 0x2E, "Del" },
+    { 0x24, "Home" }, { 0x23, "End" }, { 0x21, "PgUp" }, { 0x22, "PgDn" },
+    { 0x14, "Caps" },
+};
+
+static void key_label(int vk, char *out, size_t n)
+{
+    size_t i;
+
+    if (!n)
+        return;
+    out[0] = '\0';
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+        if (n >= 2) {
+            out[0] = (char)vk;
+            out[1] = '\0';
+        }
+        return;
+    }
+    for (i = 0; i < sizeof KEY_LABELS / sizeof KEY_LABELS[0]; i++)
+        if (KEY_LABELS[i].vk == vk) {
+            snprintf(out, n, "%s", KEY_LABELS[i].label);
+            return;
+        }
+    if (vk >= 0x70 && vk <= 0x7B) {
+        snprintf(out, n, "F%d", vk - 0x6F);
+        return;
+    }
+    for (i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
+        if (KEYS[i].vk == vk) {
+            snprintf(out, n, "%s", KEYS[i].name);
+            return;
+        }
+    snprintf(out, n, "#%d", vk);
 }
 
 /* "pad:lx-", "key:RETURN", "none" -> a Source. Returns 0 on a name this
@@ -758,6 +802,26 @@ const char *recomp_bindings_source_path(void)
     return g_have_path ? g_path : NULL;
 }
 
+int recomp_bindings_key_name(unsigned port, const char *control, char *out, size_t n)
+{
+    const Binding *b;
+    int k, i;
+
+    if (!out || !n)
+        return 0;
+    out[0] = '\0';
+    recomp_bindings_init();
+    if (port >= PORTS || !control || (k = control_index(control)) < 0)
+        return 0;
+    b = &g_ctl[port].bind[k];
+    for (i = 0; i < b->count; i++)
+        if (b->src[i].kind == SRC_KEY) {
+            key_label(b->src[i].arg, out, n);
+            return out[0] != '\0';
+        }
+    return 0;
+}
+
 const char *recomp_bindings_device_name(unsigned port)
 {
     recomp_bindings_init();
@@ -972,8 +1036,20 @@ int recomp_mouse_look(void)
     return g_look.on && g_ctl[0].device != DEV_NONE;
 }
 
+/* Which hands are on controller 1 (recomp_input_using_keys): the keyboard
+ * and mouse until a pad is used, and back on the next key, click or real
+ * mouse movement. */
+static volatile long g_input_keys = 1;
+
+int recomp_input_using_keys(void)
+{
+    return g_input_keys != 0;
+}
+
 void recomp_mouse_move(float dx, float dy)
 {
+    if (dx * dx + dy * dy > 9.0f)
+        g_input_keys = 1;
     look_settings();
     if (!g_look.on)
         return;
@@ -981,10 +1057,37 @@ void recomp_mouse_move(float dx, float dy)
     MOUSE_ADD(&g_mouse_dy, (long)(dy * LOOK_FIXED));
 }
 
+/* The pointer (recomp_pointer_want). Position and shape in millionths, so
+ * the window's thread can write them as whole numbers. */
+#define POINTER_FIXED 1000000.0f
+
+static volatile long g_pointer_want;
+static volatile long g_pointer_inside, g_pointer_x, g_pointer_y, g_pointer_aspect;
+static volatile long g_pointer_moved;
+static volatile long g_pointer_held, g_pointer_pressed, g_pointer_wheel;
+/* The pointer is hidden while the keys or a pad drive the menu, and shown
+ * again when the mouse moves or clicks (recomp_pointer_hidden): where it
+ * was hidden, so a twitch of the hand does not bring it back. */
+static volatile long g_pointer_hidden, g_pointer_hide_x, g_pointer_hide_y;
+#define POINTER_SHOW_MOVE 4000      /* millionths of the picture: about 3 pixels in 640 */
+
 void recomp_mouse_button(int button, int down)
 {
     if (button < 0 || button >= RECOMP_MOUSE_BUTTONS)
         return;
+    if (down)
+        g_input_keys = 1;
+    if (g_pointer_want) {
+        /* A click on a menu: the title's, not a binding's. */
+        if (down) {
+            g_pointer_hidden = 0;
+            MOUSE_OR(&g_pointer_held, 1L << button);
+            MOUSE_OR(&g_pointer_pressed, 1L << button);
+        } else {
+            MOUSE_AND(&g_pointer_held, ~(1L << button));
+        }
+        return;
+    }
     if (down)
         MOUSE_OR(&g_mouse_held, 1L << button);
     else
@@ -996,6 +1099,93 @@ void recomp_mouse_release(void)
     MOUSE_AND(&g_mouse_held, 0);
     MOUSE_TAKE(&g_mouse_dx);
     MOUSE_TAKE(&g_mouse_dy);
+}
+
+void recomp_pointer_want(int on)
+{
+    on = on ? 1 : 0;
+    if (on == g_pointer_want)
+        return;
+    /* Whatever is held was pressed for the other side: a button held into
+     * a menu must not stay held for the bindings, nor a click into a level
+     * stay a click. */
+    MOUSE_AND(&g_mouse_held, 0);
+    MOUSE_AND(&g_pointer_held, 0);
+    MOUSE_AND(&g_pointer_pressed, 0);
+    MOUSE_TAKE(&g_pointer_wheel);
+    MOUSE_TAKE(&g_mouse_dx);
+    MOUSE_TAKE(&g_mouse_dy);
+    g_pointer_hidden = 0;
+    g_pointer_want = on;
+}
+
+int recomp_pointer_wanted(void)
+{
+    return g_pointer_want != 0;
+}
+
+int recomp_pointer_hidden(void)
+{
+    return g_pointer_want && g_pointer_hidden;
+}
+
+/* Controller 1 was sampled while a pointer is wanted: a key or pad press
+ * that was not there before (a button, a trigger, a stick pushed well
+ * over) hides the pointer, as a PC program hides it while the keyboard is
+ * in use. Only on a new press, so a key held into the menu does not. The
+ * mouse's buttons and wheel are the pointer's then, and never reach out. */
+static void pointer_hide_on_keys(const XBOX_GAMEPAD *out)
+{
+    static int was;
+    int i, now = out->wButtons != 0;
+
+    for (i = 0; i < 8 && !now; i++)
+        now = out->bAnalogButtons[i] >= 64;
+    if (!now)
+        now = abs(out->sThumbLX) > 16000 || abs(out->sThumbLY) > 16000 ||
+              abs(out->sThumbRX) > 16000 || abs(out->sThumbRY) > 16000;
+    if (now && !was && g_pointer_want && !g_pointer_hidden) {
+        g_pointer_hide_x = g_pointer_x;
+        g_pointer_hide_y = g_pointer_y;
+        g_pointer_hidden = 1;
+    }
+    was = now;
+}
+
+void recomp_pointer_set(int inside, float x, float y, float aspect)
+{
+    long nx = (long)(x * POINTER_FIXED), ny = (long)(y * POINTER_FIXED);
+
+    if (nx != g_pointer_x || ny != g_pointer_y || (inside ? 1 : 0) != g_pointer_inside)
+        MOUSE_ADD(&g_pointer_moved, 1);
+    if (g_pointer_hidden && (labs(nx - g_pointer_hide_x) > POINTER_SHOW_MOVE ||
+                             labs(ny - g_pointer_hide_y) > POINTER_SHOW_MOVE)) {
+        g_pointer_hidden = 0;
+        g_input_keys = 1;
+    }
+    g_pointer_x = nx;
+    g_pointer_y = ny;
+    g_pointer_aspect = (long)(aspect * POINTER_FIXED);
+    g_pointer_inside = inside ? 1 : 0;
+}
+
+int recomp_pointer_read(RecompPointer *p)
+{
+    if (!p)
+        return 0;
+    memset(p, 0, sizeof *p);
+    if (!g_pointer_want)
+        return 0;
+    /* A hidden pointer is over nothing: nothing under it lights up. */
+    p->inside = g_pointer_inside != 0 && !g_pointer_hidden;
+    p->x = (float)g_pointer_x / POINTER_FIXED;
+    p->y = (float)g_pointer_y / POINTER_FIXED;
+    p->aspect = (float)g_pointer_aspect / POINTER_FIXED;
+    p->held = (unsigned)g_pointer_held;
+    p->pressed = (unsigned)MOUSE_TAKE(&g_pointer_pressed);
+    p->wheel = (int)MOUSE_TAKE(&g_pointer_wheel);
+    p->moved = (unsigned)g_pointer_moved;
+    return 1;
 }
 
 void recomp_mouse_set_direct(int on)
@@ -1052,6 +1242,10 @@ void recomp_mouse_wheel(float notches)
     if (!whole)
         return;
     g_wheel_frac -= whole * WHEEL_FIXED;
+    if (g_pointer_want) {
+        MOUSE_ADD(&g_pointer_wheel, whole);     /* scrolling a menu */
+        return;
+    }
     dir = whole > 0 ? 0 : 1;
     if (whole < 0)
         whole = -whole;
@@ -1256,6 +1450,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     int have_pad = 0, i;
     int axis[4] = { 0, 0, 0, 0 };
     XBOX_GAMEPAD kbm;                   /* what keys and mouse alone press */
+    int keys_now = 0, pad_now = 0;
+    static int keys_was, pad_was;
 
     if (!out)
         return 0;
@@ -1290,6 +1486,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
             if ((src->kind == SRC_KEY || src->kind == SRC_MOUSE) && m > kmag)
                 kmag = m;
         }
+        if (kmag >= 64)
+            keys_now = 1;
         if (!mag)
             continue;
         say_first_press(port, CONTROLS[i].name);
@@ -1322,6 +1520,22 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         case AXIS_RX: out->sThumbRX = (SHORT)v; break;
         default:      out->sThumbRY = (SHORT)v; break;
         }
+    }
+    if (port == 0) {
+        pointer_hide_on_keys(out);
+        /* A new press says whose hands are on it: a pad's button, trigger or
+         * stick pushed well over, or a key. Edges only, so a drifting stick
+         * or a key held from before does not take it back. */
+        pad_now = have_pad && (pad.buttons || pad.left_trigger >= 64 ||
+                               pad.right_trigger >= 64 || abs(pad.lx) > 16000 ||
+                               abs(pad.ly) > 16000 || abs(pad.rx) > 16000 ||
+                               abs(pad.ry) > 16000);
+        if (pad_now && !pad_was)
+            g_input_keys = 0;
+        else if (keys_now && !keys_was)
+            g_input_keys = 1;
+        pad_was = pad_now;
+        keys_was = keys_now;
     }
     /* Mouse look goes on top of the right stick's bindings rather than in
      * place of them: the pad's stick, or keys bound to it, still turn. */

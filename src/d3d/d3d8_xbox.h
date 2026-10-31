@@ -1246,6 +1246,13 @@ void xbox_D3D8SetWideFrames(BOOL wide);
  * with xbox_D3D8SetWideFrames. Call once; without widescreen, nothing. */
 void xbox_D3D8SetWideFramesAuto(BOOL on);
 
+/* The shape of the picture last presented, width over height as it is
+ * shown in the window (16:9, or 4:3 between bars, or the scene's own): the
+ * window puts the largest rectangle of it that fits its client area in the
+ * middle, which is what a pointer over the picture is measured against.
+ * FALSE before the first present. Any thread. */
+BOOL xbox_D3D8PictureShape(UINT *width, UINT *height);
+
 /* The window now fills its screen (borderless fullscreen), or no longer
  * does. While it does, and the vrr setting allows (RECOMP_VRR, on by
  * default), frames are presented for a variable-refresh display
