@@ -261,6 +261,13 @@ a few pixels or a mouse button going down shows it again
 (`recomp_pointer_hidden`). While it is hidden `recomp_pointer_read` reports
 it over nothing, so nothing under a resting arrow stays lit.
 
+`recomp_input_using_keys()` says whose hands are on controller 1, for a
+title's prompts: 1 (the start) while the keyboard and mouse are, until a
+pad's button, trigger or stick is pressed; 1 again after a key press, a
+click or real mouse movement. Only new presses count, so a drifting stick
+does not take it back. TimeSplitters 2 writes its menus' A and B prompts as
+Enter and Esc while it is 1.
+
 ## The UI
 
 ```

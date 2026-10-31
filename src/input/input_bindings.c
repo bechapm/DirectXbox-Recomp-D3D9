@@ -974,8 +974,20 @@ int recomp_mouse_look(void)
     return g_look.on && g_ctl[0].device != DEV_NONE;
 }
 
+/* Which hands are on controller 1 (recomp_input_using_keys): the keyboard
+ * and mouse until a pad is used, and back on the next key, click or real
+ * mouse movement. */
+static volatile long g_input_keys = 1;
+
+int recomp_input_using_keys(void)
+{
+    return g_input_keys != 0;
+}
+
 void recomp_mouse_move(float dx, float dy)
 {
+    if (dx * dx + dy * dy > 9.0f)
+        g_input_keys = 1;
     look_settings();
     if (!g_look.on)
         return;
@@ -1001,6 +1013,8 @@ void recomp_mouse_button(int button, int down)
 {
     if (button < 0 || button >= RECOMP_MOUSE_BUTTONS)
         return;
+    if (down)
+        g_input_keys = 1;
     if (g_pointer_want) {
         /* A click on a menu: the title's, not a binding's. */
         if (down) {
@@ -1083,8 +1097,10 @@ void recomp_pointer_set(int inside, float x, float y, float aspect)
     if (nx != g_pointer_x || ny != g_pointer_y || (inside ? 1 : 0) != g_pointer_inside)
         MOUSE_ADD(&g_pointer_moved, 1);
     if (g_pointer_hidden && (labs(nx - g_pointer_hide_x) > POINTER_SHOW_MOVE ||
-                             labs(ny - g_pointer_hide_y) > POINTER_SHOW_MOVE))
+                             labs(ny - g_pointer_hide_y) > POINTER_SHOW_MOVE)) {
         g_pointer_hidden = 0;
+        g_input_keys = 1;
+    }
     g_pointer_x = nx;
     g_pointer_y = ny;
     g_pointer_aspect = (long)(aspect * POINTER_FIXED);
@@ -1365,6 +1381,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     int have_pad = 0, i;
     int axis[4] = { 0, 0, 0, 0 };
     XBOX_GAMEPAD kbm;                   /* what keys and mouse alone press */
+    int keys_now = 0, pad_now = 0;
+    static int keys_was, pad_was;
 
     if (!out)
         return 0;
@@ -1399,6 +1417,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
             if ((src->kind == SRC_KEY || src->kind == SRC_MOUSE) && m > kmag)
                 kmag = m;
         }
+        if (kmag >= 64)
+            keys_now = 1;
         if (!mag)
             continue;
         say_first_press(port, CONTROLS[i].name);
@@ -1432,8 +1452,22 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         default:      out->sThumbRY = (SHORT)v; break;
         }
     }
-    if (port == 0)
+    if (port == 0) {
         pointer_hide_on_keys(out);
+        /* A new press says whose hands are on it: a pad's button, trigger or
+         * stick pushed well over, or a key. Edges only, so a drifting stick
+         * or a key held from before does not take it back. */
+        pad_now = have_pad && (pad.buttons || pad.left_trigger >= 64 ||
+                               pad.right_trigger >= 64 || abs(pad.lx) > 16000 ||
+                               abs(pad.ly) > 16000 || abs(pad.rx) > 16000 ||
+                               abs(pad.ry) > 16000);
+        if (pad_now && !pad_was)
+            g_input_keys = 0;
+        else if (keys_now && !keys_was)
+            g_input_keys = 1;
+        pad_was = pad_now;
+        keys_was = keys_now;
+    }
     /* Mouse look goes on top of the right stick's bindings rather than in
      * place of them: the pad's stick, or keys bound to it, still turn. */
     if (port == 0 && g_look.on && !g_mouse_direct) {

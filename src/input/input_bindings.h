@@ -126,6 +126,11 @@ int  recomp_pointer_wanted(void);
  * moves a few pixels or a button goes down. */
 int  recomp_pointer_hidden(void);
 
+/* Whose hands are on controller 1: 1 while the keyboard and mouse are (the
+ * start, and after any key press, click or real mouse movement), 0 after a
+ * pad's button or stick. For a title's prompts: keys or pad buttons. */
+int  recomp_input_using_keys(void);
+
 typedef struct RecompPointer {
     int      inside;    /* over the picture, with the game window in front */
     float    x, y;      /* 0..1 across the picture as shown, from its top left */
