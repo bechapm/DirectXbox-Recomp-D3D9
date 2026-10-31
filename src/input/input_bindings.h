@@ -16,6 +16,8 @@
 #ifndef XBOXRECOMP_INPUT_BINDINGS_H
 #define XBOXRECOMP_INPUT_BINDINGS_H
 
+#include <stddef.h>
+
 #include "xinput_xbox.h"
 
 #ifdef __cplusplus
@@ -151,6 +153,14 @@ int  recomp_pointer_read(RecompPointer *p);
  * window does not have; the buttons and the wheel come through
  * recomp_mouse_button and recomp_mouse_wheel as usual. */
 void recomp_pointer_set(int inside, float x, float y, float aspect);
+
+/* The name of the first key bound to a control on a port ("a", "y",
+ * "dpad_left", as the config file names controls), for a prompt that names
+ * the key the player would press: "Enter", "Backspace", "R", "Left". Writes
+ * at most n bytes, always ended; returns 0, with out empty, when no key is
+ * bound to it (a pad or mouse source only, or nothing). Follows the
+ * player's own bindings, so a rebound key is named as rebound. */
+int  recomp_bindings_key_name(unsigned port, const char *control, char *out, size_t n);
 
 /* ---- a title's last word ------------------------------------------------
  *

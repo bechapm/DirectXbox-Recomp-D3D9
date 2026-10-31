@@ -268,6 +268,13 @@ click or real mouse movement. Only new presses count, so a drifting stick
 does not take it back. TimeSplitters 2 writes its menus' A and B prompts as
 Enter and Esc while it is 1.
 
+`recomp_bindings_key_name(port, control, out, n)` names the first key bound
+to a control ("y", "dpad_left", as the config file names them) the way a
+keycap does ("R", "Enter", "Backspace", "Left"), from the bindings actually
+loaded, so a prompt follows the player's own rebinding. It returns 0 when
+only a pad or mouse source is bound, and the prompt keeps the pad's picture.
+TimeSplitters 2 names the keys bound to Y and X this way in MapMaker.
+
 ## The UI
 
 ```

@@ -233,6 +233,48 @@ static int key_code(const char *name)
     return 0;
 }
 
+/* How a prompt names a key: the word on the keycap where there is one. */
+static const struct { int vk; const char *label; } KEY_LABELS[] = {
+    { 0x0D, "Enter" }, { 0x08, "Backspace" }, { 0x1B, "Esc" }, { 0x20, "Space" },
+    { 0x09, "Tab" }, { 0x25, "Left" }, { 0x26, "Up" }, { 0x27, "Right" },
+    { 0x28, "Down" }, { 0x10, "Shift" }, { 0xA0, "Shift" }, { 0xA1, "Shift" },
+    { 0x11, "Ctrl" }, { 0xA2, "Ctrl" }, { 0xA3, "Ctrl" }, { 0x12, "Alt" },
+    { 0xA4, "Alt" }, { 0xA5, "Alt" }, { 0x2D, "Ins" }, { 0x2E, "Del" },
+    { 0x24, "Home" }, { 0x23, "End" }, { 0x21, "PgUp" }, { 0x22, "PgDn" },
+    { 0x14, "Caps" },
+};
+
+static void key_label(int vk, char *out, size_t n)
+{
+    size_t i;
+
+    if (!n)
+        return;
+    out[0] = '\0';
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+        if (n >= 2) {
+            out[0] = (char)vk;
+            out[1] = '\0';
+        }
+        return;
+    }
+    for (i = 0; i < sizeof KEY_LABELS / sizeof KEY_LABELS[0]; i++)
+        if (KEY_LABELS[i].vk == vk) {
+            snprintf(out, n, "%s", KEY_LABELS[i].label);
+            return;
+        }
+    if (vk >= 0x70 && vk <= 0x7B) {
+        snprintf(out, n, "F%d", vk - 0x6F);
+        return;
+    }
+    for (i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
+        if (KEYS[i].vk == vk) {
+            snprintf(out, n, "%s", KEYS[i].name);
+            return;
+        }
+    snprintf(out, n, "#%d", vk);
+}
+
 /* "pad:lx-", "key:RETURN", "none" -> a Source. Returns 0 on a name this
  * build does not know, which is reported once rather than per control. */
 static int parse_source(const char *text, Source *out)
@@ -758,6 +800,26 @@ const char *recomp_bindings_source_path(void)
 {
     recomp_bindings_init();
     return g_have_path ? g_path : NULL;
+}
+
+int recomp_bindings_key_name(unsigned port, const char *control, char *out, size_t n)
+{
+    const Binding *b;
+    int k, i;
+
+    if (!out || !n)
+        return 0;
+    out[0] = '\0';
+    recomp_bindings_init();
+    if (port >= PORTS || !control || (k = control_index(control)) < 0)
+        return 0;
+    b = &g_ctl[port].bind[k];
+    for (i = 0; i < b->count; i++)
+        if (b->src[i].kind == SRC_KEY) {
+            key_label(b->src[i].arg, out, n);
+            return out[0] != '\0';
+        }
+    return 0;
 }
 
 const char *recomp_bindings_device_name(unsigned port)
