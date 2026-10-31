@@ -52,19 +52,12 @@ static void sleep_ms(int ms)
 #endif
 }
 
-/* A monotonic clock in milliseconds, for how far apart two polls were. */
-static double clock_ms(void)
+/* The wheel's clock, stepped by the test. */
+static unsigned long long g_clock_ms;
+
+static unsigned long long test_clock(void)
 {
-#if defined(_WIN32)
-    LARGE_INTEGER f, c;
-    QueryPerformanceFrequency(&f);
-    QueryPerformanceCounter(&c);
-    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
-#endif
+    return g_clock_ms;
 }
 
 /* A filter that moves a keyboard-or-mouse right trigger to the left one. */
@@ -172,55 +165,39 @@ int main(void)
 
     /* ---- the wheel: a notch is one press and one release */
     {
-        int presses = 0, held = 0, attempt, ms;
+        int presses = 0, held = 0, ms;
 
+        /* Time steps by itself here: a loaded machine's sleeps overrun the
+         * 40 ms between presses and would merge two (it did, on CI). */
+        g_clock_ms = 1000;
+        recomp_mouse_wheel_clock(test_clock);
         recomp_mouse_wheel(1.0f);
         pad = sample();
         check((pad.wButtons & XBOX_GAMEPAD_DPAD_LEFT) != 0, "a notch up presses its control");
         check((pad.wButtons & XBOX_GAMEPAD_DPAD_RIGHT) == 0, "and not the other way's");
-        /* Three notches at once are three presses, each followed by a
-         * 40 ms release. A poll that comes more than 40 ms after the one
-         * before can miss a release; that says nothing about the wheel (a
-         * busy test machine), so such a run is tried again, up to three
-         * times. */
-        for (attempt = 0; attempt < 3; attempt++) {
-            double last, now_t, worst = 0.0;
+        /* Two more, read at 60 polls a second: three presses in all. */
+        recomp_mouse_wheel(0.5f);
+        recomp_mouse_wheel(0.5f);           /* two halves are a notch */
+        recomp_mouse_wheel(1.0f);
+        held = 1;
+        presses = 1;
+        for (ms = 0; ms < 600; ms += 16) {
+            int now;
 
-            for (ms = 0; ms < 300; ms += 10) {      /* the last notch ends */
-                sleep_ms(10);
-                pad = sample();
-            }
-            recomp_mouse_wheel(0.5f);
-            recomp_mouse_wheel(0.5f);           /* two halves are a notch */
-            recomp_mouse_wheel(1.0f);
-            recomp_mouse_wheel(1.0f);
-            presses = 0;
-            held = 0;
-            last = clock_ms();
-            for (ms = 0; ms < 600; ms += 2) {
-                int now;
-
-                sleep_ms(2);
-                pad = sample();
-                now_t = clock_ms();
-                if (now_t - last > worst)
-                    worst = now_t - last;
-                last = now_t;
-                now = (pad.wButtons & XBOX_GAMEPAD_DPAD_LEFT) != 0;
-                if (now && !held)
-                    presses++;
-                held = now;
-            }
-            printf("  three notches up: %d presses (polls at most %.1f ms apart)\n",
-                   presses, worst);
-            if (worst < 40.0)
-                break;
+            g_clock_ms += 16;
+            pad = sample();
+            now = (pad.wButtons & XBOX_GAMEPAD_DPAD_LEFT) != 0;
+            if (now && !held)
+                presses++;
+            held = now;
         }
+        printf("  three notches up: %d presses\n", presses);
         check(presses == 3, "three notches are three presses, none merged");
         check(!held, "and the last is let go");
         recomp_mouse_wheel(-1.0f);
         pad = sample();
         check((pad.wButtons & XBOX_GAMEPAD_DPAD_RIGHT) != 0, "a notch down presses the other");
+        recomp_mouse_wheel_clock(NULL);
     }
 
     /* ---- direct: the title takes the motion, the stick gets none */

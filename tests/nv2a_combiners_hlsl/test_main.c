@@ -69,6 +69,7 @@ UINT d3d8_GetGuestHeight(void) { return 1; }
 void d3d8_GetTargetGuestSize(UINT *w, UINT *h) { *w = d3d8_GetGuestWidth(); *h = d3d8_GetGuestHeight(); }
 UINT d3d8_GetBackbufferWidth(void) { return 1; }
 UINT d3d8_GetBackbufferHeight(void) { return 1; }
+BOOL d3d8_target_is_back_buffer(void) { return TRUE; }
 const D3DMATRIX *d3d8_GetTransform(D3DTRANSFORMSTATETYPE type) { (void)type; return &identity; }
 const D3DLIGHT8 *d3d8_GetLight(DWORD index) { (void)index; return NULL; }
 BOOL d3d8_GetLightEnable(DWORD index) { (void)index; return FALSE; }
@@ -80,9 +81,6 @@ int  d3d8_vsh_bound_projection_is_ortho(void) { return 0; }
 float d3d8_vsh_hor_plus_for_draw(void) { return 1.0f; }
 DWORD d3d8_GetCurrentFVF(void) { return 0; }
 void d3d8_SetTwoDSqueeze(BOOL on) { (void)on; }
-/* d3d8_shaders.c asks it before a draw under the D3D9 backend
- * (d3d8_device.c, not linked here). */
-BOOL d3d8_target_is_back_buffer(void) { return TRUE; }
 
 #define CONFIGS 400
 
