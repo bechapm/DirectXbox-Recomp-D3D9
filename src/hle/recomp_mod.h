@@ -4,7 +4,8 @@
  * without being built into it -- a texture pack, an overlay, a debugging
  * tool, support for a D3D9 tool such as RTX Remix in one game, a fix someone
  * wants to try -- so the title's own build stays the port.
- * docs/technical/mods.md is the overview.
+ * docs/technical/mods.md is the modder's guide; a change to this contract
+ * updates it in the same commit (its "Keeping this guide current").
  *
  * Where: the folder `mods` beside the executable; every .dll (Windows) or
  * .so (elsewhere) in it, in name order. RECOMP_MOD_LIBS=0 loads none;
@@ -36,13 +37,14 @@
 #ifndef RECOMP_MOD_H
 #define RECOMP_MOD_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define RECOMP_MOD_API_VERSION 3
+#define RECOMP_MOD_API_VERSION 4
 
 /* ---- the Direct3D 9 renderer (RECOMP_D3D8_BACKEND=d3d9) ----
  *
@@ -215,9 +217,25 @@ typedef struct RecompModApi {
     /* fn before each copy of the picture into a texture, in a run and in a
      * replay. Up to 8 across mods, the first answer standing; 0 when full. */
     int   (*d3d9_on_copy)(RecompModCopyFn fn, void *user);
+
+    /* ---- version 4 ---- */
+
+    /* The title's own vertex buffer the draw in hand reads its vertices
+     * from, from a d3d9_on_draw before or after: returns the guest address
+     * of its D3DVertexBuffer (0 when the draw's vertices came from no buffer
+     * of the title's, or in a replay), and fills the guest address of the
+     * buffer's data, its stride, and the first vertex the draw reads from it
+     * (the base vertex, for an indexed draw). This is how a mod tells which
+     * of the title's models a draw is: the title keeps its buffers. */
+    uint32_t (*draw_vertex_buffer)(uint32_t *data, uint32_t *stride, uint32_t *first);
 } RecompModApi;
 
 typedef int (*RecompModInitFn)(const RecompModApi *api);
+
+/* Whether the toolkit's api has a field (one added after the mod's oldest
+ * supported version): its size covers it. */
+#define RECOMP_MOD_HAS(api, field) \
+    ((api)->size >= offsetof(RecompModApi, field) + sizeof((api)->field))
 
 #ifdef __cplusplus
 }

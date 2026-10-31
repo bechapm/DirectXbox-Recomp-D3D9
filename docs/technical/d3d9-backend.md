@@ -36,6 +36,22 @@ to guess: a mod supplies it.
 
 ## Where the seam goes
 
+**Figure 1.** One renderer, three backends. The D3D9 backend draws the way a
+PC D3D9 game of the era would, so a tool that replaces `d3d9.dll` sees
+ordinary D3D9 calls; a mod fills in what only the title knows.
+
+```mermaid
+flowchart LR
+    T["Title"] --> H["HLE Direct3D 8<br/>src/d3d"]
+    H --> R["rhi.h"]
+    R --> D11["D3D11 backend"]
+    R --> VK["Vulkan backend"]
+    R --> D9["D3D9 backend<br/>rhi_d3d9.c"]
+    D9 --> TOOL["d3d9.dll:<br/>Windows' own, or a D3D9 tool<br/>(RTX Remix, ReShade, a capture tool)"]
+    TOOL --> GPU["GPU"]
+    MOD["A mod<br/>mods/*.dll"] -. "camera, HUD rules<br/>(recomp_mod.h)" .-> D9
+```
+
 The renderer already draws through `rhi.h` (`vulkan-backend.md`). D3D9 is a
 third backend behind it, and where D3D9 has to draw differently, the renderer
 asks `rhi_d3d9_active()` and calls `rhi_d3d9.h`. Under the other two backends
@@ -57,6 +73,20 @@ nothing changes: the shared HLSL keeps its D3D11 text in the `#else` of each
 | Touch controls | drawn | not drawn |
 
 ## What a D3D9 tool sees
+
+**Figure 2.** What each kind of draw hands a tool. Fixed function carries
+its own transforms; a program draw's transforms come from a mod.
+
+```mermaid
+flowchart TD
+    D{"The title's draw"} -- "fixed function" --> FF["D3D9 fixed function:<br/>WORLD, VIEW, PROJECTION,<br/>lights, material, texture stages"]
+    D -- "vertex program" --> VS["vs_3_0 + texture-stage ps_3_0<br/>transforms: as a mod sets them"]
+    D -- "pre-transformed 2D" --> TD["POSITION under an orthographic<br/>PROJECTION of the target"]
+    FF --> TOOL["What a D3D9 tool reads"]
+    VS --> TOOL
+    TD --> TOOL
+    MOD["Mod: program_projection,<br/>d3d9_set_transform"] -.-> VS
+```
 
 - **Fixed-function draws** carry the title's own `WORLD`, `VIEW` and
   `PROJECTION` (Hor+ applied to the projection as the D3D11 path applies it).

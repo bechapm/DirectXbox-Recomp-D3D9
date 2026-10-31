@@ -17,12 +17,14 @@ reference; this page is the map.
 [Your first mod](#your-first-mod) · [Loading](#loading) ·
 [A frame, hook by hook](#a-frame-hook-by-hook) ·
 [Hook reference](#hook-reference) · [Changing a draw](#changing-a-draw) ·
+[Telling models apart](#telling-a-titles-models-apart) ·
 [Screen copies](#screen-copies) ·
 [Vertex programs](#vertex-programs-rhi_mod_position) ·
 [Captures and replays](#captures-and-replays) ·
 [Versions](#versions-and-compatibility) ·
 [Where a change belongs](#where-a-change-belongs) ·
-[Troubleshooting](#troubleshooting)
+[Troubleshooting](#troubleshooting) ·
+[Keeping this guide current](#keeping-this-guide-current)
 
 ## At a glance
 
@@ -33,6 +35,7 @@ reference; this page is the map.
 | Hide, recolour or retexture particular draws | `d3d9_on_draw` | D3D9 |
 | Tell a D3D9 tool where the camera is | `d3d9_set_transform` from `before` | D3D9 |
 | Move or bend every vertex program's output | `d3d9_vertex_hlsl` | D3D9 |
+| Tell which of the title's models a draw is | `draw_vertex_buffer` from `before` | D3D9 |
 | Replace what a mirror, monitor or blur reads | `d3d9_on_copy` | D3D9 |
 | Do something at the start or end of a frame | `d3d9_on_clear`, `d3d9_on_present` | D3D9 |
 | Test the same frame again and again | a capture, `replaying`, `capture_note` | D3D9 replay |
@@ -134,10 +137,13 @@ title's executable.
 4. **Drop it in `mods/` and start the game.** The log says what happened:
 
    ```text
-   [MOD] hello_mod.dll: loaded
-   [MOD] 1 of 1 in mods loaded
    [MOD] hello: loaded
+   [MOD] hello_mod.dll: loaded
+   [MOD] 1 of 1 in <game folder>/mods loaded
    ```
+
+   (Your own `log` line comes first: it is written from inside
+   `recomp_mod_init`, before the loader reports the result.)
 
 ## Loading
 
@@ -165,7 +171,7 @@ flowchart TD
 | `RECOMP_MOD_LIBS=0` | no mods at all, for comparing with and without |
 | `RECOMP_MOD_LIBS_DIR=<folder>` | mods from that folder instead |
 
-Name order is load order, and for hooks where the first answer wins
+Up to 16 mods load from one folder. Name order is load order, and for hooks where the first answer wins
 (`d3d9_on_copy`) it is priority: prefix names (`10_`, `20_`) to choose.
 
 A title's own asset mods (for example split2-recomp's `RECOMP_MODS` folders,
@@ -174,9 +180,7 @@ not code, and need no library.
 
 ## A frame, hook by hook
 
-**Figure 4.** The order in which a loaded mod hears of things. Everything
-after `recomp_mod_init` is called on the game's render thread, so a mod needs
-no locks of its own between its hooks.
+**Figure 4.** The order in which a loaded mod hears of things.
 
 ```mermaid
 sequenceDiagram
@@ -225,6 +229,7 @@ renderer. ✓ works, – does nothing (or returns 0 / NULL).
 | `d3d9_set_transform` | from `before`, or any time | – | ✓ | ✓ | |
 | `d3d9_remake_written_textures` | from init | – | ✓ | ✓ | |
 | `d3d9_on_copy` | before each screen copy | – | ✓ | ✓ | 8 |
+| `draw_vertex_buffer` (v4) | inside a draw hook | – | ✓ | – (0) | |
 | `replaying` | any time | ✓ (0) | ✓ (0) | ✓ (1) | |
 | `capture_on_draw`, `capture_note` | while a capture is made | – | ✓ | – | 8 |
 | `replay_on_note` | during a replay | – | – | ✓ | 8 |
@@ -310,13 +315,100 @@ Rules of thumb:
   until the title or a mod sets it again. Set it on every draw it should
   apply to.
 
+## Telling a title's models apart
+
+A mod that changes one thing in a title (one character, one gun, one kind
+of wall) first has to recognise that thing's draws. What the renderer hands
+a mod is the host's copy: host vertex buffers that are filled and refilled,
+so their addresses say nothing about where the vertices came from. The
+title's own buffers do. A title loads a model into vertex buffers of its own
+and keeps them, and its own data says which model is where.
+`draw_vertex_buffer` (version 4) gives the mod that link: from inside a
+draw's `before` or `after`, which of the title's `D3DVertexBuffer`s the draw
+reads.
+
+**Figure 8.** From a draw back to the title's own model table.
+
+```mermaid
+flowchart TD
+    subgraph title["The title (guest memory)"]
+        M["Its model table<br/>model: buffer, first vertex, count"]
+        VB["Its D3DVertexBuffer<br/>(guest address)"]
+        M --> VB
+    end
+    subgraph toolkit["The toolkit"]
+        R["Direct3D 9 renderer<br/>host buffers, refilled"]
+    end
+    subgraph mod["A mod"]
+        H["before(draw)"]
+        Q["draw_vertex_buffer()<br/>buffer, data, stride, first"]
+        I["draw->indices<br/>lowest index + base_vertex"]
+        L["Look it up in the title's table:<br/>which model, which part"]
+    end
+    VB -- "the title draws from it" --> R
+    R -- "calls" --> H
+    H --> Q
+    H --> I
+    Q --> L
+    I --> L
+    M -. "read through guest_pointer" .-> L
+```
+
+**Figure 9.** What it gives, for the draw in hand.
+
+| Out | Meaning |
+| --- | --- |
+| return value | the guest address of the title's `D3DVertexBuffer`, or 0 when the vertices came from no buffer of the title's (drawn from memory, a toolkit draw) or in a replay |
+| `*data` | the guest address of that buffer's vertex data |
+| `*stride` | bytes per vertex, as the title set the stream |
+| `*first` | the first vertex the draw reads from it (the base vertex, for an indexed draw) |
+
+The vertices a draw uses are then `first` plus the draw's own range: for an
+indexed draw the lowest of `draw->indices` plus `draw->base_vertex`, for any
+other `draw->first_vertex`. Buffer, stride and vertex range together are
+what a mod looks up in the title's own tables, read through
+`guest_pointer`. Those tables are the title's business, so the lookup lives
+in the mod (or the title's port); the toolkit only says which buffer.
+
+```c
+static int before(RecompModDraw *d, void *user)
+{
+    uint32_t data, stride, first, lo;
+
+    if (!RECOMP_MOD_HAS(g_api, draw_vertex_buffer) ||
+        !g_api->draw_vertex_buffer(&data, &stride, &first))
+        return RECOMP_DRAW_AS_IS;       /* not from one of the title's buffers */
+    lo = first + (d->indexed ? lowest_index(d) + d->base_vertex : d->first_vertex);
+    if (is_the_model_i_want(data, stride, lo))   /* the title's own tables */
+        return RECOMP_DRAW_SKIP;        /* or change it, or draw something else */
+    return RECOMP_DRAW_AS_IS;
+}
+```
+
+`RECOMP_MOD_HAS(api, field)` says whether the toolkit a mod is loaded into
+has a field newer than the oldest one the mod supports, so one build of a
+mod runs on an older toolkit too, with that feature off.
+
+Things to know:
+
+- It answers only inside a draw's `before` or `after`, and only for the
+  title's own draws.
+- With the title's draws deferred to the end of the frame
+  (`RECOMP_HLE_D3D8_DEFER`), the buffer is still right, but whatever else a
+  mod reads from guest memory at the draw shows the end of the frame.
+- In a replay there is no guest memory, and it returns 0.
+- A title that writes each frame's vertices into one ring buffer (particles,
+  text, some skinned meshes) gives the ring's address every time; a mod
+  tells those draws apart some other way (the vertex constants, the
+  textures).
+
 ## Screen copies
 
 Titles copy the picture into a texture to show it on something (a monitor, a
 mirror, a scope) or to blur it. Under D3D9 that is a `StretchRect`, and
 `d3d9_on_copy` hears of it first.
 
-**Figure 8.** A mod can supply a surface to be read instead, for example one
+**Figure 10.** A mod can supply a surface to be read instead, for example one
 it drew itself.
 
 ```mermaid
@@ -337,7 +429,7 @@ A title's own vertex programs are translated by the toolkit; a mod cannot
 edit them one by one, but it can add HLSL in front of every one of them,
 from `recomp_mod_init`, before the first is compiled.
 
-**Figure 9.** Where the mod's HLSL runs.
+**Figure 11.** Where the mod's HLSL runs.
 
 ```mermaid
 flowchart LR
@@ -366,7 +458,7 @@ The title is not running in a replay: `guest_pointer` returns NULL. A mod
 that reads the title's memory stores what it needs as notes in the capture,
 and gets them back at the same point of the replay.
 
-**Figure 10.** Notes go into the capture beside the draws and come back in
+**Figure 12.** Notes go into the capture beside the draws and come back in
 order.
 
 ```mermaid
@@ -416,34 +508,31 @@ shows the end of the frame.
 
 ## Versions and compatibility
 
-**Figure 11.** `RecompModApi` and `RecompModDraw` only grow at the end. A mod
+**Figure 13.** `RecompModApi` and `RecompModDraw` only grow at the end. A mod
 built against an older header still works with a newer game; a mod that uses
 a newer entry checks `size` first.
 
 ```mermaid
-flowchart LR
-    subgraph v3 ["Version 3 table"]
-        direction TB
-        a["version, size"] --> b["title: id, name, memory,<br/>frame, constants, log"]
-        b --> c["D3D9: device, draw, clear,<br/>present, HLSL, state,<br/>projection, textures, transform"]
-        c --> d["captures: replaying,<br/>capture_on_draw, capture_note,<br/>replay_on_note"]
-        d --> e["D3D9, added later: on_copy"]
-    end
-    e -.-> f["future entries:<br/>added here only"]
+flowchart TD
+    a["version, size"] --> b["the title: id, name, memory,<br/>each frame, constants, log"]
+    b --> c["D3D9: device, draw, clear, present,<br/>HLSL, state, projection, textures, transform"]
+    c --> d["captures: replaying, capture_on_draw,<br/>capture_note, replay_on_note"]
+    d --> e["D3D9, added later: on_copy"]
+    e --> g["version 4: draw_vertex_buffer"]
+    g -.-> f(["future entries: added here only"])
 ```
 
+`RECOMP_MOD_HAS(api, field)` (in the header) says whether the game's table
+has an entry, so one build of a mod runs on an older toolkit with that
+feature off:
+
 ```c
-#include <stddef.h>   /* offsetof */
-
-#define HAS(api, field) \
-    ((api)->size >= offsetof(RecompModApi, field) + sizeof((api)->field))
-
-if (HAS(api, d3d9_on_copy))
-    api->d3d9_on_copy(my_copy, NULL);
+if (RECOMP_MOD_HAS(api, draw_vertex_buffer))
+    use_models = 1;                 /* else tell draws apart by textures */
 ```
 
 `version` names the newest set the game knows. Versions 1 and 2 were never
-released; 3 is the first stable layout.
+released; 3 is the first stable layout, and 4 adds `draw_vertex_buffer`.
 
 ## Where a change belongs
 
@@ -451,7 +540,7 @@ The toolkit serves many titles, each title's port serves one title on every
 renderer, and mods hold the rest. Keeping to this lets each piece be shared
 with the people it is useful to.
 
-**Figure 12.** Deciding where a change goes.
+**Figure 14.** Deciding where a change goes.
 
 ```mermaid
 flowchart TD
@@ -481,3 +570,19 @@ flowchart TD
 | `loaded`, but draw hooks never run | the game is not on the D3D9 renderer | `RECOMP_D3D8_BACKEND=d3d9` |
 | a hook registration returns 0 | that hook's limit is full across mods | fewer mods, or one hook dispatching to several handlers |
 | the picture is wrong after the mod's draw | `after` did not put back what `before` changed | restore every state you set |
+
+## Keeping this guide current
+
+This guide changes with the contract. A change that adds or alters an entry
+in `recomp_mod.h` updates this page in the same commit:
+
+| When you... | Update |
+| --- | --- |
+| add an entry | [At a glance](#at-a-glance) if it serves a new purpose, the [hook reference](#hook-reference) (renderers, limit), [Figure 1](#where-a-mod-sits) or [Figure 4](#a-frame-hook-by-hook) if it is called at a new point, the [versions figure](#versions-and-compatibility) |
+| add a field to `RecompModDraw` | the grouped table under [Changing a draw](#changing-a-draw) |
+| give an entry its own section | the section, with a figure and a short example, and the contents line at the top |
+| change when something is called, or a limit | every figure and table that shows it, and [Troubleshooting](#troubleshooting) if a new failure is possible |
+| bump `RECOMP_MOD_API_VERSION` | the versions figure and the sentence under it |
+
+Figures are [Mermaid](https://mermaid.js.org/) in the Markdown itself, so
+GitHub draws them and a change to one shows in the diff like any text.
