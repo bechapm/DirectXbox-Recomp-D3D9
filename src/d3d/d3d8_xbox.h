@@ -1404,6 +1404,16 @@ void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
 void xbox_D3D8SetWireframe(int on);
 int  xbox_D3D8Wireframe(void);
 
+/* A title's full-screen passes over its own finished frame -- the draws that
+   sample the frame copied into a texture at stage 0, for a glow, a soften,
+   a colour grade -- drawn only up to `n` a frame, the first n in the order
+   the title draws them; -1 draws every one (the default), 0 none. For a
+   title's own settings or debugging menu, to compare a picture with and
+   without them. RECOMP_FRAME_PASSES=<n> (settings file frame_passes) starts
+   with it; RECOMP_HLE_D3D8_SKIP_FULLSCREEN=1 is 0. */
+void xbox_D3D8SetFramePassLimit(int n);
+int  xbox_D3D8FramePassLimit(void);
+
 /* A title's own debugging keys: whether the key with this Windows
    virtual-key code is held, and the game's window is in front (keys pressed
    in another application are never the game's). Off Windows the code is

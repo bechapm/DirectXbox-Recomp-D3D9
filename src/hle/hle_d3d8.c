@@ -1830,8 +1830,36 @@ void hle_d3d8_shadow_apply_states(IDirect3DDevice8 *dev);
 static unsigned long g_draws_up, g_draws_indexed_up, g_draws_vb, g_draws_indexed_vb,
                      g_draws_program, g_draws_declaration, g_draws_unknown_vs,
                      g_draws_stride, g_draws_primitive, g_draws_failed;
-/* Dropped by RECOMP_HLE_D3D8_SKIP_FULLSCREEN; see the draw gate. */
+/* Dropped by the frame pass limit; see the draw gate. */
 static unsigned long g_skipped_fullscreen;
+static unsigned g_frame_passes;          /* drawn this frame */
+static int g_frame_pass_limit = -2;      /* -2: not read yet; -1: all */
+
+static void frame_pass_limit_load(void)
+{
+    const char *v;
+
+    if (g_frame_pass_limit != -2)
+        return;
+    g_frame_pass_limit = -1;
+    v = getenv("RECOMP_HLE_D3D8_SKIP_FULLSCREEN");
+    if (v && *v && strcmp(v, "0") != 0)
+        g_frame_pass_limit = 0;
+    v = recomp_config_lookup("RECOMP_FRAME_PASSES", "frame_passes");
+    if (v && *v && v[0] != '-' && (v[0] >= '0' && v[0] <= '9'))
+        g_frame_pass_limit = atoi(v);
+}
+
+void xbox_D3D8SetFramePassLimit(int n)
+{
+    g_frame_pass_limit = n < 0 ? -1 : n;
+}
+
+int xbox_D3D8FramePassLimit(void)
+{
+    frame_pass_limit_load();
+    return g_frame_pass_limit;
+}
 /* The inline immediate-mode vertex path, counted but not implemented; see the
  * replacements for D3DDevice_Begin further down. */
 static unsigned long g_inline_begin, g_inline_end, g_inline_vdata;
@@ -2265,25 +2293,23 @@ static int shadow_can_draw(uint32_t xpt, uint32_t stride)
         shadow_use_viewport(0);
     }
 states:
-    /* RECOMP_HLE_D3D8_SKIP_FULLSCREEN=1: drop the title's full-screen passes
-     * over its own frame -- the draws that sample the frame buffer at stage 0.
+    /* The frame pass limit (xbox_D3D8SetFramePassLimit): the title's
+     * full-screen passes over its own frame -- the draws that sample the
+     * frame buffer at stage 0 -- past the first n of a frame are dropped.
      *
-     * This is a measurement, and a crude workaround. Those passes remove a
-     * fixed share of the light in every frame (0.62 of it on TimeSplitters 2's
-     * snow level, 0.367 on another, constant within a level to a standard
-     * deviation of 0.002), which is the brightness bug in
-     * docs/technical/timesplitters2-open-issues.md. Turning them off says
-     * whether they own that loss outright, and gives a bright picture without
-     * whatever they were for -- bloom or glow, on the evidence of a fixed
-     * one-texel offset repeated three times with descending alpha. */
-    {
-        static int skip = -1;
-        if (skip < 0)
-            skip = getenv("RECOMP_HLE_D3D8_SKIP_FULLSCREEN") ? 1 : 0;
-        if (skip && hle_d3d8_stage0_is_framebuffer()) {
+     * It began as a measurement (RECOMP_HLE_D3D8_SKIP_FULLSCREEN=1, every
+     * pass dropped), when those passes were blending black over the picture
+     * (docs/technical/timesplitters2-open-issues.md). With the frame copied
+     * for real they are the title's own look -- TimeSplitters 2's soften, a
+     * fixed one-texel offset three times with descending alpha -- and the
+     * limit is a player's or a modder's choice of how much of it to keep. */
+    if (hle_d3d8_stage0_is_framebuffer()) {
+        frame_pass_limit_load();
+        if (g_frame_pass_limit >= 0 && g_frame_passes >= (unsigned)g_frame_pass_limit) {
             g_skipped_fullscreen++;
             return 0;
         }
+        g_frame_passes++;
     }
     /* The title's render and texture stage states as they stand now, read
      * from its own state arrays (hle_d3d8_state.c). */
@@ -3624,6 +3650,7 @@ static void frame_end_shadow(void)
         g_inline_begin_frame = 0;
         g_inline_vdata_frame = 0;
         g_frame_draws = 0;
+        g_frame_passes = 0;
         overlay_frame();                 /* after the dump: not in the captures */
         shadow_pointer_frame();
         {
@@ -3662,7 +3689,7 @@ static void frame_end_shadow(void)
                         g_inline_program, g_inline_begin_max, g_inline_vdata_max);
             if (g_skipped_fullscreen)
                 fprintf(stderr, "[HLE-D3D8] shadow: %lu full-screen passes over the "
-                        "title's own frame dropped (RECOMP_HLE_D3D8_SKIP_FULLSCREEN)\n",
+                        "title's own frame dropped (the frame pass limit, RECOMP_FRAME_PASSES)\n",
                         g_skipped_fullscreen);
             swap_timing_report();
             hle_d3d8_interp_report();

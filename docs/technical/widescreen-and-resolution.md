@@ -638,6 +638,9 @@ What follows from it:
   copy the large one is what the texture is sampled through, with the same
   coordinates. An upload, a draw or a depth copy into the texture hands it back its
   own image. `RECOMP_SCREEN_COPY_SCALE=0` keeps the copy at the texture's size.
+  How many of those passes are drawn is a setting of its own,
+  `xbox_D3D8SetFramePassLimit` (`RECOMP_FRAME_PASSES`, `frame_passes`): the first n
+  of a frame, -1 for all (the default), 0 for none, for a title's menu to offer.
 
 A 4:3-only title widened past 16:9 shows what its makers never meant to be seen,
 most of all in cutscenes framed for 4:3: geometry ending, characters waiting off to
