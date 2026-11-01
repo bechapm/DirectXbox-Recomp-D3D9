@@ -55,7 +55,7 @@
  *                    scripts/replay_ab.py.
  *   --place <tag>=<p>  replay the title's widescreen 2D placement for tag
  *                    (hex, or "all") as p: auto, stretch, centre, left,
- *                    right, side, edge or spread. Repeatable. Needs RECOMP_WIDESCREEN=1 to show,
+ *                    right, side, edge, spread or fill. Repeatable. Needs RECOMP_WIDESCREEN=1 to show,
  *                    and is how a title project tries its placement table
  *                    on a captured frame instead of a run.
  *   --solo-tag <tag> draw the untagged draws (the 3D) and only this tag's
@@ -1509,7 +1509,8 @@ static void replay_chunk(Replay *r, const D3D8CapChunk *c)
         }
         for (k = 0; k < g_place_count; k++)
             if (g_place[k].all || g_place[k].tag == p->tag)
-                placement = g_place[k].placement;
+                placement = g_place[k].placement |
+                            ((int)p->placement & XBOX_D3D8_2D_PANEL_3D);
         if (g_list_draws)
             fprintf(stderr, "[2d placement] tag %08lX: %d%s\n", (unsigned long)p->tag,
                     placement, placement != (int)p->placement ? " (from --place)" : "");
@@ -1873,7 +1874,7 @@ static int replay_main(int argc, char **argv)
         else if (!strcmp(argv[i], "--place") && i + 1 < argc) {
             const char *a = argv[++i], *eq = strchr(a, '=');
             static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side", "edge",
-                                           "spread" };
+                                           "spread", "fill" };
             const int n = (int)(sizeof names / sizeof names[0]);
             int p;
 

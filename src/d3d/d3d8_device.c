@@ -429,6 +429,10 @@ static uint32_t g_2d_tag;
  * the point g_2d_spread across the picture, the draw's own middle. */
 static int      g_2d_anchor = XBOX_D3D8_2D_CENTRE;
 static float    g_2d_spread = 0.5f;
+/* XBOX_D3D8_2D_PANEL_3D is set; and the draw in hand is such a model, kept
+ * centred whatever the 2D around it is anchored to. */
+static BOOL     g_2d_panel_3d;
+static BOOL     g_2d_panel_draw;
 
 /* The widescreen 2D squeeze (see apply_host_viewport) as a horizontal
  * factor about an anchor, both in host pixels of the scene. FALSE when no
@@ -500,7 +504,9 @@ static BOOL two_d_squeeze(float *k_out, float *cx_out)
     *k_out = k;
     span = g_cur_rt ? (float)g_cur_rt->width * rt_scale_x()
                     : (float)g_device_state.width;
-    if (g_2d_anchor == XBOX_D3D8_2D_LEFT)
+    if (g_2d_panel_draw)
+        *cx_out = span * 0.5f;
+    else if (g_2d_anchor == XBOX_D3D8_2D_LEFT)
         *cx_out = 0.0f;
     else if (g_2d_anchor == XBOX_D3D8_2D_RIGHT)
         *cx_out = span;
@@ -2611,7 +2617,7 @@ static void two_d_tag_note(const void *vertices, UINT stride, UINT count)
 static void two_d_tag_frame(void)
 {
     static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side",
-                                   "edge", "spread" };
+                                   "edge", "spread", "fill" };
     UINT guest_w = d3d8_GetGuestWidth();
     int i;
 
@@ -2620,7 +2626,7 @@ static void two_d_tag_frame(void)
     fprintf(stderr, "[2D-TAGS] frame %lu: %d tag(s)\n", g_tag_frames, g_tag_count);
     for (i = 0; i < g_tag_count; i++) {
         const TwoDTagStat *t = &g_tag_stats[i];
-        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_SPREAD ? t->placement : 0;
+        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_FILL ? t->placement : 0;
 
         fprintf(stderr, "[2D-TAGS]   tag %08X %-7s draws %6lu  x %7.1f..%7.1f (%5.1f%%) "
                 "widest %5.1f%%\n", t->tag, names[pl], t->draws, t->lo, t->hi,
@@ -2635,7 +2641,9 @@ void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag)
 {
     int anchor;
 
-    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_SPREAD)
+    g_2d_panel_3d = (placement & XBOX_D3D8_2D_PANEL_3D) != 0;
+    placement &= ~XBOX_D3D8_2D_PANEL_3D;
+    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_FILL)
         placement = XBOX_D3D8_2D_AUTO;
     g_2d_tag = tag;
     if (placement == g_2d_placement)
@@ -2683,6 +2691,13 @@ int xbox_D3D8GetTwoDPlacement(uint32_t *tag)
  * otherwise the renderer's judgement from the draw's extent. */
 void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
 {
+    /* The last draw's centring goes with it: a viewport this draw has already
+     * been given under it would keep it. */
+    if (g_2d_panel_draw) {
+        g_2d_panel_draw = FALSE;
+        if (g_2d_squeeze)
+            apply_host_viewport();
+    }
     /* A fixed-function draw through the title's projection is 3D to the
      * shader path. The title may know better: Max Payne draws its HUD, its
      * menus and its graphic novel as quads at one depth under the camera
@@ -2705,6 +2720,20 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
         }
     }
     if (!g_2d_screen_space) {
+        /* A camera narrower than the picture, which the world's never is:
+         * a model the title's 2D layout holds. A fifth short of it, so a
+         * camera a hair off the picture's shape is still the world. What the
+         * title has placed to span the picture does: TimeSplitters 2's hex
+         * backdrop behind its menus is 3D through such a camera too. */
+        if (g_2d_panel_3d && g_2d_placement != XBOX_D3D8_2D_STRETCH && !g_cur_rt) {
+            float aspect = d3d8_vsh_bound_projection_aspect();
+
+            if (aspect > 0.0f && aspect < (float)d3d8_display_shown_aspect() * 0.8f) {
+                g_2d_panel_draw = TRUE;
+                set_squeeze(TRUE);
+                return;
+            }
+        }
         /* In perspective, onto the screen: xbox_D3D8SetWideFramesAuto. */
         if (!g_cur_rt)
             d3d8_display_note_3d_draw();
@@ -2740,6 +2769,17 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
         if ((guest_w && draw_extent(vertices, stride, count, &lo, &hi) &&
              (lo <= 0.5f || hi >= (float)guest_w - 0.5f)) ||
             d3d8_draw_escapes_squeeze(vertices, stride, count))
+            set_squeeze(FALSE);
+        break;
+    }
+    case XBOX_D3D8_2D_FILL: {
+        /* Clipped by the scissor: a quad the size of the screen under one
+         * the size of a box is that box's background. */
+        UINT guest_w = d3d8_GetGuestWidth();
+        float lo, hi;
+
+        if (guest_w && draw_extent(vertices, stride, count, &lo, &hi) &&
+            hi - lo >= (float)guest_w * 0.98f)
             set_squeeze(FALSE);
         break;
     }
@@ -2807,7 +2847,9 @@ static void two_d_overflow(const void *vertices, UINT stride, UINT count)
     unsigned char *copy;
     float lo, hi, k, cx, s;
 
-    if (!two_d_overflow_on() || !g_2d_squeeze || g_cur_rt || !guest_w ||
+    /* Screen-space only: a model in a panel is squeezed too, and its vertices
+     * are nowhere near pixels. */
+    if (!two_d_overflow_on() || !g_2d_squeeze || !g_2d_screen_space || g_cur_rt || !guest_w ||
         !draw_extent(vertices, stride, count, &lo, &hi) || !g_extent_pixels ||
         (g_extent_lo >= 0.0f && g_extent_hi <= (float)guest_w) ||
         !two_d_squeeze(&k, &cx))

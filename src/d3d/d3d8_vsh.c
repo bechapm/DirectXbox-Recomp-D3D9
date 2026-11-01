@@ -134,6 +134,19 @@ int d3d8_vsh_bound_uses_projection(void) { return g_bound_proj_reg >= 0; }
  * constant w row, (0, 0, 0, 1) in the register that produces oPos.w
  * (column 3, i.e. reg + 3 of the transposed matrix the program dp4s by).
  * Checked against the constants as currently uploaded, per draw. */
+/* The bound program's camera, width over height: what its projection's two
+ * scales say, or 0 when it has none. */
+float d3d8_vsh_bound_projection_aspect(void)
+{
+    float x, y;
+
+    if (g_bound_proj_reg < 0 || g_bound_proj_reg + 1 >= NV2A_VS_MAX_CONSTANTS)
+        return 0.0f;
+    x = g_vsh_constants.c[g_bound_proj_reg][0];
+    y = g_vsh_constants.c[g_bound_proj_reg + 1][1];
+    return x > 0.0f && y > 0.0f ? y / x : 0.0f;
+}
+
 int d3d8_vsh_bound_projection_is_ortho(void)
 {
     const float *w;

@@ -663,15 +663,39 @@ factor k = (4/3)/aspect. Nothing is kept per resolution or per shape.
     RIGHT     in proportion, 4:3 box at the right     (c, an ammo corner)
     SIDE      LEFT, RIGHT or CENTRE by the draw's third of the screen
     SPREAD    in proportion, each draw's middle at the same fraction of the width
+    FILL      CENTRE, but a draw across the whole width spans: full-bleed
 ```
 
 Set them on the largest thing that moves together. LEFT and RIGHT move a whole group
 rigidly, which is what a modern layout does with a group. SPREAD moves each draw by
-itself: it takes no list, so it suits what nobody has looked at, but two pieces that
-belong together end up further apart as the picture widens, by 1/k. At 21:9 a counter and its
-label 60 pixels apart in 640 are as far apart as 105 would be. AUTO, the width guess,
-is what is left for a title that says nothing. It measures a whole draw, so two small
-pieces in one draw at opposite sides read as one wide one.
+itself, so anything that is more than one draw comes apart by 1/k as the picture
+widens: at 21:9 a counter and its label 60 pixels apart in 640 are as far apart as 105
+would be, and text with an outline drawn apart from it loses it. TimeSplitters 2 tried
+it as the default for what nobody had named, and that took its health bars and
+targeting display to pieces, so it is for a piece known to be one draw, if any.
+
+FILL is the rule for what nobody has named: in proportion, and full-bleed across the
+whole width. AUTO, the width guess, is what is left for a title that says nothing. It
+measures a whole draw, so two small pieces in one draw at opposite sides read as one
+wide one, and its threshold is a measurement of one screen.
+
+3D can be part of a layout too: a turning character in a menu's panel, a weapon on a
+page. It is built for the 4:3 screen and nothing widens it, so it is stretched across
+the picture and off its panel. It needs no list, since it shows in the camera:
+
+| | Camera, width over height | At 4:3 and at 21:9 |
+| --- | --- | --- |
+| The world | the picture's: 2.39 at 21:9 | differs, it is widened |
+| TimeSplitters 2's weapon on a pause page | 1.33 | the same |
+| Its character in a panel | 1.0 | the same |
+
+A camera narrower than the picture was not made for the picture. With
+`XBOX_D3D8_2D_PANEL_3D` or-ed into its placements, such a draw is kept at 4:3, centred.
+A title sets it while its UI draws, since a split screen's narrow view is the world.
+A named anchor wins: a 3D backdrop placed STRETCH still spans the picture.
+It is a flag, not a placement, since a panel and its model are drawn in turn and the
+panel's next piece would end one. It needs a title that widens its own camera, whose
+projection register holds what the game built.
 
 The squeeze is a viewport, and nothing is drawn outside a viewport: in CSS terms,
 `overflow: hidden` at the old edge. On the console that edge was the screen's. A piece

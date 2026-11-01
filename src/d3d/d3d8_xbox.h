@@ -1308,7 +1308,26 @@ void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *h
  *            shape, but only keeps the pieces of a group together if they
  *            are one draw: a counter and its label a little apart in 4:3 end
  *            up further apart as the picture widens, where LEFT or RIGHT
- *            keeps them as they were.
+ *            keeps them as they were. Nor is it for a default: text drawn
+ *            with its shadow as separate draws comes apart.
+ *   FILL     keep at 4:3, centred, but a draw across the guest's whole width
+ *            spans the picture, whatever is in it: a fade, a filter, a frame.
+ *            What AUTO's width guess is for, as a rule: nothing short of the
+ *            whole width is taken for a backdrop. For a title's default, or
+ *            an area of its UI. Unlike CENTRE, which holds a full-width
+ *            picture in proportion.
+ *
+ * XBOX_D3D8_2D_PANEL_3D, or-ed into a placement, is for 3D that is part of a
+ * 4:3 layout: a turning character in a menu's panel, a weapon on a page. While
+ * it is set, a draw through a camera narrower than the picture was not made
+ * for the picture, and is kept at 4:3, centred, in the shape it has at 4:3;
+ * left alone it would be stretched across the picture. The world's camera is
+ * as wide as the picture and is left alone, so this takes no list of what is
+ * in a menu. For a title that widens its own camera, whose projection register
+ * holds what the game built; and only while its UI draws, since a split
+ * screen's narrow view is the world and not a panel. A 3D backdrop stays out of
+ * it by being placed STRETCH. A flag and not a placement, since a panel's 2D and
+ * its model are drawn in turn. Program draws.
  *
  * Holds until changed; 3D draws ignore it; without widescreen nothing is
  * squeezed and it has no effect. `tag` names the title's call site for
@@ -1321,8 +1340,10 @@ enum {
     XBOX_D3D8_2D_RIGHT,
     XBOX_D3D8_2D_SIDE,
     XBOX_D3D8_2D_EDGE,
-    XBOX_D3D8_2D_SPREAD
+    XBOX_D3D8_2D_SPREAD,
+    XBOX_D3D8_2D_FILL
 };
+#define XBOX_D3D8_2D_PANEL_3D 0x100
 void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag);
 
 /* Whether a screen-space draw reaching past the guest's screen goes on past

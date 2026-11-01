@@ -78,6 +78,7 @@ BOOL d3d8_draw_escapes_squeeze(const void *vertices, UINT stride, UINT count);
  * widescreen, by the title's placement (xbox_D3D8SetTwoDPlacement) or else
  * by d3d8_draw_escapes_squeeze. */
 void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count);
+float d3d8_vsh_bound_projection_aspect(void);
 /* The scissor rectangle to draw with, if one is on (xbox_D3D8SetScissors). */
 BOOL                 d3d8_GetScissor(RhiRect *out);
 UINT                 d3d8_GetGuestHeight(void);
