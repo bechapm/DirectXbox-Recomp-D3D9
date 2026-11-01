@@ -15,6 +15,10 @@
 #include <string.h>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>        /* recomp_screen_size: EnumDisplaySettings */
 #include <direct.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -297,7 +301,9 @@ void recomp_settings_defaults(RecompSettings *s)
         return;
     memset(s, 0, sizeof *s);
     s->resolution_scale  = 1;
+    s->resolution        = 0;
     s->widescreen        = 0;
+    snprintf(s->aspect_ratio, sizeof s->aspect_ratio, "16:9");
     s->hor_plus          = RECOMP_HOR_PLUS_AUTO;
     s->hor_plus_register = RECOMP_REGISTER_AUTO;
     snprintf(s->widescreen_2d, sizeof s->widescreen_2d, "auto");
@@ -346,8 +352,12 @@ int recomp_settings_read(const char *path, RecompSettings *s)
 
         if ((v = from_table("resolution_scale")) != NULL)
             s->resolution_scale = clamp_int(atoi(v), 1, 8);
+        if ((v = from_table("resolution")) != NULL)
+            s->resolution = recomp_resolution_parse(v);
         if ((v = from_table("widescreen")) != NULL)
             s->widescreen = !off_word(v);
+        if ((v = from_table("aspect_ratio")) != NULL && *v)
+            snprintf(s->aspect_ratio, sizeof s->aspect_ratio, "%s", v);
         /* A number is an override and is kept as one; "auto", like no
          * line at all, leaves it to the title (recomp_widescreen_resolve).
          * Nothing below zero is a factor, and the runtime has always read
@@ -437,7 +447,7 @@ static void make_parents(const char *path)
 int recomp_settings_write(const char *path, const RecompSettings *s)
 {
     RecompSettings d;
-    char hor_plus[48], reg[48];
+    char hor_plus[48], reg[48], resolution[48];
     FILE *f;
 
     if (!path)
@@ -460,6 +470,14 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         snprintf(hor_plus, sizeof hor_plus, "# hor_plus = auto");
     else
         snprintf(hor_plus, sizeof hor_plus, "hor_plus = %g", s->hor_plus);
+    /* No line, rather than 0, when it follows the scale: a file nobody has
+     * touched since the launcher learned the line reads as it always did. */
+    if (s->resolution == RECOMP_RESOLUTION_SCREEN)
+        snprintf(resolution, sizeof resolution, "resolution = screen");
+    else if (s->resolution > 0)
+        snprintf(resolution, sizeof resolution, "resolution = %d", s->resolution);
+    else
+        snprintf(resolution, sizeof resolution, "# resolution = 1080");
     if (s->hor_plus_register < 0)
         snprintf(reg, sizeof reg, "# hor_plus_register = auto");
     else
@@ -472,20 +490,31 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "#\n"
         "# Delete this file to go back to the defaults.\n"
         "\n"
-        "# How much larger than the console the game is rendered, before being\n"
-        "# filtered back down: supersampling. 1 is the console's own size. 2 is\n"
-        "# a good default and costs little. Up to 8.        [RECOMP_RES_SCALE]\n"
+        "# How many lines the game is rendered at: 480 is the console's own,\n"
+        "# 1080, 1440, 2160 and so on are rendered that tall, as wide as the\n"
+        "# picture's shape makes them, and filtered to the window. screen is\n"
+        "# the height of your screen. No line, or 0, uses resolution_scale.\n"
+        "#                                                 [RECOMP_RESOLUTION]\n"
+        "%s\n"
+        "#\n"
+        "# The same as a multiple of the console's size, 1 to 8: what a build\n"
+        "# from before the line above reads, and what is used without it.\n"
+        "#                                                  [RECOMP_RES_SCALE]\n"
         "resolution_scale = %d\n"
         "\n"
-        "# Widescreen: play at 16:9 rather than 4:3. The game is told the\n"
-        "# console is widescreen and its picture is shown at 16:9; what more\n"
+        "# Widescreen: play wider than 4:3. The game is told the console is\n"
+        "# widescreen and its picture is shown at the shape below; what more\n"
         "# that takes is worked out for the game when it starts. One with a\n"
-        "# 16:9 mode of its own needs nothing else. One without has its camera\n"
-        "# widened to match, so you see more to the sides rather than the same\n"
-        "# view stretched -- once its project has said it is that kind. A game\n"
-        "# nobody has described is treated as the first kind and, if it is\n"
-        "# not, looks stretched.                           [RECOMP_WIDESCREEN]\n"
+        "# 16:9 mode of its own needs nothing else, and is shown at 16:9 at\n"
+        "# most. One without has its camera widened to match, so you see more\n"
+        "# to the sides rather than the same view stretched -- once its project\n"
+        "# has said it is that kind. A game nobody has described is treated as\n"
+        "# the first kind and, if it is not, looks stretched.[RECOMP_WIDESCREEN]\n"
         "widescreen = %d\n"
+        "#\n"
+        "# The shape of the picture in widescreen: 16:9, 16:10, 21:9, 32:9, any\n"
+        "# other W:H, or screen for your screen's own.          [RECOMP_ASPECT]\n"
+        "aspect_ratio = %s\n"
         "\n"
         "# The next two follow from the line above and are here to be\n"
         "# overridden, not chosen: take the '#' off a line to set it yourself.\n"
@@ -547,7 +576,8 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "# How far a movement pushes the stick, %d to %d; %d is the default, a\n"
         "# full push at %d mouse counts a second.  [RECOMP_MOUSE_SENSITIVITY]\n"
         "mouse_sensitivity = %d\n",
-        s->resolution_scale, s->widescreen, hor_plus, reg,
+        resolution, s->resolution_scale, s->widescreen,
+        s->aspect_ratio[0] ? s->aspect_ratio : "16:9", hor_plus, reg,
         s->widescreen_2d[0] ? s->widescreen_2d : "auto",
         s->anisotropy, s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
         s->fullscreen, s->vrr, s->frame_interp < 1 ? 1 : s->frame_interp,
@@ -919,6 +949,14 @@ void recomp_widescreen_resolve_from(int on, const char *hor_plus, const char *re
                                     RecompWideMode mode, int title_register,
                                     RecompWidescreen *out)
 {
+    recomp_widescreen_resolve_aspect_from(on, hor_plus, reg, mode, title_register,
+                                          RECOMP_ASPECT_16_9, out);
+}
+
+void recomp_widescreen_resolve_aspect_from(int on, const char *hor_plus, const char *reg,
+                                           RecompWideMode mode, int title_register,
+                                           double aspect, RecompWidescreen *out)
+{
     if (!out)
         return;
     memset(out, 0, sizeof *out);
@@ -940,7 +978,7 @@ void recomp_widescreen_resolve_from(int on, const char *hor_plus, const char *re
         if (f > 0.0 && f <= 4.0)
             out->hor_plus = f;
     } else if (out->on && mode == RECOMP_WIDE_HOR_PLUS) {
-        out->hor_plus = RECOMP_HOR_PLUS_16_9;
+        out->hor_plus = recomp_hor_plus_for_aspect(aspect > 0.0 ? aspect : RECOMP_ASPECT_16_9);
     }
 
     out->projection_register = out->title_register >= 0
@@ -973,6 +1011,199 @@ void recomp_window_size(int guest_w, int guest_h, int widescreen, int *w, int *h
     if (h) *h = guest_h;
 }
 
+void recomp_window_size_aspect(int guest_w, int guest_h, double aspect, int *w, int *h)
+{
+    if (guest_w <= 0 || guest_h <= 0) {
+        guest_w = 640;
+        guest_h = 480;
+    }
+    /* 16:9 as above, to the column; any other shape rounded up the same
+     * way, so the window is never narrower than the picture. */
+    if (aspect > RECOMP_ASPECT_16_9 - 1e-6 && aspect < RECOMP_ASPECT_16_9 + 1e-6)
+        guest_w = (int)(((long long)guest_h * 16 + 8) / 9);
+    else if (aspect > RECOMP_ASPECT_4_3 + 1e-6)
+        guest_w = (int)((double)guest_h * aspect + 0.999);
+    if (w) *w = guest_w;
+    if (h) *h = guest_h;
+}
+
+/* ------------------------------------------------------- picture shape */
+
+static int g_screen_w, g_screen_h;
+
+void recomp_set_screen_size(int w, int h)
+{
+    if (w > 0 && h > 0) {
+        g_screen_w = w;
+        g_screen_h = h;
+    }
+}
+
+int recomp_screen_size(int *w, int *h)
+{
+#if defined(_WIN32)
+    /* The desktop mode of the primary screen, in real pixels whatever the
+     * DPI scaling and whether or not the process is DPI aware. */
+    if (!g_screen_w) {
+        DEVMODEA dm;
+
+        memset(&dm, 0, sizeof dm);
+        dm.dmSize = sizeof dm;
+        if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm) &&
+            dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0) {
+            g_screen_w = (int)dm.dmPelsWidth;
+            g_screen_h = (int)dm.dmPelsHeight;
+        }
+    }
+#endif
+    if (w) *w = g_screen_w;
+    if (h) *h = g_screen_h;
+    return g_screen_w > 0 && g_screen_h > 0;
+}
+
+double recomp_aspect_parse(const char *v, int screen_w, int screen_h)
+{
+    double a = 0.0;
+
+    if (!v)
+        return 0.0;
+    while (*v == ' ' || *v == '\t')
+        v++;
+    if (!*v)
+        return 0.0;
+    if (ieq(v, "screen") || ieq(v, "display") || ieq(v, "native")) {
+        if (screen_w > 0 && screen_h > 0)
+            a = (double)screen_w / (double)screen_h;
+    } else {
+        char *end = NULL;
+        double n = strtod(v, &end);
+
+        if (end && end != v) {
+            while (*end == ' ')
+                end++;
+            if (*end == ':' || *end == 'x' || *end == 'X' || *end == '/') {
+                double d = strtod(end + 1, NULL);
+
+                if (d > 0.0)
+                    a = n / d;
+            } else if (*end == '\0') {
+                a = n;
+            }
+        }
+    }
+    /* 21:9 is marketing for 64:27 and 43:18 alike; whichever the player
+     * names, the picture is what they named. Narrower than 4:3 is not a
+     * widescreen: a portrait screen gets 4:3 between bars. */
+    if (!(a >= RECOMP_ASPECT_4_3 - 1e-6))
+        return 0.0;
+    return a > RECOMP_ASPECT_MAX ? RECOMP_ASPECT_MAX : a;
+}
+
+double recomp_widescreen_aspect(void)
+{
+    const char *v = recomp_config_lookup("RECOMP_ASPECT", "aspect_ratio");
+    int sw = 0, sh = 0;
+    double a;
+
+    if (!v || !*v)
+        return RECOMP_ASPECT_16_9;
+    recomp_screen_size(&sw, &sh);
+    a = recomp_aspect_parse(v, sw, sh);
+    return a > 0.0 ? a : RECOMP_ASPECT_16_9;
+}
+
+double recomp_hor_plus_for_aspect(double aspect)
+{
+    if (!(aspect > RECOMP_ASPECT_4_3))
+        return 1.0;
+    return RECOMP_ASPECT_4_3 / aspect;
+}
+
+int recomp_resolution_parse(const char *v)
+{
+    long n;
+    char *end = NULL;
+
+    if (!v || !*v || ieq(v, "auto"))
+        return 0;
+    if (ieq(v, "screen") || ieq(v, "display") || ieq(v, "native"))
+        return RECOMP_RESOLUTION_SCREEN;
+    n = strtol(v, &end, 10);
+    /* "1080p" reads as 1080. */
+    if (end == v || n <= 0)
+        return 0;
+    if (n < 120)
+        n = 120;
+    if (n > RECOMP_RESOLUTION_MAX)
+        n = RECOMP_RESOLUTION_MAX;
+    return (int)n;
+}
+
+int recomp_render_height(int guest_h)
+{
+    const char *res_env = getenv("RECOMP_RESOLUTION");
+    const char *scale_env = getenv("RECOMP_RES_SCALE");
+    const char *v;
+    int lines = 0, scale = 1;
+
+    if (guest_h <= 0)
+        guest_h = 480;
+    /* Each environment variable over both lines of the file: a .bat that
+     * says RECOMP_RES_SCALE=2 means 2, whatever the launcher last wrote. */
+    if (res_env && *res_env)
+        lines = recomp_resolution_parse(res_env);
+    else if (!(scale_env && *scale_env))
+        lines = recomp_resolution_parse(recomp_config_lookup(NULL, "resolution"));
+    v = recomp_config_lookup("RECOMP_RES_SCALE", "resolution_scale");
+    if (v && *v) {
+        long n = strtol(v, NULL, 10);
+
+        if (n >= 1 && n <= 8)
+            scale = (int)n;
+    }
+    if (lines == RECOMP_RESOLUTION_SCREEN) {
+        int sw = 0, sh = 0;
+
+        lines = recomp_screen_size(&sw, &sh) ? sh : 0;
+    }
+    if (lines <= 0)
+        lines = guest_h * scale;
+    return lines > RECOMP_RESOLUTION_MAX ? RECOMP_RESOLUTION_MAX : lines;
+}
+
+void recomp_scene_size(int guest_w, int guest_h, int lines, double aspect, int *w, int *h)
+{
+    double sw, sh;
+
+    if (guest_w <= 0 || guest_h <= 0) {
+        guest_w = 640;
+        guest_h = 480;
+    }
+    if (lines <= 0)
+        lines = guest_h;
+    sh = (double)lines;
+    /* The guest's own shape scales its width exactly, so a whole-number
+     * scale is the size it always was (640x480 at 2 is 1280x960). */
+    {
+        double own = (double)guest_w / (double)guest_h;
+
+        if (aspect <= 0.0 || (aspect > own - 1e-6 && aspect < own + 1e-6))
+            sw = (double)guest_w * lines / guest_h;
+        else
+            sw = sh * aspect;
+    }
+    if (sw > RECOMP_SCENE_MAX_SIZE) {
+        sh = sh * RECOMP_SCENE_MAX_SIZE / sw;
+        sw = RECOMP_SCENE_MAX_SIZE;
+    }
+    if (sh > RECOMP_SCENE_MAX_SIZE) {
+        sw = sw * RECOMP_SCENE_MAX_SIZE / sh;
+        sh = RECOMP_SCENE_MAX_SIZE;
+    }
+    if (w) *w = sw < 1.0 ? 1 : (int)(sw + 0.5);
+    if (h) *h = sh < 1.0 ? 1 : (int)(sh + 0.5);
+}
+
 void recomp_window_fit(int max_w, int max_h, int *w, int *h)
 {
     long long cw, ch;
@@ -995,11 +1226,11 @@ void recomp_window_fit(int max_w, int max_h, int *w, int *h)
 
 void recomp_widescreen_resolve(RecompWidescreen *out)
 {
-    recomp_widescreen_resolve_from(
+    recomp_widescreen_resolve_aspect_from(
         recomp_config_bool("RECOMP_WIDESCREEN", "widescreen", 0),
         recomp_config_lookup("RECOMP_HOR_PLUS", "hor_plus"),
         recomp_config_lookup("RECOMP_HOR_PLUS_REG", "hor_plus_register"),
-        g_wide_mode, g_wide_register, out);
+        g_wide_mode, g_wide_register, recomp_widescreen_aspect(), out);
 }
 
 int recomp_widescreen_guest_flag_from(int on, RecompWideMode mode)

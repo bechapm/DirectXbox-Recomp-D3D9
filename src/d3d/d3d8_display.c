@@ -62,10 +62,8 @@ const D3D8DisplayPolicy *d3d8_display_policy(void)
             g_policy.anisotropy = (UINT)a;
         }
 
-        if (g_policy.scale > 1)
-            fprintf(stderr, "D3D8 display: supersampling %ux, box filtered at present\n",
-                    g_policy.scale);
         g_policy.widescreen = recomp_config_bool("RECOMP_WIDESCREEN", "widescreen", 0);
+        g_policy.aspect = g_policy.widescreen ? recomp_widescreen_aspect() : 0.0;
 
         v = recomp_config_lookup("RECOMP_WIDESCREEN_2D", "widescreen_2d");
         /* auto -- what a new settings file says -- is the title's own
@@ -101,8 +99,14 @@ const D3D8DisplayPolicy *d3d8_display_policy(void)
                 what = "Nothing has said whether this title has a 16:9 mode of its own: "
                        "one without draws 4:3 and will look stretched until its project "
                        "says so (recomp_title_widescreen) or hor_plus is set.";
+            g_policy.hor_plus_named = w.hor_plus_named && w.hor_plus != 1.0;
             fprintf(stderr, "D3D8 display: widescreen, so the title's frame is presented "
-                    "at 16:9. %s%s\n", what,
+                    "at %.4g:1%s. %s%s\n", g_policy.aspect,
+                    g_policy.aspect > RECOMP_ASPECT_16_9 + 1e-3 &&
+                    w.mode != RECOMP_WIDE_HOR_PLUS && !g_policy.hor_plus_named
+                        ? " (16:9 at most until the title says it widens its own camera)"
+                        : "",
+                    what,
                     g_policy.centre_2d ? " All 2D but whole-screen passes is kept at 4:3."
                                        : "");
         }
@@ -176,29 +180,89 @@ void d3d8_display_frame_done(void)
     g_frame_drew_3d = 0;
 }
 
+/* The guest's presentation size, from the scene size asked for at device
+ * creation: a frame shown at the guest's own shape is shown at this. */
+static UINT g_guest_w = 640, g_guest_h = 480;
+
 void d3d8_display_scene_size(UINT guest_w, UINT guest_h,
                              UINT *scene_w, UINT *scene_h)
 {
     const D3D8DisplayPolicy *p = d3d8_display_policy();
+    static int said;
+    int lines, w = 0, h = 0;
 
-    if (scene_w) *scene_w = guest_w * p->scale;
-    if (scene_h) *scene_h = guest_h * p->scale;
+    if (guest_w && guest_h) {
+        g_guest_w = guest_w;
+        g_guest_h = guest_h;
+    }
+    /* As many lines as the settings ask (resolution, else the guest's
+     * height times the scale), as wide as the picture is shown: square
+     * pixels at any shape, so a 21:9 picture is rendered 21:9 rather than
+     * a 4:3 one stretched. The guest's own shape at a whole-number scale is
+     * exactly guest * scale, as it always was. */
+    lines = recomp_render_height((int)guest_h);
+    recomp_scene_size((int)guest_w, (int)guest_h, lines,
+                      p->widescreen ? p->aspect : 0.0, &w, &h);
+    if (!said++ && ((UINT)w != guest_w || (UINT)h != guest_h))
+        fprintf(stderr, "D3D8 display: rendering at %dx%d for a %ux%u guest, filtered "
+                "to the window at present\n", w, h, guest_w, guest_h);
+    if (scene_w) *scene_w = (UINT)w;
+    if (scene_h) *scene_h = (UINT)h;
+}
+
+double d3d8_display_shown_aspect(void)
+{
+    const D3D8DisplayPolicy *p = d3d8_display_policy();
+    double a;
+
+    if (!d3d8_display_wide_now() || !(p->aspect > 0.0))
+        return (double)g_guest_w / (double)g_guest_h;
+    a = p->aspect;
+    /* A title with a 16:9 mode of its own draws 16:9 and nothing wider:
+     * past that it is shown between bars rather than stretched. Asked
+     * every frame, since a title that widens its camera itself says so
+     * only at its first camera (xbox_D3D8ClaimHorPlus). */
+    if (a > RECOMP_ASPECT_16_9 && recomp_widescreen_title_mode() != RECOMP_WIDE_HOR_PLUS &&
+        !p->hor_plus_named)
+        a = RECOMP_ASPECT_16_9;
+    return a;
 }
 
 void d3d8_display_output_shape(UINT scene_w, UINT scene_h,
                                UINT *shape_w, UINT *shape_h)
 {
+    UINT w, h;
+
     if (d3d8_display_wide_now()) {
-        /* The frame is anamorphic: the title squeezed a 16:9 view into
-         * whatever buffer it renders to, and the display is meant to
-         * stretch it back. Presenting it at its own shape would be the
-         * squeeze left in. */
-        if (shape_w) *shape_w = 16;
-        if (shape_h) *shape_h = 9;
+        /* The frame is drawn for a picture of the widescreen shape, into
+         * whatever buffer it renders to, and the display is meant to show
+         * it at that shape. Presenting it at the buffer's own shape would
+         * leave a squeeze in where the two differ. */
+        double a = d3d8_display_shown_aspect();
+
+        if (a > RECOMP_ASPECT_16_9 - 1e-6 && a < RECOMP_ASPECT_16_9 + 1e-6) {
+            w = 16;
+            h = 9;
+        } else if (scene_w && scene_h &&
+                   (double)scene_w / scene_h > a - 1e-3 && (double)scene_w / scene_h < a + 1e-3) {
+            w = scene_w;
+            h = scene_h;
+        } else {
+            w = (UINT)(a * 1000.0 + 0.5);
+            h = 1000;
+        }
     } else {
-        if (shape_w) *shape_w = scene_w;
-        if (shape_h) *shape_h = scene_h;
+        /* The guest's own shape, which is the scene's unless the scene is
+         * rendered wider for widescreen and this frame was called 4:3. */
+        w = g_guest_w;
+        h = g_guest_h;
+        if (scene_w && scene_h && (uint64_t)scene_w * g_guest_h == (uint64_t)scene_h * g_guest_w) {
+            w = scene_w;
+            h = scene_h;
+        }
     }
+    if (shape_w) *shape_w = w;
+    if (shape_h) *shape_h = h;
 }
 
 /* Packed width << 16 | height, so a reader on another thread never sees
@@ -226,8 +290,15 @@ void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *h
 {
     int w, h;
 
-    recomp_window_size((int)guest_w, (int)guest_h, d3d8_display_policy()->widescreen,
-                       &w, &h);
+    const D3D8DisplayPolicy *p = d3d8_display_policy();
+    double a = p->widescreen ? p->aspect : 0.0;
+
+    /* What d3d8_display_shown_aspect gives a widescreen frame: the shape,
+     * no wider than 16:9 for a title with a mode of its own. */
+    if (a > RECOMP_ASPECT_16_9 && recomp_widescreen_title_mode() != RECOMP_WIDE_HOR_PLUS &&
+        !p->hor_plus_named)
+        a = RECOMP_ASPECT_16_9;
+    recomp_window_size_aspect((int)guest_w, (int)guest_h, a, &w, &h);
     if (width)  *width = (UINT)w;
     if (height) *height = (UINT)h;
 }
@@ -271,7 +342,9 @@ D3D8DisplayFit d3d8_display_fit(UINT shape_w, UINT shape_h, UINT bb_w, UINT bb_h
  * number -- which is most window sizes -- still resolves smoothly, and so
  * a window larger than the scene magnifies cleanly instead of blocking
  * up. At a whole-number ratio with taps to match, this is the box filter
- * that makes the supersampling exact. */
+ * that makes the supersampling exact. The taps are counted for each axis:
+ * a scene rendered wide for widescreen and shown at 4:3 for a frame the
+ * title called 4:3 is squeezed more across than down. */
 typedef struct {
     float origin_x, origin_y, ratio_x, ratio_y;
     float texel_x, texel_y, inv_taps, pad;
@@ -296,10 +369,10 @@ static const char kSource[] =
      * averaged, a half-pixel blur, and at 2x the box filter read the wrong
      * four texels. */
     "    float2 base = (i.pos.xy - 0.5 - p.xy) * p.zw;\n"
-    "    float2 step = p.zw / TAPS;\n"
+    "    float2 step = p.zw / float2(TAPS_X, TAPS_Y);\n"
     "    float4 sum = 0;\n"
-    "    [unroll] for (int y = 0; y < TAPS; y++)\n"
-    "        [unroll] for (int x = 0; x < TAPS; x++)\n"
+    "    [unroll] for (int y = 0; y < TAPS_Y; y++)\n"
+    "        [unroll] for (int x = 0; x < TAPS_X; x++)\n"
     "            sum += scene.SampleLevel(smp,\n"
     "                       (base + (float2(x, y) + 0.5) * step) * q.xy, 0);\n"
     "    return sum * q.z;\n"
@@ -313,7 +386,7 @@ static struct {
     RhiDepthState  *depth;
     RhiRasterState *raster;
     RhiSampler     *sampler;
-    UINT            taps;                /* what the shaders were built for */
+    UINT            taps_x, taps_y;      /* what the shaders were built for */
     int             tried, failed;
 } g;
 
@@ -348,10 +421,10 @@ static RhiShader *compile_one(uint32_t stage, const char *entry, const char *tar
     return s;
 }
 
-static int create(UINT taps)
+static int create(UINT taps_x, UINT taps_y)
 {
-    RhiMacro macros[2];
-    char taps_text[16];
+    RhiMacro macros[3];
+    char tx_text[16], ty_text[16];
     RhiBufferDesc bd;
     RhiBlendDesc bl;
     RhiDepthDesc ds;
@@ -359,7 +432,7 @@ static int create(UINT taps)
     RhiSamplerDesc sm;
 
     if (g.failed) return 0;
-    if (g.tried && g.taps == taps) return g.ps != NULL;
+    if (g.tried && g.taps_x == taps_x && g.taps_y == taps_y) return g.ps != NULL;
     if (!rhi_device_ready()) { g.failed = 1; return 0; }
 
     /* The tap count follows the window, not the scale: a window of a
@@ -371,13 +444,17 @@ static int create(UINT taps)
         rhi_shader_destroy(g.ps); g.ps = NULL;
     }
     g.tried = 1;
-    g.taps = taps;
+    g.taps_x = taps_x;
+    g.taps_y = taps_y;
 
-    snprintf(taps_text, sizeof taps_text, "%u", taps);
-    macros[0].name = "TAPS";
-    macros[0].value = taps_text;
-    macros[1].name = NULL;
-    macros[1].value = NULL;
+    snprintf(tx_text, sizeof tx_text, "%u", taps_x);
+    snprintf(ty_text, sizeof ty_text, "%u", taps_y);
+    macros[0].name = "TAPS_X";
+    macros[0].value = tx_text;
+    macros[1].name = "TAPS_Y";
+    macros[1].value = ty_text;
+    macros[2].name = NULL;
+    macros[2].value = NULL;
 
     if (!(g.vs = compile_one(RHI_STAGE_VERTEX, "vs_main", "vs_4_0", macros))) return 0;
     if (!(g.ps = compile_one(RHI_STAGE_PIXEL, "ps_main", "ps_4_0", macros))) return 0;
@@ -422,21 +499,23 @@ HRESULT d3d8_display_resolve(RhiView *scene, UINT scene_w, UINT scene_h,
     RhiOutputState saved;
     RhiViewport vp;
     float blend_factor[4] = { 1, 1, 1, 1 };
-    UINT taps;
+    UINT taps_x, taps_y;
     void *mapped;
 
-    if (!scene || !out || !fit.w || !fit.h || !scene_h)
+    if (!scene || !out || !fit.w || !fit.h || !scene_h || !scene_w)
         return E_INVALIDARG;
 
-    /* Square taps, from the vertical ratio: the horizontal one is the
-     * same whenever the fit preserved the scene's shape, which it does,
-     * and averaging a non-square block would soften one axis more than
-     * the other. Rounded rather than truncated so a ratio just under a
+    /* Taps for each axis from its own ratio: the same whenever the fit
+     * kept the scene's shape, and more across than down for a wide scene
+     * shown at 4:3. Rounded rather than truncated so a ratio just under a
      * whole number keeps the taps that ratio deserves. */
-    taps = (scene_h + fit.h / 2) / fit.h;
-    if (taps < 1) taps = 1;
-    if (taps > 8) taps = 8;
-    if (!create(taps)) return E_FAIL;
+    taps_x = (scene_w + fit.w / 2) / fit.w;
+    taps_y = (scene_h + fit.h / 2) / fit.h;
+    if (taps_x < 1) taps_x = 1;
+    if (taps_x > 8) taps_x = 8;
+    if (taps_y < 1) taps_y = 1;
+    if (taps_y > 8) taps_y = 8;
+    if (!create(taps_x, taps_y)) return E_FAIL;
 
     rhi_output_save(&saved);
 
@@ -448,7 +527,7 @@ HRESULT d3d8_display_resolve(RhiView *scene, UINT scene_w, UINT scene_h,
         c.ratio_y = (float)scene_h / (float)fit.h;
         c.texel_x = 1.0f / (float)scene_w;
         c.texel_y = 1.0f / (float)scene_h;
-        c.inv_taps = 1.0f / (float)(taps * taps);
+        c.inv_taps = 1.0f / (float)(taps_x * taps_y);
         c.pad = 0.0f;
         memcpy(mapped, &c, sizeof c);
         rhi_buffer_unmap(g.cb);

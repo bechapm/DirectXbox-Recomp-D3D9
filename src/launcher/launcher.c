@@ -106,7 +106,24 @@ static const char *const *k_frame_caps = k_frame_caps_console;
 
 static RecompSettings g_settings;
 static int            g_frame_cap_index;   /* into k_frame_caps */
-static int            g_widescreen;        /* the row; settings_save applies it */
+static int            g_widescreen;        /* g_aspect_index != 0; settings_save applies it */
+
+/* The picture's shape. The first is 4:3, which is widescreen off. A title
+ * whose camera the runtime widens (HOR_PLUS) can be any shape; one with a
+ * 16:9 mode of its own has only that one, and is offered 4:3 and 16:9 as
+ * the old switch was. A shape the file names that is not in the list
+ * (3440x1440, 2.39) is kept as one more, last. */
+static const char *g_aspects[10];
+static char        g_aspect_custom[16];
+static int         g_aspect_index;
+
+/* The lines rendered: the usual video heights, the screen's own (-1), and
+ * whatever the file held that is none of them (an older file's scale). */
+#define RES_CHOICES 12
+static const char *g_resolutions[RES_CHOICES + 1];
+static char        g_resolution_text[RES_CHOICES][16];
+static int         g_resolution_lines[RES_CHOICES];
+static int         g_resolution_index;
 
 static Row  g_video_rows[12];
 static int  g_video_count;
@@ -179,8 +196,9 @@ static void build_rows(void)
     Row *r = g_video_rows;
 
     r->label = "Resolution";
-    r->help  = "Render larger than the console, then filter back down. Costs little.";
-    r->kind  = ROW_INT; r->lo = 1; r->hi = 8; r->ival = &g_settings.resolution_scale;
+    r->help  = "How many lines the game is drawn with, as wide as the shape below, then"
+               " filtered to the window. Higher is sharper and costs more.";
+    r->kind  = ROW_CHOICE; r->choices = g_resolutions; r->ival = &g_resolution_index;
     r++;
 
 #ifndef LAUNCHER_NO_WIDESCREEN
@@ -194,21 +212,22 @@ static void build_rows(void)
      * out for itself now, when it starts (recomp_config.h, "widescreen"),
      * and all that is left to say here is what this game will do with the
      * switch, as its project describes it. */
-    r->label = "Widescreen";
+    r->label = "Aspect ratio";
     switch (recomp_widescreen_title_mode()) {
     case RECOMP_WIDE_NATIVE:
-        r->help = "Play at 16:9, in the game's own widescreen mode.";
+        r->help = "The picture's shape. 16:9 uses the game's own widescreen mode.";
         break;
     case RECOMP_WIDE_HOR_PLUS:
-        r->help = "Play at 16:9. The camera is widened to match, so you see more"
-                  " to the sides.";
+        r->help = "The picture's shape. Wider shapes widen the camera, so you see more"
+                  " to the sides; menus stay in proportion. Ultrawide can show what the"
+                  " game never meant to be seen, in cutscenes most.";
         break;
     default:
-        r->help = "Play at 16:9, in the game's own widescreen mode. A game without"
-                  " one will look stretched.";
+        r->help = "The picture's shape. 16:9 uses the game's own widescreen mode. A"
+                  " game without one will look stretched.";
         break;
     }
-    r->kind  = ROW_BOOL; r->ival = &g_widescreen;
+    r->kind  = ROW_CHOICE; r->choices = g_aspects; r->ival = &g_aspect_index;
     r++;
 #endif
 
@@ -317,6 +336,83 @@ static int link_port(void)
     return (p >= 1 && p <= 65535) ? p : RECOMP_SYSLINK_DEFAULT_PORT;
 }
 
+/* The shape chosen, width over height; 0 for 4:3 (widescreen off). */
+static double chosen_aspect(void)
+{
+    int sw = 0, sh = 0;
+
+    if (g_aspect_index <= 0 || !g_aspects[g_aspect_index])
+        return 0.0;
+    recomp_screen_size(&sw, &sh);
+    return recomp_aspect_parse(g_aspects[g_aspect_index], sw, sh);
+}
+
+/* The lines chosen; the screen's height for "screen" (480 if unknown). */
+static int chosen_lines(void)
+{
+    int lines = g_resolution_lines[g_resolution_index];
+
+    if (lines == RECOMP_RESOLUTION_SCREEN) {
+        int sw = 0, sh = 0;
+
+        lines = recomp_screen_size(&sw, &sh) ? sh : 0;
+    }
+    return lines > 0 ? lines : 480;
+}
+
+static const char *aspect_label(int i)
+{
+    static char label[64];
+    const char *a = g_aspects[i];
+    int sw = 0, sh = 0;
+
+    if (!a)
+        return "";
+    if (i == 0)
+        return "4:3, as the console";
+    if (strcmp(a, "21:9") == 0)
+        return "21:9 ultrawide";
+    if (strcmp(a, "32:9") == 0)
+        return "32:9 super ultrawide";
+    if (strcmp(a, "screen") == 0) {
+        if (recomp_screen_size(&sw, &sh))
+            snprintf(label, sizeof label, "Match my screen (%dx%d)", sw, sh);
+        else
+            snprintf(label, sizeof label, "Match my screen");
+        return label;
+    }
+    if (a == g_aspect_custom) {
+        snprintf(label, sizeof label, "%s (from the settings file)", a);
+        return label;
+    }
+    return a;
+}
+
+static const char *resolution_label(int i)
+{
+    static char label[64];
+    int lines = g_resolution_lines[i], w = 0, h = 0, sw = 0, sh = 0;
+    int screen = lines == RECOMP_RESOLUTION_SCREEN;
+
+    if (screen) {
+        if (!recomp_screen_size(&sw, &sh))
+            return "Match my screen";
+        lines = sh;
+    }
+    /* The launcher has no guest to ask; every title here presents 640x480
+     * but a few, and the shape is what the row is for. */
+    recomp_scene_size(640, 480, lines, chosen_aspect(), &w, &h);
+    if (screen)
+        snprintf(label, sizeof label, "Match my screen (%dx%d)", w, h);
+    else if (lines == 480)
+        snprintf(label, sizeof label, "480p, as the console (%dx%d)", w, h);
+    else if (lines == 2160)
+        snprintf(label, sizeof label, "4K (%dx%d)", w, h);
+    else
+        snprintf(label, sizeof label, "%dp (%dx%d)", lines, w, h);
+    return label;
+}
+
 #ifndef LAUNCHER_NO_WIDESCREEN
 /* Whether the file's own hor_plus, which settings_save keeps while the
  * switch is where it was found, gives this game a different camera from
@@ -330,13 +426,16 @@ static int camera_overridden(void)
     RecompWidescreen kept, alone;
     char factor[32];
 
+    double aspect = chosen_aspect();
+
+    g_widescreen = g_aspect_index != 0;
     if (g_widescreen != g_settings.widescreen || g_settings.hor_plus < 0.0)
         return 0;
     snprintf(factor, sizeof factor, "%g", g_settings.hor_plus);
-    recomp_widescreen_resolve_from(g_widescreen, factor, NULL,
-                                   recomp_widescreen_title_mode(), -1, &kept);
-    recomp_widescreen_resolve_from(g_widescreen, NULL, NULL,
-                                   recomp_widescreen_title_mode(), -1, &alone);
+    recomp_widescreen_resolve_aspect_from(g_widescreen, factor, NULL,
+                                          recomp_widescreen_title_mode(), -1, aspect, &kept);
+    recomp_widescreen_resolve_aspect_from(g_widescreen, NULL, NULL,
+                                          recomp_widescreen_title_mode(), -1, aspect, &alone);
     return kept.hor_plus != alone.hor_plus;
 }
 #endif
@@ -344,9 +443,9 @@ static int camera_overridden(void)
 static const char *row_help(const Row *r)
 {
 #ifndef LAUNCHER_NO_WIDESCREEN
-    if (r->ival == &g_widescreen && camera_overridden())
-        return "The settings file sets the camera's width itself (hor_plus). Switch"
-               " this off and on again to let the game decide.";
+    if (r->ival == &g_aspect_index && camera_overridden())
+        return "The settings file sets the camera's width itself (hor_plus). Choose"
+               " 4:3 and then a shape again to let the game decide.";
 #endif
     return r->help;
 }
@@ -355,20 +454,10 @@ static void row_value(const Row *r, char *out, size_t n)
 {
     switch (r->kind) {
     case ROW_BOOL:
-#ifndef LAUNCHER_NO_WIDESCREEN
-        if (r->ival == &g_widescreen && camera_overridden()) {
-            snprintf(out, n, "%s  (camera set in the settings file)",
-                     *r->ival ? "On" : "Off");
-            break;
-        }
-#endif
         snprintf(out, n, "%s", *r->ival ? "On" : "Off");
         break;
     case ROW_INT:
-        if (r->ival == &g_settings.resolution_scale)
-            snprintf(out, n, *r->ival == 1 ? "Console (640x480)" : "%dx (%dx%d)",
-                     *r->ival, 640 * *r->ival, 480 * *r->ival);
-        else if (*r->ival == 1)
+        if (*r->ival == 1)
             snprintf(out, n, "Off");
         else if (r->ival == &g_settings.frame_interp)
             snprintf(out, n, "%dx (%d frames a second)", *r->ival, 60 * *r->ival);
@@ -378,6 +467,17 @@ static void row_value(const Row *r, char *out, size_t n)
     case ROW_CHOICE:
         if (r->ival == &g_link_mode)
             snprintf(out, n, "%s", link_mode_label(*r->ival));
+        else if (r->ival == &g_resolution_index)
+            snprintf(out, n, "%s", resolution_label(*r->ival));
+        else if (r->ival == &g_aspect_index) {
+#ifndef LAUNCHER_NO_WIDESCREEN
+            if (camera_overridden())
+                snprintf(out, n, "%s  (camera set in the settings file)",
+                         aspect_label(*r->ival));
+            else
+#endif
+            snprintf(out, n, "%s", aspect_label(*r->ival));
+        }
         else
             snprintf(out, n, "%s", frame_cap_label(*r->ival));
         break;
@@ -1073,6 +1173,69 @@ static int capture_mouse(int button)
 
 /* ------------------------------------------------------------ persistence */
 
+/* The Aspect ratio and Resolution rows' lists, from the file just read. */
+static void choices_load(void)
+{
+    static const char *const wide[] = { "16:9", "16:10", "21:9", "32:9", "screen", NULL };
+    static const int lines[] = { 480, 720, 1080, 1440, 2160, 2880, 4320, 0 };
+    int n = 0, i, want, sw = 0, sh = 0;
+    double file_aspect;
+
+    /* Aspect ratio. */
+    g_aspects[n++] = "4:3";
+#ifndef LAUNCHER_NO_WIDESCREEN
+    if (recomp_widescreen_title_mode() == RECOMP_WIDE_HOR_PLUS) {
+        for (i = 0; wide[i]; i++)
+            g_aspects[n++] = wide[i];
+    } else {
+        g_aspects[n++] = "16:9";
+    }
+#endif
+    g_aspects[n] = NULL;
+    g_aspect_index = 0;
+    recomp_screen_size(&sw, &sh);
+    if (g_settings.widescreen && n > 1) {
+        const char *a = g_settings.aspect_ratio[0] ? g_settings.aspect_ratio : "16:9";
+
+        file_aspect = recomp_aspect_parse(a, sw, sh);
+        g_aspect_index = 1;             /* 16:9 when the file names none we know */
+        for (i = 1; i < n; i++)
+            if (strcasecmp(a, g_aspects[i]) == 0)
+                g_aspect_index = i;
+        /* A shape of its own, kept as one more choice, so Play does not
+         * change it -- for a title that can show it. */
+        if (strcasecmp(a, g_aspects[g_aspect_index]) != 0 && file_aspect > 0.0 &&
+            recomp_widescreen_title_mode() == RECOMP_WIDE_HOR_PLUS &&
+            n < (int)(sizeof g_aspects / sizeof g_aspects[0]) - 1) {
+            snprintf(g_aspect_custom, sizeof g_aspect_custom, "%s", a);
+            g_aspects[n] = g_aspect_custom;
+            g_aspect_index = n++;
+            g_aspects[n] = NULL;
+        }
+    }
+
+    /* Resolution. An older file says it as a scale of the console's 480. */
+    want = g_settings.resolution ? g_settings.resolution : 480 * g_settings.resolution_scale;
+    n = 0;
+    for (i = 0; lines[i] && n < RES_CHOICES - 2; i++) {
+        if (want > 0 && want < lines[i] && (n == 0 || want > g_resolution_lines[n - 1]))
+            g_resolution_lines[n++] = want;
+        g_resolution_lines[n++] = lines[i];
+    }
+    if (want > lines[i - 1] && n < RES_CHOICES - 1)
+        g_resolution_lines[n++] = want;
+    g_resolution_lines[n++] = RECOMP_RESOLUTION_SCREEN;
+    g_resolution_index = 0;
+    for (i = 0; i < n; i++) {
+        if (g_resolution_lines[i] == want)
+            g_resolution_index = i;
+        snprintf(g_resolution_text[i], sizeof g_resolution_text[i], "%d",
+                 g_resolution_lines[i]);
+        g_resolutions[i] = g_resolution_text[i];
+    }
+    g_resolutions[n] = NULL;
+}
+
 static void settings_load(void)
 {
     char path[1024];
@@ -1082,6 +1245,7 @@ static void settings_load(void)
         recomp_settings_read(path, &g_settings);
 
     g_widescreen = g_settings.widescreen;
+    choices_load();
     k_frame_caps = recomp_title_keeps_time() ? k_frame_caps_time : k_frame_caps_console;
     g_frame_cap_index = 0;
     {
@@ -1143,8 +1307,19 @@ static int settings_save(void)
      * any way to choose a per-game constant -- and neither is overwritten
      * unless the switch was moved, so a value set by hand in the file
      * survives every Play. */
+    g_widescreen = g_aspect_index != 0;
     recomp_settings_set_widescreen(&g_settings, g_widescreen);
+    if (g_widescreen && g_aspects[g_aspect_index])
+        snprintf(g_settings.aspect_ratio, sizeof g_settings.aspect_ratio, "%s",
+                 g_aspects[g_aspect_index]);
 #endif
+    /* The lines, and the nearest scale for a build that knows only that. */
+    g_settings.resolution = g_resolution_lines[g_resolution_index];
+    {
+        int scale = (chosen_lines() + 240) / 480;
+
+        g_settings.resolution_scale = scale < 1 ? 1 : (scale > 8 ? 8 : scale);
+    }
     snprintf(g_settings.frame_cap, sizeof g_settings.frame_cap, "%s",
              k_frame_caps[g_frame_cap_index]);
     if (g_link_mode != LINK_BY_HAND)

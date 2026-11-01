@@ -486,8 +486,13 @@ static BOOL two_d_squeeze(float *k_out, float *cx_out)
      * Evolution Soccer 5 draws its match HUD into its scene texture. */
     if (g_cur_rt && !scene_sized(g_cur_rt->width, g_cur_rt->height))
         return FALSE;
-    k = ((float)g_device_state.width * 9.0f) /
-        ((float)g_device_state.height * 16.0f);
+    /* The guest's 4:3 as a share of the picture's width: 0.75 at 16:9,
+     * 0.5714 at 21:9. From the guest's size, not the scene's, which is
+     * rendered as wide as the picture. */
+    if (!g_device_state.present_width || !g_device_state.present_height)
+        return FALSE;
+    k = (float)(((double)g_device_state.present_width / (double)g_device_state.present_height) /
+                d3d8_display_shown_aspect());
     if (!(k > 0.0f && k < 1.0f))
         return FALSE;
     *k_out = k;

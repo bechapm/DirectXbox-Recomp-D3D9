@@ -13,6 +13,7 @@
  */
 #include "d3d8_internal.h"
 #include "d3d8_movie.h"
+#include "d3d8_display.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -271,7 +272,9 @@ void d3d8_movie_draw(void)
     if (!(mapped = rhi_buffer_map(g.cb, RHI_MAP_WRITE_DISCARD)))
         goto restore;
     fa = 4.0f / 3.0f;
-    ba = (float)bw / (float)bh;
+    /* The shape the buffer is shown at, which is not its own when it is
+     * rendered wide for widescreen (d3d8_display_shown_aspect). */
+    ba = (float)d3d8_display_shown_aspect();
     c.w = ba > fa ? 2.0f * fa / ba : 2.0f;
     c.h = ba > fa ? 2.0f : 2.0f * ba / fa;
     c.x = -c.w / 2.0f;

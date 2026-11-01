@@ -237,7 +237,22 @@ static bool SDLCALL app_lifecycle(void *user, SDL_Event *e)
     }
     return true;
 }
+
 #endif
+
+/* The screen's size in pixels, for aspect_ratio = screen and resolution =
+ * screen (recomp_config.h): the primary display's desktop mode. */
+static void note_screen_size(void)
+{
+    SDL_DisplayID d = SDL_GetPrimaryDisplay();
+    const SDL_DisplayMode *m = d ? SDL_GetDesktopDisplayMode(d) : NULL;
+
+    if (m && m->w > 0 && m->h > 0) {
+        float k = m->pixel_density > 0.0f ? m->pixel_density : 1.0f;
+
+        recomp_set_screen_size((int)((float)m->w * k + 0.5f), (int)((float)m->h * k + 0.5f));
+    }
+}
 
 /* Main thread: start SDL's video the first time a window is wanted. */
 static int start_video(int background)
@@ -271,6 +286,7 @@ static int start_video(int background)
 #endif
     if (background)
         host_mac_set_accessory();
+    note_screen_size();
     g_wake_event = SDL_RegisterEvents(1);
     pthread_mutex_lock(&g_lock);
     g_video = 1;
