@@ -205,6 +205,8 @@ static RECT              g_present_rect;     /* where Present puts the back buff
 static int               g_present_rect_set;
 static int               g_in_scene;         /* between BeginScene and EndScene */
 
+static void occl_release(void);              /* occlusion counting, below */
+
 /* D3D9 draws only inside BeginScene/EndScene, and refuses a draw outside one
  * (D3DERR_INVALIDCALL). The first draw opens a scene; Present, and the
  * copies and readbacks, close it first (StretchRect involving a depth
@@ -535,6 +537,7 @@ static void d9_device_destroy(void)
     if (g_vid_decl) { IDirect3DVertexDeclaration9_Release(g_vid_decl); g_vid_decl = NULL; }
     if (g_vid_vb)   { IDirect3DVertexBuffer9_Release(g_vid_vb); g_vid_vb = NULL; }
     if (g_ui_mark)  { IDirect3DTexture9_Release(g_ui_mark); g_ui_mark = NULL; }
+    occl_release();
     if (g_dev) { IDirect3DDevice9_Release(g_dev); g_dev = NULL; }
     if (g_d3d) { IDirect3D9_Release(g_d3d); g_d3d = NULL; }
     /* d3d9.dll stays loaded: Remix does not expect to be unloaded. */
@@ -2999,6 +3002,85 @@ int rhi_d3d9_present_scene(RhiView *scene, uint32_t shape_w, uint32_t shape_h)
     return 0;
 }
 
+/* ---- occlusion counting ---------------------------------------------------------------- */
+
+/* rhi_occlusion_*: an Xbox visibility test counted by a D3D9 occlusion query,
+ * one a test, from a ring, as the D3D11 backend does. A slot's use count is
+ * its test's generation, so a test asked about after its slot came round
+ * again reads as reused (-1). The wait for the answer is bounded: a query
+ * that never finishes (a lost device) gives -1, which the HLE answers as it
+ * did before host counting, rather than holding the title. */
+#define OCCL_SLOTS 256u
+static IDirect3DQuery9 *g_occl[OCCL_SLOTS];
+static uint32_t         g_occl_uses[OCCL_SLOTS];
+static uint32_t         g_occl_next;
+static int              g_occl_open = -1;
+
+static void occl_release(void)
+{
+    uint32_t i;
+
+    for (i = 0; i < OCCL_SLOTS; i++)
+        if (g_occl[i]) { IDirect3DQuery9_Release(g_occl[i]); g_occl[i] = NULL; }
+    g_occl_open = -1;
+}
+
+static int d9_occlusion_begin(void)
+{
+    uint32_t i = g_occl_next % OCCL_SLOTS;
+
+    if (!g_dev)
+        return -1;
+    if (!g_occl[i] &&
+        FAILED(IDirect3DDevice9_CreateQuery(g_dev, D3DQUERYTYPE_OCCLUSION, &g_occl[i]))) {
+        static int said;
+        if (!said++)
+            fprintf(stderr, "[RHI] d3d9: this device has no occlusion queries\n");
+        g_occl[i] = NULL;
+        return -1;
+    }
+    g_occl_next++;
+    g_occl_uses[i]++;
+    IDirect3DQuery9_Issue(g_occl[i], D3DISSUE_BEGIN);
+    g_occl_open = (int)i;
+    return 0;
+}
+
+static void d9_occlusion_end(RhiOcclusion *out)
+{
+    if (g_occl_open < 0)
+        return;
+    IDirect3DQuery9_Issue(g_occl[g_occl_open], D3DISSUE_END);
+    out->first = (uint32_t)g_occl_open;
+    out->count = 1;
+    out->generation = g_occl_uses[g_occl_open];
+    g_occl_open = -1;
+}
+
+static int d9_occlusion_result(const RhiOcclusion *t, uint64_t *samples)
+{
+    DWORD n = 0;
+    DWORD start;
+    HRESULT hr;
+
+    *samples = 0;
+    if (!t->count)
+        return 0;
+    if (t->first >= OCCL_SLOTS || !g_occl[t->first] || g_occl_uses[t->first] != t->generation)
+        return -1;
+    start = GetTickCount();
+    while ((hr = IDirect3DQuery9_GetData(g_occl[t->first], &n, sizeof n,
+                                         D3DGETDATA_FLUSH)) == S_FALSE) {
+        if (GetTickCount() - start > 250u)
+            return -1;                       /* never finished: no answer */
+        YieldProcessor();
+    }
+    if (FAILED(hr))
+        return -1;
+    *samples = n;
+    return 0;
+}
+
 const RhiBackend rhi_d3d9_backend = {
     "d3d9",
     d9_device_create, d9_device_destroy, d9_device_ready, d9_swapchain_view, d9_swapchain_resize,
@@ -3017,6 +3099,7 @@ const RhiBackend rhi_d3d9_backend = {
     d9_set_blend_state, d9_set_depth_state, d9_set_raster_state, d9_draw, d9_draw_indexed,
     d9_clear_color, d9_clear_depth,
     d9_image_copy,
+    d9_occlusion_begin, d9_occlusion_end, d9_occlusion_result,
 };
 
 #else /* !_WIN32 */
