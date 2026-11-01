@@ -242,8 +242,10 @@ ceiling measurement, not a frame rate.
    once idle. A guest thread that sets a busy bit then spins out the rest of
    that sleep, which took 6.6 ms of a 36 ms frame under a slow host renderer, so
    on Windows the D3D wait points now wake it first (`xbox_Nv2aAckWake`,
-   `RECOMP_NV2A_ACK_WAKE=0` to turn it off). Elsewhere the wait that can be woken
-   spins too much of its time.
+   `RECOMP_NV2A_ACK_WAKE=0` to turn it off). TimeSplitters 2 under RTX Remix with
+   every room drawn, two runs each way: 40.7 fps without it, 54.4 with it, the
+   game thread 24.5 ms against 18.2, the ack thread 54% of a core against 69%.
+   Elsewhere the wait that can be woken spins too much of its time.
 5. Cache "no controller" in the input HLE: `XInputGetState` with no pad
    attached is a device enumeration, and it was 17-22% of the thread that
    calls it.
