@@ -532,7 +532,9 @@ static int d9_device_create(const RhiDeviceDesc *dd)
     g_pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
     g_pp.hDeviceWindow = g_hwnd;
     /* Always windowed: the window's owner makes it fill the screen, as it
-     * does for the other backends, and a windowed device is never lost. */
+     * does for the other backends. A windowed device can still be lost: one
+     * was, within seconds of Windows waking the session on input
+     * (d3d9-backend.md). */
     g_pp.Windowed = TRUE;
     g_pp.EnableAutoDepthStencil = FALSE;
     g_pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;

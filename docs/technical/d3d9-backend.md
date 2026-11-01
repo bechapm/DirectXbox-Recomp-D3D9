@@ -167,8 +167,8 @@ a 16- or 32-bit streaming buffer; a draw with no vertex layout reads its
 vertex number from an internal `TEXCOORD15` stream; formats D3D9 lacks are
 converted on upload (R8G8B8A8 swapped to A8R8G8B8, R8/R8G8 and the 16-bit
 one- and two-channel formats widened, A8 stored white as the Xbox samples it);
-sampled depth is `INTZ`. There is no device `Reset`: a windowed device is not
-lost, and the back buffer keeps its size.
+sampled depth is `INTZ`. There is no device `Reset`, so the back buffer keeps
+its size and a lost device stays lost (Known gaps).
 
 ## Trying it
 
@@ -187,6 +187,15 @@ lost, and the back buffer keeps its size.
    not in the toolkit.
 
 ## Known gaps
+
+- A lost device does not come back: the game runs on and draws nothing, and the
+  log's one sign is `the device was lost`. A windowed device can be lost. On
+  plain D3D9, other games starting beside a running one (D3D11, D3D9 and RTX
+  Remix, a minute apart) did not do it; a run was lost within two seconds of a
+  Windows session change, Kernel-Power event 566 with reason `InputHid`, and two
+  earlier runs within seconds of the same event, so anyone touching the PC can
+  spoil a run. Locking the PC and turning the monitor off are untested. A
+  reset path is on `claude/device-reset-wip`, not merged.
 
 [d3d9-parity.md](d3d9-parity.md) lists every place this backend draws
 differently from D3D11. What a particular tool needs told about a title (its
