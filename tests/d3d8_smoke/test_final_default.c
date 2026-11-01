@@ -30,6 +30,9 @@ ID3D11RenderTargetView *d3d8_GetDefaultRTV(void) { return NULL; }
 #endif
 IDirect3DDevice8 *xbox_GetD3DDevice(void) { return NULL; }
 const DWORD *d3d8_GetPalette(DWORD stage) { (void)stage; return states; }
+/* d3d8_screencopy.c, not linked here: no texture holds a screen copy. */
+void d3d8_screencopy_forget_image(RhiImage *image) { (void)image; }
+void d3d8_screencopy_forget_texture(D3D8Texture *tex) { (void)tex; }
 const DWORD *d3d8_GetRenderStates(void) { return states; }
 const DWORD *d3d8_GetTSS(DWORD stage) { return stages[stage]; }
 IDirect3DBaseTexture8 *d3d8_GetStageTexture(DWORD stage) { (void)stage; return NULL; }

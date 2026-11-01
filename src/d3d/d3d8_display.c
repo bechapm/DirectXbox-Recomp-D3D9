@@ -285,13 +285,21 @@ BOOL xbox_D3D8PictureShape(UINT *width, UINT *height)
 
 /* The widescreen setting, not d3d8_display_wide_now: a window lasts the
  * whole run, and the screens a title calls 4:3 are shown in it between
- * bars. */
+ * bars. As tall as the lines rendered (resolution), so a 1440-line picture
+ * is not shown squeezed into a 480-line window; the window code fits it to
+ * the screen it opens on. */
 void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *height)
 {
     int w, h;
+    int lines = recomp_render_height((int)guest_h);
 
     const D3D8DisplayPolicy *p = d3d8_display_policy();
     double a = p->widescreen ? p->aspect : 0.0;
+
+    if (guest_w && guest_h && lines > 0) {
+        guest_w = (UINT)(((unsigned long long)guest_w * (unsigned)lines + guest_h / 2) / guest_h);
+        guest_h = (UINT)lines;
+    }
 
     /* What d3d8_display_shown_aspect gives a widescreen frame: the shape,
      * no wider than 16:9 for a title with a mode of its own. */

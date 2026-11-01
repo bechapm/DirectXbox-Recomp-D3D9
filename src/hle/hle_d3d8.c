@@ -813,11 +813,46 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
     return 0;
 }
 
+/* Sizes in real pixels. A process that does not say it handles DPI scaling
+ * is told a 150%-scaled 3440x1440 screen is 2293x960, and whatever it draws
+ * is stretched up by Windows afterwards, so a picture rendered at the
+ * screen's resolution was shown at two thirds of it, blurred. Per-monitor
+ * aware, every size here (the work area, the window, the swap chain,
+ * the pointer) is in the screen's own pixels. Set before the first window;
+ * a DLL that set it first (RTX Remix's does) leaves it as that DLL made it.
+ * RECOMP_DPI_AWARE=0 leaves the process as Windows starts it. */
+static void shadow_dpi_aware(void)
+{
+    typedef BOOL (WINAPI *SetContextFn)(HANDLE);
+    typedef BOOL (WINAPI *SetAwareFn)(void);
+    static int done;
+    const char *e = getenv("RECOMP_DPI_AWARE");
+    HMODULE user32;
+    SetContextFn set_context;
+    SetAwareFn set_aware;
+
+    if (done++ || (e && e[0] == '0'))
+        return;
+    user32 = GetModuleHandleA("user32.dll");
+    if (!user32)
+        return;
+    set_context = (SetContextFn)(void (*)(void))GetProcAddress(user32,
+                                                     "SetProcessDpiAwarenessContext");
+    /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is ((HANDLE)-4); Windows 10
+     * 1703 and later. Before it, system aware (Vista and later). */
+    if (set_context && set_context((HANDLE)(INT_PTR)-4))
+        return;
+    set_aware = (SetAwareFn)(void (*)(void))GetProcAddress(user32, "SetProcessDPIAware");
+    if (set_aware)
+        set_aware();
+}
+
 static HWND shadow_window(UINT width, UINT height)
 {
     shadow_window_request req;
     HANDLE thread;
 
+    shadow_dpi_aware();
     memset(&req, 0, sizeof req);
     req.width = width;
     req.height = height;
