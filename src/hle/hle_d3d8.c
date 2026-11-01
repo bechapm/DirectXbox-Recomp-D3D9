@@ -4950,10 +4950,30 @@ HLE_EXPORT(D3DDevice_End)
     if (original_missing(hle_original_D3DDevice_End, "D3DDevice_End"))
         return;
     g_inline_end++;
+    /* The vertices since Begin, when the title's SetVertexData* are not
+     * replaced: they are in the push buffer, written by the title's own
+     * code. The 5960 online dashboard draws every screen into a target and
+     * puts it up with one such quad; skipped with End's own writes below,
+     * it collected no vertices and every frame stayed black. Walked here,
+     * while the group is open, they reach inline_vertex_data. */
+    if (g_inline_on)
+        hle_d3d8_push_constants_sync();
     HLE_CALL_ORIGINAL(D3DDevice_End);
     hle_d3d8_push_skip();   /* its own vertex writes: drawn here, not by the walk */
     if (g_inline_on) {
+        /* Under the program the NV2A would run: one started through the push
+         * buffer since the API last selected a shader, if there is one.
+         * Constantine's Swap resolves its 1280x480 supersampled screen with a
+         * triangle drawn this way: the XDK starts a two-instruction program
+         * (oPos = v0, oT0 = v9) itself and calls Begin / End. Drawn under the
+         * title's own 2D program, which reads its texture coordinate from v2,
+         * every pixel sampled one texel and each frame came out one flat
+         * colour. */
+        PushedProgramSave s;
+
+        pushed_program_begin(&s);
         inline_draw();
+        pushed_program_end(&s);
         g_inline_on = 0;
         g_inline_nverts = 0;
     }
@@ -6196,6 +6216,7 @@ HLE_EXPORT(D3DDevice_UpdateOverlay)
             fflush(stderr);
         }
         d3d8_movie_draw();
+        shadow_dump_frame();          /* F11 and the frame dumps see the movie too */
         host_Swap(g_shadow, 0);
     }
 }
@@ -6845,6 +6866,134 @@ HLE_EXPORT(D3DDevice_DrawIndexedVerticesUP)
                                      HLE_PTR(data), stride, 0);
 }
 
+/* Visibility tests, counted on the host.
+ *
+ * D3DDevice_BeginVisibilityTest writes SET_ZPASS_PIXEL_COUNT_ENABLE 1, and
+ * EndVisibilityTest(Index) SET_ZPASS_PIXEL_COUNT_ENABLE 0 and GET_REPORT
+ * with the offset of the test's report slot. The NV2A writes the slot, and
+ * GetVisibilityTestResult reads it from a table of its own: slot Index & 0xFF
+ * of a 4 KB page, 16 bytes each, so bits 4-11 of the offset are the low byte
+ * of the index (XDK 5849, sub at Constantine 0x002A3B90). The push-buffer
+ * walk hands those methods here, the host counts the draws in between
+ * (rhi_occlusion_*), and GetVisibilityTestResult answers with the count of
+ * the newest closed test whose offset matches its index.
+ *
+ * Constantine culls its scenery and its hero by these tests, 53 a frame in
+ * its first level. Answered "0 pixels", Constantine himself and most of his
+ * apartment were never drawn. The count is in the guest's samples: a
+ * supersampled screen counts each of its samples, and a host that renders
+ * larger counts more. RECOMP_HLE_D3D8_VISIBILITY=0 goes back to answering
+ * without counting. */
+void d3d8_display_scene_size(UINT guest_w, UINT guest_h, UINT *scene_w, UINT *scene_h);
+
+#define VIS_TESTS 512u
+static struct {
+    uint32_t     offset;                 /* GET_REPORT's; 0 until it arrives */
+    RhiOcclusion t;
+    double       scale;
+    int          have;                   /* counted: `pixels` holds the answer */
+    uint32_t     pixels, swap;
+} g_vis[VIS_TESTS];
+static uint32_t g_vis_n;                 /* tests closed so far */
+static int      g_vis_open;
+static double   g_vis_scale = 1.0;
+static unsigned long g_vis_answered, g_vis_uncounted;
+
+static int visibility_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = xbox_EnvSwitch("RECOMP_HLE_D3D8_VISIBILITY", 1);
+    return on && g_shadow;
+}
+
+void hle_d3d8_pb_zpass(uint32_t enable)
+{
+    if (!visibility_on())
+        return;
+    if (enable) {
+        UINT sw = g_target_width, sh = g_target_height;
+        RhiOcclusion dropped;
+
+        if (g_vis_open)
+            rhi_occlusion_end(&dropped);     /* a second begin: the first is dropped */
+        g_vis_open = rhi_occlusion_begin() == 0;
+        if (!g_vis_open && g_vis_uncounted++ == 0)
+            fprintf(stderr, "[HLE-D3D8] visibility tests: this renderer cannot count "
+                    "samples; answered as before\n");
+        if (g_target_is_screen && g_target_width && g_target_height)
+            d3d8_display_scene_size(g_target_width, g_target_height, &sw, &sh);
+        g_vis_scale = (sw && sh) ? (double)g_target_width * g_target_height / ((double)sw * sh)
+                                 : 1.0;
+        if (g_target_is_screen)
+            g_vis_scale *= (double)(g_target_aa_x * g_target_aa_y);
+    } else if (g_vis_open) {
+        uint32_t i = g_vis_n++ % VIS_TESTS;
+
+        rhi_occlusion_end(&g_vis[i].t);
+        g_vis[i].offset = 0;
+        g_vis[i].scale = g_vis_scale;
+        g_vis[i].have = 0;
+        g_vis[i].swap = (uint32_t)g_shadow_swaps;
+        g_vis_open = 0;
+    }
+}
+
+void hle_d3d8_pb_report(uint32_t value)
+{
+    uint32_t i;
+
+    if (!visibility_on() || !g_vis_n)
+        return;
+    i = (g_vis_n - 1u) % VIS_TESTS;
+    if (!g_vis[i].offset)
+        g_vis[i].offset = value & 0x00FFFFFFu;
+}
+
+/* Every closed test not yet counted, counted: the first waits for the GPU,
+ * the rest find their queries finished. A title asks for its tests after
+ * closing the whole batch (Constantine about 30 tests later), and drawing
+ * goes on between the asks, so answering one at a time waited on the GPU
+ * some 80 times a frame and cost a fifth of the frame rate. */
+static void visibility_count_all(void)
+{
+    uint32_t back, n = g_vis_n < VIS_TESTS ? g_vis_n : VIS_TESTS;
+
+    for (back = 1; back <= n; back++) {
+        uint32_t i = (g_vis_n - back) % VIS_TESTS;
+        uint64_t samples;
+
+        if (g_vis[i].have || !g_vis[i].offset)
+            continue;
+        if (rhi_occlusion_result(&g_vis[i].t, &samples) == 0)
+            g_vis[i].pixels = (uint32_t)((double)samples * g_vis[i].scale + 0.5);
+        else
+            g_vis[i].offset = 0;          /* its queries were reused: no answer */
+        g_vis[i].have = 1;
+    }
+}
+
+/* The host's count for test `index`, from the newest closed test whose
+ * report offset names that slot. 0 with *pixels set, -1 when there is none. */
+static int visibility_count(uint32_t index, uint32_t *pixels)
+{
+    uint32_t back, n = g_vis_n < VIS_TESTS ? g_vis_n : VIS_TESTS;
+
+    for (back = 1; back <= n; back++) {
+        uint32_t i = (g_vis_n - back) % VIS_TESTS;
+
+        if (!g_vis[i].offset || ((g_vis[i].offset >> 4) & 0xFFu) != (index & 0xFFu))
+            continue;
+        if (!g_vis[i].have)
+            visibility_count_all();
+        if (!g_vis[i].offset)
+            return -1;
+        *pixels = g_vis[i].pixels;
+        return 0;
+    }
+    return -1;
+}
+
 /* HRESULT D3DDevice_GetVisibilityTestResult(DWORD Index, UINT *pResult,
  *     ULONGLONG *pTimeStamp)
  *
@@ -6890,6 +7039,23 @@ HLE_EXPORT(D3DDevice_GetVisibilityTestResult)
     HLE_CALL_ORIGINAL(D3DDevice_GetVisibilityTestResult);
     if (g_eax != 0x88760828u)                 /* not D3DERR_TESTINCOMPLETE */
         return;
+    if (visibility_on()) {
+        uint32_t counted;
+
+        hle_d3d8_push_constants_sync();       /* the End this asks about */
+        if (visibility_count(index, &counted) == 0) {
+            if (result_va)
+                HLE_MEM32(result_va) = counted;
+            if (stamp_va) {
+                HLE_MEM32(stamp_va) = (uint32_t)g_shadow_swaps;
+                HLE_MEM32(stamp_va + 4) = 0;
+            }
+            if (g_vis_answered++ == 0)
+                fprintf(stderr, "[HLE-D3D8] visibility tests: counted on the host "
+                        "(test %u: %u sample(s))\n", index, counted);
+            HLE_RETURN(0);                    /* S_OK */
+        }
+    }
     if (executor < 0) {
         const char *e = getenv("RECOMP_HLE_D3D8_VISIBLE_PIXELS");
         executor = getenv("RECOMP_PB_EXEC") != NULL;

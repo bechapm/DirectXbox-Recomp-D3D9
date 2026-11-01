@@ -78,6 +78,7 @@ it.
 | Touch-screen overlay | Drawn | Not drawn (its shader tests bits) | By design | None for desktop play |
 | Device reset | Swap chain follows the window | No `Reset`; the back buffer is the scene's size and `Present` scales it | By design | `RECOMP_RES_SCALE` above 1 is not box-filtered |
 | Frame interpolation | Supported | Untested | Unknown | Unknown |
+| Visibility tests (`BeginVisibilityTest` .. `GetVisibilityTestResult`) | One occlusion query a test (`rhi_occlusion_*`) | The same, one `D3DQUERYTYPE_OCCLUSION` query a test; a query that has not finished in 250 ms (a lost device) gives no answer, and the HLE answers as before host counting | New with the upstream merge of Nov 2026 (upstream #109). Under Remix the count is of whatever Remix rasterises, not of the traced picture | Medium: a title that culls by its tests (Constantine) draws what the count says; a lens flare or corona shows or hides by it |
 
 ## What Remix is told (Remix hints)
 

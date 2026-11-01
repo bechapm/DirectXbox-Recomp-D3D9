@@ -63,7 +63,10 @@ def test_shr_produces_shifted_out_bit():
     # The exact idiom from Halo geometry.c: shr ecx,1 / rep stosd / adc ecx,ecx
     out = _lift("shr", [ECX, ONE])
     assert "_cf =" in out, out
-    assert ") - 1" in out, out
+    # An immediate count is folded: shr by 1 shifts out bit 0. A count in a
+    # register keeps the `cnt - 1` form (test_lifter_shift_count.py runs both).
+    assert "_cf = (int)(((ecx) >> 0) & 1);" in out, out
+    assert out.index("_cf =") < out.index("ecx ="), out
 
 
 def test_adc_consumes_and_reproduces_carry():

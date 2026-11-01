@@ -81,6 +81,10 @@ typedef struct RhiBackend {
     /* Last, so a backend's positional initialiser that predates it leaves it
      * NULL, which rhi_image_copy reports as unsupported. */
     int  (*image_copy)(RhiImage *dst, RhiImage *src);
+    /* After image_copy for the same reason: NULL is "cannot count". */
+    int  (*occlusion_begin)(void);
+    void (*occlusion_end)(RhiOcclusion *);
+    int  (*occlusion_result)(const RhiOcclusion *, uint64_t *);
 } RhiBackend;
 
 extern const RhiBackend rhi_d3d11_backend;

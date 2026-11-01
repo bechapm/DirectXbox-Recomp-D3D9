@@ -485,6 +485,13 @@ static uint32_t g_clear_reg[5];
  * SET_SURFACE_ZETA_OFFSET (0x0214), for a depth switch the title made
  * without a call this file replaces (hle_d3d8_pb_surface). */
 void hle_d3d8_pb_surface(uint32_t color, uint32_t zeta);
+/* ...and a visibility test's methods, SET_ZPASS_PIXEL_COUNT_ENABLE (0x17CC)
+ * and GET_REPORT (0x17D0): Begin / EndVisibilityTest write them, and a title
+ * may write them inline. */
+void hle_d3d8_pb_zpass(uint32_t enable);
+void hle_d3d8_pb_report(uint32_t value);
+#define PB_ZPASS_ENABLE     0x17CCu
+#define PB_GET_REPORT       0x17D0u
 #define PB_SURFACE_COLOR    0x0210u
 #define PB_SURFACE_ZETA     0x0214u
 static uint32_t g_surface_color;
@@ -976,6 +983,21 @@ void hle_d3d8_push_constants_sync(void)
             for (k = 0; k < count; k++)
                 pb_program_method((w & 0x40000000u) ? method : method + 4u * k,
                                   HLE_MEM32(va + 4u + 4u * k), g_w_nodraw);
+        }
+        /* Visibility tests: SET_ZPASS_PIXEL_COUNT_ENABLE opens and closes the
+         * count, GET_REPORT names the slot it is written to (hle_d3d8.c). */
+        if (inl && method + 4u * count > PB_ZPASS_ENABLE && method <= PB_GET_REPORT &&
+            guest_readable(va + 4u, 4ull * count)) {
+            uint32_t k;
+            for (k = 0; k < count; k++) {
+                uint32_t m = (w & 0x40000000u) ? method : method + 4u * k;
+                if (m == PB_ZPASS_ENABLE) {
+                    pb_flush();
+                    hle_d3d8_pb_zpass(HLE_MEM32(va + 4u + 4u * k));
+                } else if (m == PB_GET_REPORT) {
+                    hle_d3d8_pb_report(HLE_MEM32(va + 4u + 4u * k));
+                }
+            }
         }
         if (inl && method + 4u * count > PB_SURFACE_COLOR && method <= PB_SURFACE_ZETA &&
             guest_readable(va + 4u, 4ull * count)) {
