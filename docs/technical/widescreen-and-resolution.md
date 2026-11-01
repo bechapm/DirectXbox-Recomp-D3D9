@@ -628,6 +628,17 @@ What follows from it:
 - **The scene is never larger than 16384 either way** (`RECOMP_SCENE_MAX_SIZE`); a
   choice past it is scaled down keeping its shape. 32:9 at 4320 lines is 15360 wide.
 
+- **A screen copy is taken at the scene's resolution** (`d3d8_screencopy.c`). A title
+  that copies its frame into a texture and draws it back over the picture made its
+  texture the size of its own screen, so the copy was 640x480 whatever was rendered,
+  and drawn back over the picture it made every resolution look like the guest's.
+  TimeSplitters 2 does it three times a frame for its glow, which is why its 1440p
+  looked like 480p. Each such texture now gets a second image, the scene's size
+  over the guest's times its own, the copy goes into both, and after a whole-frame
+  copy the large one is what the texture is sampled through, with the same
+  coordinates. An upload, a draw or a depth copy into the texture hands it back its
+  own image. `RECOMP_SCREEN_COPY_SCALE=0` keeps the copy at the texture's size.
+
 A 4:3-only title widened past 16:9 shows what its makers never meant to be seen,
 most of all in cutscenes framed for 4:3: geometry ending, characters waiting off to
 the side. That is the price of the shape and not something the toolkit can know.
