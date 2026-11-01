@@ -19,9 +19,10 @@
  *   touch_opacity  = 0.1 .. 1.0 (default 0.45)          [RECOMP_TOUCH_OPACITY]
  *   touch_scale    = 0.5 .. 2.0 (default 1.0)           [RECOMP_TOUCH_SCALE]
  *
- * auto, the default on Android and off elsewhere: shown while no pad is
- * connected, shown again by a touch, and hidden by a press on a real pad.
- * Untouched for a few seconds, the controls fade.
+ * auto, the default: shown while no pad is connected, shown again by a
+ * touch, and hidden by a press on a real pad. Untouched for a few seconds,
+ * the controls fade. Android only: on Windows, Linux and macOS there are no
+ * touch controls, whatever the setting says.
  */
 #ifndef XBOXRECOMP_TOUCH_CONTROLS_H
 #define XBOXRECOMP_TOUCH_CONTROLS_H

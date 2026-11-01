@@ -120,6 +120,23 @@ int rhi_image_copy(RhiImage *dst, RhiImage *src)
 {
     return g_rhi->image_copy ? g_rhi->image_copy(dst, src) : -1;
 }
+
+int rhi_occlusion_begin(void)
+{
+    return g_rhi->occlusion_begin ? g_rhi->occlusion_begin() : -1;
+}
+
+void rhi_occlusion_end(RhiOcclusion *out)
+{
+    memset(out, 0, sizeof *out);
+    if (g_rhi->occlusion_end)
+        g_rhi->occlusion_end(out);
+}
+
+int rhi_occlusion_result(const RhiOcclusion *t, uint64_t *samples)
+{
+    return g_rhi->occlusion_result ? g_rhi->occlusion_result(t, samples) : -1;
+}
 int rhi_image_readback(RhiImage *img, uint32_t sub, void *dst, uint32_t dst_pitch)
 {
     return g_rhi->image_readback(img, sub, dst, dst_pitch);
