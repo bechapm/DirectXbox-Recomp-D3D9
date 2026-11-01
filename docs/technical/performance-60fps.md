@@ -238,7 +238,12 @@ ceiling measurement, not a frame rate.
    the title screen. `RECOMP_KERNEL_LOG_BUDGET` already exists; the path log
    wants the same budget.
 4. Make the ack thread sleep (1 ms, or wait on a signal from the pushbuffer
-   writer) instead of `Sleep(0)`: one core back.
+   writer) instead of `Sleep(0)`: one core back. Done, with a sleep of 500 us
+   once idle. A guest thread that sets a busy bit then spins out the rest of
+   that sleep, which took 6.6 ms of a 36 ms frame under a slow host renderer, so
+   on Windows the D3D wait points now wake it first (`xbox_Nv2aAckWake`,
+   `RECOMP_NV2A_ACK_WAKE=0` to turn it off). Elsewhere the wait that can be woken
+   spins too much of its time.
 5. Cache "no controller" in the input HLE: `XInputGetState` with no pad
    attached is a device enumeration, and it was 17-22% of the thread that
    calls it.

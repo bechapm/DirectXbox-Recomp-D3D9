@@ -393,3 +393,61 @@ void host_sleep_precision_1ms(void)
 }
 
 #endif
+
+/* ===================================================================== */
+/* The waker, on either host's events                                    */
+/* ===================================================================== */
+
+struct host_waker {
+    HANDLE        event;    /* auto-reset */
+    volatile LONG asleep;   /* the sleeper is, or is about to be, in the wait */
+    volatile LONG pending;  /* a wake not yet seen by the sleeper */
+};
+
+host_waker *host_waker_create(void)
+{
+    host_waker *w = (host_waker *)calloc(1, sizeof *w);
+
+    if (!w)
+        return NULL;
+    w->event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!w->event) {
+        free(w);
+        return NULL;
+    }
+    return w;
+}
+
+void host_waker_destroy(host_waker *w)
+{
+    if (!w)
+        return;
+    CloseHandle(w->event);
+    free(w);
+}
+
+void host_waker_wake(host_waker *w)
+{
+    InterlockedExchange(&w->pending, 1);
+    if (InterlockedExchange(&w->asleep, 0))
+        SetEvent(w->event);
+}
+
+int host_waker_wait_us(host_waker *w, host_timer *t, int64_t us, uint32_t cap_ms)
+{
+    int r = HOST_WAIT_EVENT;
+
+    /* asleep goes up before pending is read, and a waker sets pending before
+     * it reads asleep, so one of the two always sees the other. */
+    InterlockedExchange(&w->asleep, 1);
+    if (!InterlockedExchange(&w->pending, 0))
+        r = host_timer_wait_us_or_event(t, us, w->event, cap_ms);
+    if (!InterlockedExchange(&w->asleep, 0) && r != HOST_WAIT_EVENT) {
+        /* A waker took asleep down as the wait ended: its signal is on the
+         * way, and must not be left to end the next wait. */
+        WaitForSingleObject(w->event, cap_ms);
+        r = HOST_WAIT_EVENT;
+    }
+    InterlockedExchange(&w->pending, 0);
+    return r;
+}

@@ -193,6 +193,86 @@ static DWORD WINAPI realtime_thread(LPVOID param)
     return 0;
 }
 
+static host_waker *g_waker;
+static volatile LONG g_wake_rounds;
+
+static DWORD WINAPI wake_later(LPVOID param)
+{
+    Sleep((DWORD)(uintptr_t)param);
+    host_waker_wake(g_waker);
+    return 0;
+}
+
+/* Wakes as fast as it can until told to stop. */
+static DWORD WINAPI wake_storm(LPVOID param)
+{
+    (void)param;
+    while (InterlockedCompareExchange(&g_wake_rounds, 0, 0) >= 0)
+        host_waker_wake(g_waker);
+    return 0;
+}
+
+static void test_waker(host_timer *t)
+{
+    int64_t t0, us;
+    HANDLE th;
+    int r, i, woken = 0;
+
+    g_waker = host_waker_create();
+    CHECK(g_waker != NULL, "host_waker_create failed");
+    if (!g_waker)
+        return;
+
+    /* Nobody wakes it: the time passes. */
+    t0 = host_time_ns();
+    r = host_waker_wait_us(g_waker, t, 2000, 250);
+    us = (host_time_ns() - t0) / 1000;
+    CHECK(r == HOST_WAIT_ELAPSED, "an unwoken sleep gave %d", r);
+    CHECK(us >= 1900 - 100, "an unwoken sleep of 2 ms ended after %lld us", (long long)us);
+
+    /* A wake during the wait ends it long before its time. */
+    th = CreateThread(NULL, 0, wake_later, (LPVOID)(uintptr_t)20, 0, NULL);
+    t0 = host_time_ns();
+    r = host_waker_wait_us(g_waker, t, 2000000, 5000);
+    us = (host_time_ns() - t0) / 1000;
+    CHECK(r == HOST_WAIT_EVENT, "a woken sleep gave %d", r);
+    CHECK(us < 1000000, "a sleep woken at 20 ms ended after %lld us", (long long)us);
+    WaitForSingleObject(th, INFINITE);
+    CloseHandle(th);
+
+    /* A wake before the wait is not lost: the next one ends at once. */
+    host_waker_wake(g_waker);
+    t0 = host_time_ns();
+    r = host_waker_wait_us(g_waker, t, 2000000, 5000);
+    us = (host_time_ns() - t0) / 1000;
+    CHECK(r == HOST_WAIT_EVENT, "a sleep after a wake gave %d", r);
+    CHECK(us < 500000, "a sleep after a wake took %lld us", (long long)us);
+
+    /* And it is spent: the one after that sleeps. */
+    r = host_waker_wait_us(g_waker, t, 2000, 250);
+    CHECK(r == HOST_WAIT_ELAPSED, "a wake was seen twice: %d", r);
+
+    /* Wakes racing the sleeper leave nothing behind, and never hang it. */
+    g_wake_rounds = 0;
+    th = CreateThread(NULL, 0, wake_storm, NULL, 0, NULL);
+    for (i = 0; i < 20000; i++) {
+        r = host_waker_wait_us(g_waker, t, 200, 250);
+        CHECK(r == HOST_WAIT_EVENT || r == HOST_WAIT_ELAPSED, "round %d gave %d", i, r);
+        woken += r == HOST_WAIT_EVENT;
+    }
+    InterlockedExchange(&g_wake_rounds, -1);
+    WaitForSingleObject(th, INFINITE);
+    CloseHandle(th);
+    printf("waker: %d of 20000 sleeps woken under a storm of wakes\n", woken);
+    CHECK(woken > 0, "no wake reached the sleeper");
+    host_waker_wake(g_waker);       /* whatever the storm left, spent */
+    (void)host_waker_wait_us(g_waker, t, 200, 250);
+    r = host_waker_wait_us(g_waker, t, 2000, 250);
+    CHECK(r == HOST_WAIT_ELAPSED, "a stale signal outlived the storm: %d", r);
+
+    host_waker_destroy(g_waker);
+}
+
 int main(void)
 {
     host_timer *t = host_timer_create(HOST_TIMER_ANY);
@@ -210,6 +290,7 @@ int main(void)
     test_wait_us_coarse(t);
     test_wait_until(t);
     test_wait_or_event(t);
+    test_waker(t);
     {
         HANDLE th = CreateThread(NULL, 0, realtime_thread, t, 0, NULL);
         WaitForSingleObject(th, INFINITE);

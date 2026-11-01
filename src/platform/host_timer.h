@@ -74,6 +74,19 @@ int host_timer_wait_until(host_timer *t, int64_t deadline_ns, uint32_t cap_ms);
  * cancelled), _ELAPSED, _NOT_ARMED or _FAILED. */
 int host_timer_wait_us_or_event(host_timer *t, int64_t us, void *event, uint32_t cap_ms);
 
+/* One thread's sleep that another can cut short. The sleeper waits with
+ * host_waker_wait_us; any thread may call host_waker_wake, which costs no
+ * system call unless the sleeper is really asleep, so it can be called often.
+ * A wake that comes while the sleeper is awake is kept, and ends its next wait
+ * at once, so none is lost between the sleeper's last look and its sleep. */
+typedef struct host_waker host_waker;
+
+host_waker *host_waker_create(void);
+void        host_waker_destroy(host_waker *w);
+void        host_waker_wake(host_waker *w);
+/* Results as host_timer_wait_us_or_event's: HOST_WAIT_EVENT when woken. */
+int         host_waker_wait_us(host_waker *w, host_timer *t, int64_t us, uint32_t cap_ms);
+
 /* Make the calling thread a real-time one, for a host thread that wakes on
  * a cadence and does little each time (the vblank clock): on macOS
  * THREAD_TIME_CONSTRAINT_POLICY with these figures (0 period: aperiodic),

@@ -341,6 +341,7 @@ static uint8_t *push_gather_from(const uint32_t off[16], const uint32_t fmt[16],
  * ------------------------------------------------------------------------ */
 HLE_IMPORT_VAR(D3D_g_pDevice);
 int xbox_EnvSwitch(const char *name, int default_on);   /* xbox_memory_layout.c */
+void xbox_Nv2aAckWake(void);                            /* xbox_memory_layout.c */
 
 #define PB_CONST_LOAD   0x1EA4u
 #define PB_CONST_FIRST  0x0B80u
@@ -1286,6 +1287,8 @@ static void wait_point(const char *name, int *seen)
 {
     static int on = -1;
 
+    /* Whatever follows spins on the GPU's answer: have it awake. */
+    xbox_Nv2aAckWake();
     if (!*seen) {
         *seen = 1;
         fprintf(stderr, "[HLE] %s replaced by name: the push-buffer walk catches up "

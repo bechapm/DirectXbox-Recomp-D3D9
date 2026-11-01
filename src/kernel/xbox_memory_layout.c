@@ -2670,6 +2670,32 @@ static void framebuffer_probe_tick(void)
 #  endif
 #endif
 
+/* Waking it for a kick (xbox_Nv2aAckWake), RECOMP_NV2A_ACK_WAKE. A guest thread
+ * that sets a busy bit spins until this thread clears it, so if this thread is
+ * in its idle wait the guest loses the rest of that wait, and the slower a
+ * title's frames, the quieter the gaps and the more often that is. TimeSplitters
+ * 2 with 2,160 draws a frame under a slow host renderer spent 6.6 ms of a 36 ms
+ * frame in that spin, 2 ms under a fast one. A thread that never slept took it
+ * away but kept a core busy. So the D3D kick says it is coming, and the idle
+ * wait ends for it: no cost while the title is quiet, and a system call only
+ * for a kick that finds this thread asleep. Windows only: elsewhere the wait
+ * that can be woken spins its last 200 us, which is most of an idle wait of
+ * 100 us, and the coarse wait stays. */
+#ifdef _WIN32
+#define ACK_WAKE_DEFAULT 1
+#else
+#define ACK_WAKE_DEFAULT 0
+#endif
+static host_waker *g_ack_waker;
+
+void xbox_Nv2aAckWake(void)
+{
+    if (g_ack_waker) {
+        InterlockedIncrement(&g_ack_activity);  /* and it stays up for the wait */
+        host_waker_wake(g_ack_waker);
+    }
+}
+
 /* This thread's CPU time, for RECOMP_NV2A_ACK_STATS. */
 static int64_t ack_thread_cpu_ns(void)
 {
@@ -2778,7 +2804,8 @@ static void nv2a_ack_wait(void)
         st.yields++;
         return;
     }
-    if (host_timer_wait_us_coarse(timer, idle_us, 50) == HOST_WAIT_NOT_ARMED)
+    if ((g_ack_waker ? host_waker_wait_us(g_ack_waker, timer, idle_us, 50)
+                     : host_timer_wait_us_coarse(timer, idle_us, 50)) == HOST_WAIT_NOT_ARMED)
         Sleep(1);
     last_wait = ACK_SLEPT_IDLE;
     st.idle_sleeps++;
@@ -2950,6 +2977,8 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
 static void xbox_Nv2aAckStart(void)
 {
     g_nv2a_ack_stop = 0;
+    if (xbox_EnvSwitch("RECOMP_NV2A_ACK_WAKE", ACK_WAKE_DEFAULT))
+        g_ack_waker = host_waker_create();
     g_nv2a_ack_thread = CreateThread(NULL, 0, nv2a_ack_thread,
                                      g_nv2a_memory, 0, NULL);
     if (g_nv2a_ack_thread) {
