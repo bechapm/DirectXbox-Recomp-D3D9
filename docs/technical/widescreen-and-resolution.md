@@ -642,6 +642,61 @@ What follows from it:
   `xbox_D3D8SetFramePassLimit` (`RECOMP_FRAME_PASSES`, `frame_passes`): the first n
   of a frame, -1 for all (the default), 0 for none, for a title's menu to offer.
 
+### Anchors, and past the old edge
+
+A title with no widescreen mode positions its 2D in its own pixels, and says nothing
+about what each piece is attached to. That is the one piece of a modern UI's layout it
+lacks: an engine's widget has an anchor, a web page's box has a flex or grid parent,
+and the position comes from the screen's shape. So placements are anchors, set by the
+title (`xbox_D3D8SetTwoDPlacement`), and every position is still worked out from the
+factor k = (4/3)/aspect. Nothing is kept per resolution or per shape.
+
+```
+ guest 4:3, 640 wide            the wide picture, one factor k for all of it
+ +----------------+    +----------------------------------------------------+
+ |a      b       c|    |a'                  b'                              |
+ |                |    |                                                  c'|
+ +----------------+    +----------------------------------------------------+
+    STRETCH   x * w/640: spans, shape stretched       (a backdrop)
+    CENTRE    in proportion, 4:3 box in the middle    (b, a menu panel)
+    LEFT      in proportion, 4:3 box at the left edge (a, a health corner)
+    RIGHT     in proportion, 4:3 box at the right     (c, an ammo corner)
+    SIDE      LEFT, RIGHT or CENTRE by the draw's third of the screen
+    SPREAD    in proportion, each draw's middle at the same fraction of the width
+```
+
+Set them on the largest thing that moves together. LEFT and RIGHT move a whole group
+rigidly, which is what a modern layout does with a group. SPREAD moves each draw by
+itself: it takes no list, so it suits what nobody has looked at, but two pieces that
+belong together end up further apart as the picture widens, by 1/k. At 21:9 a counter and its
+label 60 pixels apart in 640 are as far apart as 105 would be. AUTO, the width guess,
+is what is left for a title that says nothing. It measures a whole draw, so two small
+pieces in one draw at opposite sides read as one wide one.
+
+The squeeze is a viewport, and nothing is drawn outside a viewport: in CSS terms,
+`overflow: hidden` at the old edge. On the console that edge was the screen's. A piece
+that runs off the side, such as TimeSplitters 2's menu panels' rays (x -243 to 910 of
+640), is cut with a hard line in the middle of a wide picture.
+
+```
+ CENTRE, hidden                         CENTRE, visible (xbox_D3D8SetTwoDOverflow)
+ |      |  4:3 box   |  cut    |        |      |  4:3 box   |           |
+ |      |   ////|////|         |        |      |   ////|//////////      |
+ |      |  /////|////|         |        |      |  /////|/////////       |
+ viewport narrowed, the rest lost       viewport whole, x squeezed in a copy
+```
+
+`xbox_D3D8SetTwoDOverflow(TRUE)` is `overflow: visible`. A draw still squeezed after its
+placement, reaching past the guest's screen, under no scissor narrower than the screen,
+has the same squeeze done to a copy of its vertices, and the copy is drawn with the
+viewport left alone. So it lands where it would have and goes on to where it ends. Every
+2D draw reaches the device with its vertices on the CPU (`d3d8_place_2d_draw`, a title's
+vertex buffers included), so this is one place, and no renderer or vertex path knows of
+it. Only such a draw pays for the copy. A smaller scissor keeps its meaning: a menu box
+clips. A title opts in, since what was off the screen in 4:3 can now be seen, and
+`RECOMP_D3D8_2D_OVERFLOW=0` or `1` is over its choice (`1` for a replay, which has no
+title to ask). Drawing into a texture stays as it was.
+
 A 4:3-only title widened past 16:9 shows what its makers never meant to be seen,
 most of all in cutscenes framed for 4:3: geometry ending, characters waiting off to
 the side. That is the price of the shape and not something the toolkit can know.

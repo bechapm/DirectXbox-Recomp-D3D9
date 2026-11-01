@@ -425,8 +425,10 @@ static BOOL g_2d_screen_space;
 static int      g_2d_placement = XBOX_D3D8_2D_AUTO;
 static uint32_t g_2d_tag;
 /* The edge a squeezed draw is anchored to: LEFT, RIGHT or CENTRE. The
- * title's placement for LEFT and RIGHT; chosen per draw for SIDE. */
+ * title's placement for LEFT and RIGHT; chosen per draw for SIDE. SPREAD:
+ * the point g_2d_spread across the picture, the draw's own middle. */
 static int      g_2d_anchor = XBOX_D3D8_2D_CENTRE;
+static float    g_2d_spread = 0.5f;
 
 /* The widescreen 2D squeeze (see apply_host_viewport) as a horizontal
  * factor about an anchor, both in host pixels of the scene. FALSE when no
@@ -502,6 +504,11 @@ static BOOL two_d_squeeze(float *k_out, float *cx_out)
         *cx_out = 0.0f;
     else if (g_2d_anchor == XBOX_D3D8_2D_RIGHT)
         *cx_out = span;
+    else if (g_2d_anchor == XBOX_D3D8_2D_SPREAD)
+        /* The one point a squeeze about cx leaves where it was is cx: so a
+         * draw whose middle is at f of the guest's width, squeezed about f
+         * of the picture's, has its middle there. */
+        *cx_out = span * g_2d_spread;
     else
         *cx_out = span * 0.5f;
     return TRUE;
@@ -1736,6 +1743,8 @@ UINT d3d8_up_indices_read(D3DPRIMITIVETYPE type, UINT prims)
     return n;
 }
 
+static void two_d_overflow(const void *vertices, UINT stride, UINT count);
+
 static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, const void *pVertexData, UINT VertexStreamZeroStride)
 {
     (void)self;
@@ -1765,9 +1774,11 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
 
     /* Upload to ring buffer */
     ring_offset = up_ring_upload(&g_up_vertex_ring, draw_data, vb_size);
-    if (converted) free(converted);
 
-    if (ring_offset == (UINT)-1) return E_OUTOFMEMORY;
+    if (ring_offset == (UINT)-1) {
+        if (converted) free(converted);
+        return E_OUTOFMEMORY;
+    }
 
     /* Bind ring buffer at the right offset */
     rhi_set_vertex_buffer(0, g_up_vertex_ring.buffer, VertexStreamZeroStride, ring_offset);
@@ -1780,6 +1791,8 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
      * prepare_draw, which is what decides whether this is a screen-space
      * draw at all. */
     d3d8_place_2d_draw(pVertexData, VertexStreamZeroStride, vertex_count);
+    two_d_overflow(draw_data, VertexStreamZeroStride, vertex_count);
+    if (converted) free(converted);
     d3d8_states_apply();
 
     rhi_set_topology(topology);
@@ -1836,6 +1849,7 @@ static HRESULT __stdcall dev_DrawIndexedPrimitiveUP(IDirect3DDevice8 *self, D3DP
      * prepare_draw, which is what decides whether this is a screen-space
      * draw at all. */
     d3d8_place_2d_draw(pVertexData, VertexStreamZeroStride, NumVertices);
+    two_d_overflow(pVertexData, VertexStreamZeroStride, NumVertices);
     d3d8_states_apply();
 
     rhi_set_topology(topology);
@@ -2259,6 +2273,12 @@ static BOOL g_extent_fixed_function;
  * flat colour. Gladius draws its fades and letterbox bars that way with the
  * last real texture still bound. */
 static BOOL g_extent_position_only;
+/* Whether the vertices hold the guest's own pixels at g_extent_offset, as a
+ * pass through them all measured g_extent_lo..g_extent_hi before the scissor:
+ * what two_d_overflow rewrites. */
+static BOOL g_extent_pixels;
+static UINT g_extent_offset;
+static float g_extent_lo, g_extent_hi;
 
 /* The title's own test for a screen-space draw (xbox_D3D8SetScreenSpaceTest),
  * and what it said of the draw in hand. */
@@ -2312,6 +2332,7 @@ static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
 
     g_extent_fixed_function = FALSE;
     g_extent_position_only = FALSE;
+    g_extent_pixels = FALSE;
     if (!p || !stride || !count)
         return FALSE;
     /* A draw the title's own test called screen-space: the extent is the
@@ -2358,6 +2379,8 @@ static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
      * it was supposed to remove stayed. The bound is a sanity limit, not
      * a sample: screen-space draws are small, and this runs only for
      * them. */
+    g_extent_pixels = !mapped && count <= 8192;
+    g_extent_offset = offset;
     if (count > 8192)
         count = 8192;
 
@@ -2368,6 +2391,8 @@ static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
         if (x < lo) lo = x;
         if (x > hi) hi = x;
     }
+    g_extent_lo = lo;
+    g_extent_hi = hi;
 
     /* A program that maps its positions itself (oPos = v * c[a] + c[b]):
      * its pixels, then the guest's, through the same screen-space undo the
@@ -2585,7 +2610,8 @@ static void two_d_tag_note(const void *vertices, UINT stride, UINT count)
 
 static void two_d_tag_frame(void)
 {
-    static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side", "edge" };
+    static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side",
+                                   "edge", "spread" };
     UINT guest_w = d3d8_GetGuestWidth();
     int i;
 
@@ -2594,7 +2620,7 @@ static void two_d_tag_frame(void)
     fprintf(stderr, "[2D-TAGS] frame %lu: %d tag(s)\n", g_tag_frames, g_tag_count);
     for (i = 0; i < g_tag_count; i++) {
         const TwoDTagStat *t = &g_tag_stats[i];
-        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_EDGE ? t->placement : 0;
+        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_SPREAD ? t->placement : 0;
 
         fprintf(stderr, "[2D-TAGS]   tag %08X %-7s draws %6lu  x %7.1f..%7.1f (%5.1f%%) "
                 "widest %5.1f%%\n", t->tag, names[pl], t->draws, t->lo, t->hi,
@@ -2609,7 +2635,7 @@ void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag)
 {
     int anchor;
 
-    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_EDGE)
+    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_SPREAD)
         placement = XBOX_D3D8_2D_AUTO;
     g_2d_tag = tag;
     if (placement == g_2d_placement)
@@ -2717,11 +2743,100 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
             set_squeeze(FALSE);
         break;
     }
+    case XBOX_D3D8_2D_SPREAD: {
+        /* Clipped by the scissor, like SIDE's: where the draw can be seen. */
+        UINT guest_w = d3d8_GetGuestWidth();
+        float lo, hi;
+
+        if (d3d8_draw_escapes_squeeze(vertices, stride, count)) {
+            set_squeeze(FALSE);
+            break;
+        }
+        if (guest_w && draw_extent(vertices, stride, count, &lo, &hi)) {
+            float f = (lo + hi) * 0.5f / (float)guest_w;
+
+            if (g_2d_anchor != XBOX_D3D8_2D_SPREAD || f != g_2d_spread) {
+                g_2d_anchor = XBOX_D3D8_2D_SPREAD;
+                g_2d_spread = f;
+                apply_host_viewport();
+            }
+        }
+        break;
+    }
     default:
         if (d3d8_draw_escapes_squeeze(vertices, stride, count))
             set_squeeze(FALSE);
         break;
     }
+}
+
+/* xbox_D3D8SetTwoDOverflow: a piece reaching past the guest's screen.
+ *
+ * The squeeze is a viewport, and nothing is drawn outside one: a piece that
+ * runs off the side of the 4:3 screen stops dead at the old edge, though the
+ * picture goes on. On the console that edge was the screen's. So when a draw
+ * still squeezed after its placement reaches past the guest's screen, and no
+ * scissor narrower than the screen holds it in, the same squeeze is done to a
+ * copy of its vertices and the copy drawn with the viewport left alone. It
+ * lands where it would have, and goes on to where it ends. Only such a draw
+ * pays for the copy, and every renderer sees plain vertices. */
+static BOOL g_2d_overflow;
+
+void xbox_D3D8SetTwoDOverflow(BOOL on)
+{
+    g_2d_overflow = on ? TRUE : FALSE;
+}
+
+/* RECOMP_D3D8_2D_OVERFLOW=0 or 1 over the title's choice; 1 is how a replay,
+ * which has no title to ask, shows it. */
+static BOOL two_d_overflow_on(void)
+{
+    static int env = -1;
+
+    if (env < 0) {
+        const char *v = getenv("RECOMP_D3D8_2D_OVERFLOW");
+
+        env = v && *v ? strcmp(v, "0") != 0 : 2;
+    }
+    return env == 2 ? g_2d_overflow : env;
+}
+
+static void two_d_overflow(const void *vertices, UINT stride, UINT count)
+{
+    UINT guest_w = d3d8_GetGuestWidth(), i, ring_offset;
+    unsigned char *copy;
+    float lo, hi, k, cx, s;
+
+    if (!two_d_overflow_on() || !g_2d_squeeze || g_cur_rt || !guest_w ||
+        !draw_extent(vertices, stride, count, &lo, &hi) || !g_extent_pixels ||
+        (g_extent_lo >= 0.0f && g_extent_hi <= (float)guest_w) ||
+        !two_d_squeeze(&k, &cx))
+        return;
+    /* A scissor the size of a box means the box: its edge is meant. */
+    if (g_scissor_enabled &&
+        (g_scissor.left > 0 || g_scissor.right < (int32_t)guest_w - 1))
+        return;
+    copy = (unsigned char *)malloc((size_t)count * stride);
+    if (!copy)
+        return;
+    memcpy(copy, vertices, (size_t)count * stride);
+    /* In the guest's pixels, the middle of the squeeze: on the host it was
+     * cx + (x * s - cx) * k, and unsqueezed it is x * s. */
+    s = (float)g_device_state.width / (float)guest_w;
+    cx /= s;
+    for (i = 0; i < count; i++) {
+        float x;
+
+        memcpy(&x, copy + (size_t)i * stride + g_extent_offset, sizeof x);
+        x = cx + (x - cx) * k;
+        memcpy(copy + (size_t)i * stride + g_extent_offset, &x, sizeof x);
+    }
+    ring_offset = up_ring_upload(&g_up_vertex_ring, copy, count * stride);
+    free(copy);
+    if (ring_offset == (UINT)-1)
+        return;
+    rhi_set_vertex_buffer(0, g_up_vertex_ring.buffer, stride, ring_offset);
+    set_squeeze(FALSE);
 }
 
 static HRESULT __stdcall dev_SetViewport(IDirect3DDevice8 *self, const D3DVIEWPORT8 *pViewport)
