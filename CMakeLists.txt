@@ -215,7 +215,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory(tests/title_update)        # portable: title updates, the launch defaults
     add_subdirectory(tests/mmio_decode)         # x86-64 decoder; skips on other CPUs
     add_subdirectory(tests/kernel_file_rename)  # FileRenameInformation, either file backend
+    add_subdirectory(tests/kernel_file_relative) # delete and query relative to a folder handle
     add_subdirectory(tests/kernel_handle_dup)   # NtDuplicateObject's token, either file backend
+    add_subdirectory(tests/kernel_tz_setting)   # the EEPROM time zone is the host's
     add_subdirectory(tests/audio_dsp)           # portable: speaker fold-down, I3DL2 reverb
     add_subdirectory(tests/input_mouse)         # portable: mouse: bindings and mouse look
     if(NOT WIN32)
@@ -229,6 +231,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         add_subdirectory(tests/xbe_patches)     # a patched lift loaded from the unpatched XBE
         add_subdirectory(tests/compat_threads)  # POSIX thread and fiber shims
         add_subdirectory(tests/kernel_directory_posix) # NtClose releases a directory search
+        add_subdirectory(tests/kernel_fd_limit) # the open-file limit, raised and exhausted
     endif()
     # Built under src/d3d (tests/d3d8_smoke); pure parsing, no device.
     add_test(NAME d3d8_final_default COMMAND d3d8_final_default)

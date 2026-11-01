@@ -474,6 +474,23 @@ void rhi_draw_indexed(uint32_t index_count, uint32_t first_index, int32_t base_v
 void rhi_clear_color(RhiView *v, const float rgba[4]);
 void rhi_clear_depth(RhiView *v, uint32_t flags, float depth, uint8_t stencil);
 
+/* ---- occlusion counting --------------------------------------------------------- */
+
+/* Samples that pass the depth and stencil tests, counted over the draws made
+ * between rhi_occlusion_begin and rhi_occlusion_end: what an Xbox visibility
+ * test reports (D3DDevice_BeginVisibilityTest .. EndVisibilityTest). Each draw
+ * is counted by a query of its own, so a test may span render-target changes.
+ * rhi_occlusion_result waits for the GPU and returns 0 with the total in
+ * *samples, or -1 when the backend cannot count or the test's queries have
+ * been reused since (a result asked for long after its frame). */
+typedef struct RhiOcclusion {
+    uint32_t first, count, generation;
+} RhiOcclusion;
+
+int  rhi_occlusion_begin(void);          /* 0 when counting has started */
+void rhi_occlusion_end(RhiOcclusion *out);
+int  rhi_occlusion_result(const RhiOcclusion *t, uint64_t *samples);
+
 /* ---- backends ----------------------------------------------------------------- */
 
 /* For a test that makes its own D3D11 device: hand it to the backend in

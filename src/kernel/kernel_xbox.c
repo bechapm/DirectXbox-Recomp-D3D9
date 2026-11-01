@@ -15,6 +15,7 @@
 #include "xbox_nic.h"
 #include "xbox_console_id.h"
 #include <string.h>
+#include <time.h>
 /* getenv: without <stdlib.h> its pointer is truncated to int. */
 #include <stdlib.h>
 
@@ -129,7 +130,84 @@ NTSTATUS __stdcall xbox_XeUnloadSection(PXBE_SECTION_HEADER Section)
  *   - Language: English
  *   - Audio: Stereo, Dolby Digital
  *   - DVD Region: Region 1 (North America)
+ *   - Time zone: the host's
  * ============================================================================ */
+
+/* The console's time zone (after upstream #216, koenhendriks). The EEPROM
+ * holds the bias (UTC = local + bias, in minutes), the standard and daylight
+ * biases added to it, four-character names, and the dates daylight time
+ * starts and ends (month, week of the month, day of the week, hour). XAPI
+ * turns the UTC clock into local time with these. A fixed zone stamps saves
+ * and clocks hours off anywhere else, and the one this answered before,
+ * -300, was not even Eastern: a bias is UTC minus local, so -300 is UTC+5.
+ *
+ * Windows has all of it (GetTimeZoneInformation). POSIX hosts give the
+ * offset in effect now and the zone names, not the rule: the bias is the
+ * current offset with no daylight dates, which is right until the clocks
+ * change during a run. */
+typedef struct { uint8_t month, day, dow, hour; } XboxTzDate;
+static struct {
+    int32_t bias, std_bias, dlt_bias;
+    XboxTzDate std_date, dlt_date;
+    char std_name[4], dlt_name[4];
+} s_tz;
+
+static void tz_name4(char out[4], const char *src)
+{
+    int k;
+    for (k = 0; k < 4; k++) {
+        char c = (src && *src) ? *src++ : 0;
+        out[k] = (c >= 0x20 && c < 0x7F) ? c : (c ? '?' : 0);
+    }
+}
+
+/* Set once s_tz is filled. Two threads that both find it clear both fill it
+ * with the same values, which is harmless; none reads it half-filled. */
+static volatile LONG s_tz_ready;
+
+static void tz_init(void)
+{
+    if (s_tz_ready)
+        return;
+#ifdef _WIN32
+    {
+        TIME_ZONE_INFORMATION tzi;
+        char sn[5], dn[5];
+        int k;
+        memset(&tzi, 0, sizeof tzi);
+        GetTimeZoneInformation(&tzi);
+        s_tz.bias = tzi.Bias;
+        s_tz.std_bias = tzi.StandardBias;
+        s_tz.dlt_bias = tzi.DaylightBias;
+        s_tz.std_date.month = (uint8_t)tzi.StandardDate.wMonth;
+        s_tz.std_date.day = (uint8_t)tzi.StandardDate.wDay;
+        s_tz.std_date.dow = (uint8_t)tzi.StandardDate.wDayOfWeek;
+        s_tz.std_date.hour = (uint8_t)tzi.StandardDate.wHour;
+        s_tz.dlt_date.month = (uint8_t)tzi.DaylightDate.wMonth;
+        s_tz.dlt_date.day = (uint8_t)tzi.DaylightDate.wDay;
+        s_tz.dlt_date.dow = (uint8_t)tzi.DaylightDate.wDayOfWeek;
+        s_tz.dlt_date.hour = (uint8_t)tzi.DaylightDate.wHour;
+        for (k = 0; k < 4; k++) {
+            sn[k] = (char)(tzi.StandardName[k] < 128 ? tzi.StandardName[k] : '?');
+            dn[k] = (char)(tzi.DaylightName[k] < 128 ? tzi.DaylightName[k] : '?');
+        }
+        sn[4] = dn[4] = 0;
+        tz_name4(s_tz.std_name, sn);
+        tz_name4(s_tz.dlt_name, dn);
+    }
+#else
+    {
+        time_t now = time(NULL);
+        struct tm lt;
+        tzset();
+        if (localtime_r(&now, &lt))
+            s_tz.bias = (int32_t)(-lt.tm_gmtoff / 60);
+        tz_name4(s_tz.std_name, tzname[0]);
+        tz_name4(s_tz.dlt_name, tzname[1]);
+    }
+#endif
+    InterlockedExchange(&s_tz_ready, 1);
+}
 
 /* Game region the running title's certificate allows.
  *
@@ -219,13 +297,19 @@ uint32_t xbox_kernel_console_av_standard(void)
 
 /* The EEPROM as this console holds it: the player's own when there is one
  * (xbox_console_id.c), else the made-up console's factory section. Either
- * way the user settings this runtime answers one by one (language, video,
- * audio, parental, misc, DVD region: 0x90-0xBF) are laid over it and its
- * checksum redone, so a block read and the single reads agree. */
+ * way the user settings this runtime answers one by one (the time zone,
+ * 0x64-0x8F, and language, video, audio, parental, misc, DVD region,
+ * 0x90-0xBF) are laid over it and its checksum redone, so a block read and
+ * the single reads agree. XAPI reads the time zone through XC_MAX_OS; left
+ * as zeroes there, every title would be in UTC whatever the single query
+ * said. */
 static void console_eeprom(uint8_t ee[256])
 {
     const XboxConsoleId *id = xbox_ConsoleId();
     static const struct { ULONG index; uint32_t off; } user[] = {
+        { XC_TIMEZONE_BIAS, 0x64 }, { XC_TZ_STD_NAME, 0x68 }, { XC_TZ_DLT_NAME, 0x6C },
+        { XC_TZ_STD_DATE, 0x78 }, { XC_TZ_DLT_DATE, 0x7C },
+        { XC_TZ_STD_BIAS, 0x88 }, { XC_TZ_DLT_BIAS, 0x8C },
         { XC_LANGUAGE, 0x90 }, { XC_VIDEO, 0x94 }, { XC_AUDIO, 0x98 },
         { XC_P_CONTROL_GAMES, 0x9C }, { XC_P_CONTROL_MOVIES, 0xA4 },
         { XC_MISC, 0xB8 }, { XC_DVD_REGION, 0xBC },
@@ -370,11 +454,35 @@ NTSTATUS __stdcall xbox_ExQueryNonVolatileSetting(
         break;
 
     case XC_TIMEZONE_BIAS:
-        /* UTC-5 (Eastern Time) in minutes: -300 */
+    case XC_TZ_STD_BIAS:
+    case XC_TZ_DLT_BIAS:
+        /* The host's (tz_init). */
+        tz_init();
         if (ValueLength >= sizeof(LONG)) {
-            *(PLONG)Value = -300;
+            *(PLONG)Value = ValueIndex == XC_TIMEZONE_BIAS ? s_tz.bias
+                          : ValueIndex == XC_TZ_STD_BIAS ? s_tz.std_bias : s_tz.dlt_bias;
             if (Type) *Type = 4;
             if (ResultLength) *ResultLength = sizeof(LONG);
+        }
+        break;
+
+    case XC_TZ_STD_NAME:
+    case XC_TZ_DLT_NAME:
+        tz_init();
+        if (ValueLength >= 4) {
+            memcpy(Value, ValueIndex == XC_TZ_STD_NAME ? s_tz.std_name : s_tz.dlt_name, 4);
+            if (Type) *Type = 3;                 /* REG_BINARY */
+            if (ResultLength) *ResultLength = 4;
+        }
+        break;
+
+    case XC_TZ_STD_DATE:
+    case XC_TZ_DLT_DATE:
+        tz_init();
+        if (ValueLength >= 4) {
+            memcpy(Value, ValueIndex == XC_TZ_STD_DATE ? &s_tz.std_date : &s_tz.dlt_date, 4);
+            if (Type) *Type = 4;
+            if (ResultLength) *ResultLength = 4;
         }
         break;
 
