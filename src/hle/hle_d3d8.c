@@ -704,6 +704,7 @@ static void shadow_set_fullscreen(HWND hwnd, int on)
 
 typedef struct {
     UINT   width, height;
+    UINT   min_h;                  /* the guest's lines, scaled for DPI */
     HWND   hwnd;
     HANDLE ready;
 } shadow_window_request;
@@ -734,6 +735,23 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
          * monitor, whose work area is the desktop less the taskbar. */
         RECT work, frame = { 0, 0, 0, 0 };
         int w = (int)req->width, h = (int)req->height;
+
+        /* And no smaller than the guest's screen at the desktop's scaling:
+         * DPI aware (shadow_dpi_aware), the console's 480 lines are 480
+         * real pixels, a third smaller on a screen scaled to 150% than the
+         * window Windows used to stretch for us. */
+        if (req->min_h && h > 0) {
+            typedef UINT (WINAPI *GetDpiFn)(void);
+            GetDpiFn get_dpi = (GetDpiFn)(void (*)(void))GetProcAddress(
+                GetModuleHandleA("user32.dll"), "GetDpiForSystem");
+            UINT dpi = get_dpi ? get_dpi() : 96;
+            int min_h = (int)(((unsigned long long)req->min_h * dpi + 48) / 96);
+
+            if (h < min_h) {
+                w = (int)(((long long)w * min_h + h / 2) / h);
+                h = min_h;
+            }
+        }
 
         AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
         if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
@@ -847,6 +865,8 @@ static void shadow_dpi_aware(void)
         set_aware();
 }
 
+static UINT g_shadow_window_min_h;     /* set by the caller of shadow_window */
+
 static HWND shadow_window(UINT width, UINT height)
 {
     shadow_window_request req;
@@ -856,6 +876,7 @@ static HWND shadow_window(UINT width, UINT height)
     memset(&req, 0, sizeof req);
     req.width = width;
     req.height = height;
+    req.min_h = g_shadow_window_min_h;
     req.ready = CreateEventA(NULL, TRUE, FALSE, NULL);
     if (!req.ready)
         return NULL;
@@ -1363,6 +1384,9 @@ static void shadow_create(uint32_t pp_va)
          * 16:9 in widescreen -- at the guest's height; the back buffer
          * below stays the guest's own size whatever the window is. */
         xbox_D3D8DefaultWindowSize(width, height, &win_w, &win_h);
+#ifdef _WIN32
+        g_shadow_window_min_h = height;
+#endif
         hwnd = shadow_window(win_w, win_h);
         xbox_GuestLockRestore(held);
     }
