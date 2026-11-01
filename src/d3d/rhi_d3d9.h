@@ -102,6 +102,8 @@ void rhi_d3d9_title_says_2d(float w);
  * never and 1 always. Off without a mod, since D3D9 itself gains nothing and
  * has no depth clamp there: a vertex past the far plane is cut. */
 int  rhi_d3d9_fixed_transform_on(void);
+/* And whether a mod lets this draw be, by the title's depth state. */
+int  rhi_d3d9_fixed_transform_allowed(int depth_enable, int depth_write, uint32_t depth_func);
 /* After rhi_d3d9_title_draw: the next draw is that program's, so drawn;
  * mods are told it is the program's all the same (RecompModDraw). */
 void rhi_d3d9_title_fixed_transform(RhiShader *program);
@@ -167,7 +169,7 @@ int  rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, 
 int  rhi_d3d9_mod_on_clear(RecompModClearFn fn, void *user);
 int  rhi_d3d9_mod_on_present(RecompModDeviceFn fn, void *user);
 int  rhi_d3d9_mod_vertex_hlsl(const char *hlsl);
-void rhi_d3d9_mod_fixed_transform(int on);
+void rhi_d3d9_mod_fixed_transform(int on, RecompModFixedFn keep, void *user);
 int  rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value);
 void rhi_d3d9_mod_set_projection(const float m[16]);
 void rhi_d3d9_mod_remake_written_textures(int on);

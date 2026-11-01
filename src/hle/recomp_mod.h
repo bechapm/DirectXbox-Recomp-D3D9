@@ -104,6 +104,9 @@ typedef struct RecompModDraw {
 #define RECOMP_DRAW_AS_IS 0         /* before's answers */
 #define RECOMP_DRAW_SKIP  1         /* left out: before changed nothing */
 
+/* Whether a plain transform may be drawn by fixed function (d3d9_fixed_transform),
+ * by the depth state the title has set for it: depth_func is a D3DCMPFUNC. */
+typedef int  (*RecompModFixedFn)(int depth_enable, int depth_write, uint32_t depth_func, void *user);
 typedef int  (*RecompModBeforeDraw)(RecompModDraw *draw, void *user);
 typedef void (*RecompModAfterDraw)(RecompModDraw *draw, void *user);
 typedef void (*RecompModDeviceFn)(void *device, void *user);
@@ -245,8 +248,9 @@ typedef struct RecompModApi {
      * passed on, nothing fixed function could not do. For a tool that reads
      * the fixed-function transforms and otherwise has to read each vertex
      * back out of the shader. Such a draw comes with fixed_transform set
-     * (RecompModDraw). RECOMP_D3D9_FIXED_TRANSFORM has the last word. */
-    void (*d3d9_fixed_transform)(int on);
+     * (RecompModDraw). `keep`, if given, is asked first, and a 0 leaves that
+     * draw a program. RECOMP_D3D9_FIXED_TRANSFORM has the last word. */
+    void (*d3d9_fixed_transform)(int on, RecompModFixedFn keep, void *user);
 } RecompModApi;
 
 typedef int (*RecompModInitFn)(const RecompModApi *api);

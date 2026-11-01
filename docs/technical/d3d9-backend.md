@@ -81,7 +81,9 @@ its own transforms; a program draw's transforms come from a mod.
 flowchart TD
     D{"The title's draw"} -- "fixed function" --> FF["D3D9 fixed function:<br/>WORLD, VIEW, PROJECTION,<br/>lights, material, texture stages"]
     D -- "vertex program" --> VS["vs_3_0 + texture-stage ps_3_0<br/>transforms: as a mod sets them"]
+    D -- "a plain transform,<br/>when a mod asks" --> PT["D3D9 fixed function:<br/>WORLD its model-view,<br/>PROJECTION its projection"]
     D -- "pre-transformed 2D" --> TD["POSITION under an orthographic<br/>PROJECTION of the target"]
+    PT --> TOOL
     FF --> TOOL["What a D3D9 tool reads"]
     VS --> TOOL
     TD --> TOOL
@@ -98,6 +100,29 @@ flowchart TD
   projection: the program's own projection register (`proj_reg`, as
   uploaded: Hor+ and camera zoom applied) transposed to row-vector form.
   Without a mod those transforms are whatever they last were.
+- **Plain transforms, on request.** A tool that rebuilds a scene has to read
+  each program draw back out of a shader, draw by draw. A program that only
+  takes a position through a model-view and a projection and passes a colour
+  and coordinates on does nothing fixed function could not, so
+  `nv2a_vsh_plain_transform` (`src/kernel/nv2a_vsh.c`) recognises it, and a mod
+  can ask for it to be drawn that way (`d3d9_fixed_transform`, [mods.md](mods.md)).
+  `WORLD` is then the model-view and `VIEW` identity, which draws the same; a
+  mod that knows the camera moves it from one to the other. The XDK's two
+  screen lines are folded into `PROJECTION`, which keeps the viewport's depth
+  range; a scale of 1 on the coordinates sets no texture transform; each stage
+  reads the input the program sends it, since one input may go to several
+  stages; and a colour the program swizzles `.zyxw` has red and blue swapped in
+  the vertices uploaded, because fixed function reads a `D3DCOLOR` as it stands.
+  One combined matrix stays a program, having nothing to give `WORLD` and
+  `PROJECTION` apart, as do draws with fog on, W-buffer draws, and combiners too
+  long for ps_2_a. The log counts each reason (`[D3D9] plain transforms`).
+  It is off without a mod: D3D9 itself gains nothing, and fixed function has no
+  depth clamp, so a vertex past the far plane is cut.
+  `RECOMP_D3D9_FIXED_TRANSFORM` (settings file `d3d9_fixed_transform`) has the
+  last word, 0 never and 1 always. Forced on against plain D3D9, five recorded
+  TimeSplitters 2 frames differ in 0.02-0.5% of their pixels, nearly all by 1 or
+  2 levels of 255. Under Remix, with every room drawn (about 2,160 draws), 76% of
+  program draws go this way and a frame falls from 32 ms to 23 ms (31 to 42.6 fps).
 - **Inputs named for what they hold.** A D3D9 tool reads a draw through the
   declaration's usages: `POSITION` for its vertices, `COLOR0` for vertex
   colour (Remix leaves out a draw without a `POSITION`, and reads `COLOR0` in
@@ -172,6 +197,10 @@ renderer's: a mod does it through the per-draw hooks in
 - A register combiner program too long for ps_2_a, under fixed function, is
   approximated (stage 0's texture times diffuse). Under fixed function the
   combiners' fog register reads no fog; D3D9's fog unit fogs the result.
+- A sky drawn as a plain transform came out black under RTX Remix on
+  TimeSplitters 2's Mexican, though Siberia's looked right and plain D3D9 draws
+  both. Not understood; it is not the texture transform. A mod can leave any
+  draw a program (`keep` in `d3d9_fixed_transform`), and TS2-RTX does for its sky.
 - Vertex blending (skinned fixed-function) is ignored, as under D3D11.
 - Point sprites are one pixel, as under D3D11.
 - Frame interpolation is untested under D3D9.

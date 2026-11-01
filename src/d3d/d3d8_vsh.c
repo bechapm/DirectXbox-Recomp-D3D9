@@ -2587,9 +2587,13 @@ int d3d8_vsh_fixed_for_draw(D3D8VshFixed *f)
                 return D3D8_FIXED_LAYOUT;
             f->tex_coord[n] = attr->index;
         }
-        f->tex_scaled[n] = t->tex_scale_reg[n] >= 0;
-        if (f->tex_scaled[n])
-            memcpy(f->tex_scale[n], g_vsh_constants.c[t->tex_scale_reg[n]], sizeof f->tex_scale[n]);
+        /* A scale of 1 is no transform at all. */
+        if (t->tex_scale_reg[n] >= 0) {
+            const float *s = g_vsh_constants.c[t->tex_scale_reg[n]];
+
+            f->tex_scaled[n] = s[0] != 1.0f || s[1] != 1.0f;
+            memcpy(f->tex_scale[n], s, sizeof f->tex_scale[n]);
+        }
     }
     for (row = 0; row < 4; row++)
         for (col = 0; col < 4; col++)

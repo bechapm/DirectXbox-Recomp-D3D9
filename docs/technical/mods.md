@@ -230,6 +230,7 @@ renderer. ✓ works, – does nothing (or returns 0 / NULL).
 | `d3d9_remake_written_textures` | from init | – | ✓ | ✓ | |
 | `d3d9_on_copy` | before each screen copy | – | ✓ | ✓ | 8 |
 | `draw_vertex_buffer` (v4) | inside a draw hook | – | ✓ | – (0) | |
+| `d3d9_fixed_transform` (v5) | once the device is made | – | ✓ | ✓ | |
 | `replaying` | any time | ✓ (0) | ✓ (0) | ✓ (1) | |
 | `capture_on_draw`, `capture_note` | while a capture is made | – | ✓ | – | 8 |
 | `replay_on_note` | during a replay | – | – | ✓ | 8 |
@@ -262,11 +263,19 @@ flowchart TD
 | Group | Fields | Use it to recognise... |
 | --- | --- | --- |
 | Whose | `title`, `two_d`, `title_2d`, `clip_w`, `offscreen` | the title's 3D, its 2D (HUD, menus), what goes to a texture |
-| How | `program`, `program_id`, `primitive`, `primitives` | a particular vertex program, by bytecode hash |
+| How | `program`, `program_id`, `fixed_transform`, `primitive`, `primitives` | a particular vertex program, by bytecode hash, and whether fixed function draws it |
 | Textures | `textures[8]`, `texture_ids[8]`, `screen_copies` | a texture by what it holds (`texture_ids` is the same across runs and replays) |
 | Depth | `depth_state`, `depth_enable`, `depth_write`, `depth_func` | sky, overlays, decals |
 | Transforms | `projection_set`, `projection`, `world`, `view`, `program_projection_set`, `program_projection` | the camera, for fixed function and for programs |
 | Geometry | `indexed`, `first_vertex`, `vertices`, `indices`, `index_bytes`, `index_count`, `base_vertex` | a draw by its shape, or to read its vertices |
+
+`d3d9_fixed_transform(1, keep, user)` has a vertex program that is only a plain
+transform drawn by D3D9's fixed-function pipeline
+([d3d9-backend.md](d3d9-backend.md)), for a tool that reads the fixed-function
+transforms. Such a draw still says `program` and its `program_id`, and adds
+`fixed_transform`: no vertex shader is bound, `world` is the program's model-view
+and `view` identity. `keep`, if given, is asked first with the title's depth
+state, and a 0 leaves that draw a program. Without the call nothing changes.
 
 **Example: hide the title's 2D**, for clean screenshots.
 
@@ -543,7 +552,8 @@ flowchart TD
     c --> d["captures: replaying, capture_on_draw,<br/>capture_note, replay_on_note"]
     d --> e["D3D9, added later: on_copy"]
     e --> g["version 4: draw_vertex_buffer"]
-    g -.-> f(["future entries: added here only"])
+    g --> h["version 5: d3d9_fixed_transform"]
+    h -.-> f(["future entries: added here only"])
 ```
 
 `RECOMP_MOD_HAS(api, field)` (in the header) says whether the game's table
@@ -556,7 +566,8 @@ if (RECOMP_MOD_HAS(api, draw_vertex_buffer))
 ```
 
 `version` names the newest set the game knows. Versions 1 and 2 were never
-released; 3 is the first stable layout, and 4 adds `draw_vertex_buffer`.
+released; 3 is the first stable layout, 4 adds `draw_vertex_buffer`, and 5 adds
+`d3d9_fixed_transform` and `RecompModDraw.fixed_transform`.
 
 ## Where a change belongs
 

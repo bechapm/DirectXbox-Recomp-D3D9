@@ -2739,10 +2739,19 @@ void rhi_d3d9_title_says_2d(float w)
 }
 
 static int g_fixed_asked;
+static RecompModFixedFn g_fixed_keep;
+static void *g_fixed_keep_user;
 
-void rhi_d3d9_mod_fixed_transform(int on)
+void rhi_d3d9_mod_fixed_transform(int on, RecompModFixedFn keep, void *user)
 {
     g_fixed_asked = on != 0;
+    g_fixed_keep = keep;
+    g_fixed_keep_user = user;
+}
+
+int rhi_d3d9_fixed_transform_allowed(int depth_enable, int depth_write, uint32_t depth_func)
+{
+    return !g_fixed_keep || g_fixed_keep(depth_enable, depth_write, depth_func, g_fixed_keep_user);
 }
 
 int rhi_d3d9_fixed_transform_on(void)
@@ -2898,8 +2907,16 @@ void rhi_d3d9_set_render_state(uint32_t state, uint32_t value) { (void)state; (v
 void rhi_d3d9_title_draw(int two_d, int offscreen) { (void)two_d; (void)offscreen; }
 void rhi_d3d9_title_says_2d(float w) { (void)w; }
 int rhi_d3d9_fixed_transform_on(void) { return 0; }
+int rhi_d3d9_fixed_transform_allowed(int depth_enable, int depth_write, uint32_t depth_func)
+{
+    (void)depth_enable; (void)depth_write; (void)depth_func;
+    return 0;
+}
 void rhi_d3d9_title_fixed_transform(RhiShader *program) { (void)program; }
-void rhi_d3d9_mod_fixed_transform(int on) { (void)on; }
+void rhi_d3d9_mod_fixed_transform(int on, RecompModFixedFn keep, void *user)
+{
+    (void)on; (void)keep; (void)user;
+}
 int rhi_d3d9_mod_on_device(RecompModDeviceFn fn, void *user) { (void)fn; (void)user; return 0; }
 int rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, void *user)
 {

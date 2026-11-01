@@ -1900,13 +1900,13 @@ static void d9_shutdown(void)
  * program, with nothing changed. */
 static int g_d9_colour_swap = -1;
 
-enum { D9_FIXED_FOG = D3D8_FIXED_LAYOUT + 1, D9_FIXED_TEXTURE, D9_FIXED_COMBINERS, D9_FIXED_REASONS };
+enum { D9_FIXED_FOG = D3D8_FIXED_LAYOUT + 1, D9_FIXED_TEXTURE, D9_FIXED_COMBINERS, D9_FIXED_MOD, D9_FIXED_REASONS };
 
 static void d9_fixed_count(int reason)
 {
     static const char *const why[D9_FIXED_REASONS] = {
         "drawn fixed", "not plain", "W buffer", "screen lines", "vertex layout", "fog",
-        "stage texture", "register combiners too large",
+        "stage texture", "register combiners too large", "a mod's choice",
     };
     static unsigned long seen[D9_FIXED_REASONS], total;
     int i;
@@ -1938,6 +1938,11 @@ static int d9_fixed_prepare_draw(void)
      * under fixed function does not do. */
     if (!rs || rs[D3DRS_FOGENABLE]) {
         d9_fixed_count(D9_FIXED_FOG);
+        return 0;
+    }
+    if (!rhi_d3d9_fixed_transform_allowed(rs[D3DRS_ZENABLE] != 0, rs[D3DRS_ZWRITEENABLE] != 0,
+                                          rs[D3DRS_ZFUNC])) {
+        d9_fixed_count(D9_FIXED_MOD);
         return 0;
     }
     /* A stage reading coordinates the program does not write, or scaled
