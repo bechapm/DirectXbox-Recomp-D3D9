@@ -109,9 +109,9 @@ flowchart TD
   `WORLD` is then the model-view and `VIEW` identity, which draws the same; a
   mod that knows the camera moves it from one to the other. The XDK's two
   screen lines are folded into `PROJECTION`, which keeps the viewport's depth
-  range; a scale of 1 on the coordinates sets no texture transform; each stage
-  reads the input the program sends it, since one input may go to several
-  stages; and a colour the program swizzles `.zyxw` has red and blue swapped in
+  range; a program's scale on its coordinates is a texture transform, even at 1;
+  each stage reads the input the program sends it, since one input may go to
+  several stages; and a colour the program swizzles `.zyxw` has red and blue swapped in
   the vertices uploaded, because fixed function reads a `D3DCOLOR` as it stands.
   One combined matrix stays a program, having nothing to give `WORLD` and
   `PROJECTION` apart, as do draws with fog on, W-buffer draws, and combiners too
@@ -199,8 +199,12 @@ renderer's: a mod does it through the per-draw hooks in
   combiners' fog register reads no fog; D3D9's fog unit fogs the result.
 - A sky drawn as a plain transform came out black under RTX Remix on
   TimeSplitters 2's Mexican, though Siberia's looked right and plain D3D9 draws
-  both. Not understood; it is not the texture transform. A mod can leave any
-  draw a program (`keep` in `d3d9_fixed_transform`), and TS2-RTX does for its sky.
+  both. Not understood; dropping the texture transform did not help. A mod can
+  leave any draw a program (`keep` in `d3d9_fixed_transform`), and TS2-RTX does
+  for its sky.
+- Without a texture transform at a scale of 1, the picture TimeSplitters 2 shows
+  on its scanner went missing under RTX Remix. Not understood either, so the
+  program's scale is always set.
 - Vertex blending (skinned fixed-function) is ignored, as under D3D11.
 - Point sprites are one pixel, as under D3D11.
 - Frame interpolation is untested under D3D9.
