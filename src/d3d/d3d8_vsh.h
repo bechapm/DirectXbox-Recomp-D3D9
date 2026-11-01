@@ -275,7 +275,9 @@ typedef struct D3D8VshFixed {
     int   colour_swap_offset;   /* where the vertex's colour is, when its red and
                                    blue have to change places for fixed function,
                                    which reads a D3DCOLOR; else -1 */
-    int   tex_written[4];       /* the program writes oTn */
+    int   tex_written[4];       /* the program writes oTn, from */
+    int   tex_coord[4];         /* the vertex's TEXCOORDn: a program may send one
+                                   input to several stages */
     int   tex_scaled[4];        /* multiplied by tex_scale[n] */
     float tex_scale[4][4];
 } D3D8VshFixed;

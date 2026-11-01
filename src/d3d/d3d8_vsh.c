@@ -157,6 +157,7 @@ static int g_bound_proj_reg = -1;
 /* And for drawing it as a plain transform (d3d8_vsh_fixed_for_draw). */
 static RhiShader *g_bound_vs;
 static const NV2AVshPlainTransform *g_bound_plain;
+static const VshAttr *g_bound_attrs;
 static float g_bound_proj[16];          /* D3D's row-vector form */
 static int   g_bound_proj_known;
 
@@ -2579,8 +2580,13 @@ int d3d8_vsh_fixed_for_draw(D3D8VshFixed *f)
     }
     for (n = 0; n < 4; n++) {
         f->tex_written[n] = t->tex_input[n] >= 0;
-        if (f->tex_written[n] && !fixed_input(t->tex_input[n], RHI_FORMAT_UNKNOWN))
-            return D3D8_FIXED_LAYOUT;
+        if (f->tex_written[n]) {
+            const VshAttr *attr = &g_bound_attrs[t->tex_input[n]];
+
+            if (!fixed_input(t->tex_input[n], RHI_FORMAT_UNKNOWN) || strcmp(attr->name, "TEXCOORD") != 0)
+                return D3D8_FIXED_LAYOUT;
+            f->tex_coord[n] = attr->index;
+        }
         f->tex_scaled[n] = t->tex_scale_reg[n] >= 0;
         if (f->tex_scaled[n])
             memcpy(f->tex_scale[n], g_vsh_constants.c[t->tex_scale_reg[n]], sizeof f->tex_scale[n]);
@@ -2663,6 +2669,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
     g_bound_decl_count = vsh->decl_count;
     g_bound_vs = entry->vs;
     g_bound_plain = entry->plain ? &entry->plain_regs : NULL;
+    g_bound_attrs = entry->attrs;
 
     /* Bind the input layout: the program's declaration when it has one,
      * otherwise sized from the bound stream FVF */

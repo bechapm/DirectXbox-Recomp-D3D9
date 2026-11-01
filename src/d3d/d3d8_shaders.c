@@ -1519,9 +1519,9 @@ static void d9_ff_prepare_draw(DWORD fvf)
 }
 
 /* The texture stages. Under a plain transform (d9_fixed_prepare_draw) each
- * stage reads the oTn of its own number, whatever its index says, and the
- * only texture matrix is the program's scale: as under the program, the
- * title's own do not apply. */
+ * stage reads what the program sends to the oTn of its own number, whatever
+ * its index says, and the only texture matrix is the program's scale: as
+ * under the program, the title's own do not apply. */
 static void d9_ff_stages(const D3D8VshFixed *fixed)
 {
     UINT i;
@@ -1551,7 +1551,8 @@ static void d9_ff_stages(const D3D8VshFixed *fixed)
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG1, o.aa1);
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG2, o.aa2);
         rhi_d3d9_set_texture_stage(i, D3DTSS_TEXCOORDINDEX,
-                                   tss && !fixed ? tss[D3DTSS_TEXCOORDINDEX] : i);
+                                   fixed ? (DWORD)fixed->tex_coord[i]
+                                         : tss ? tss[D3DTSS_TEXCOORDINDEX] : i);
         if (tss) {
             DWORD k;
             for (k = D3DTSS_BUMPENVMAT00; k <= D3DTSS_BUMPENVMAT11; k++)
