@@ -67,6 +67,7 @@
 #include "../hle/recomp_mod.h"      /* what a mod is told of each draw */
 #include "rhi_d3d9.h"
 #include "rhi_shader_cache.h"
+#include "recomp_config.h"
 
 /* d3d8_compile.c: every backend shows each HLSL source to it first. */
 void d3d8_hlsl_note(const char *src, size_t len, const char *name,
@@ -387,6 +388,8 @@ static int     g_draw_title;          /* it was, for the draw in hand (mod_befor
 static int     g_title_2d;            /* and is screen-space */
 static int     g_title_said_2d;       /* the title's own test said so (rhi_d3d9_title_says_2d) */
 static float   g_title_2d_w;          /* and the draw's clip w, or 0 */
+static RhiShader *g_title_fixed;      /* the program it is, drawn by fixed function
+                                         (rhi_d3d9_title_fixed_transform), or NULL */
 static float   g_dev_world[16], g_dev_view[16];  /* WORLD and VIEW as the device has them */
 static int     g_title_offscreen;     /* the title's draw goes to a texture (rhi_d3d9_title_draw) */
 static DWORD   g_title_alpha_test;    /* its D3DRS_ALPHATESTENABLE */
@@ -2407,8 +2410,9 @@ static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, const void *indice
     d->title_2d = g_draw_title && g_title_said_2d;
     d->clip_w = g_title_2d_w;
     d->offscreen = g_title_offscreen;
-    d->program = g_b.vs != NULL;
-    d->program_id = g_b.vs ? g_b.vs->id : 0;
+    d->fixed_transform = g_draw_title && !g_b.vs && g_title_fixed;
+    d->program = g_b.vs != NULL || d->fixed_transform;
+    d->program_id = g_b.vs ? g_b.vs->id : d->fixed_transform ? g_title_fixed->id : 0;
     d->primitive = (uint32_t)type;
     d->primitives = prims;
     for (i = 0; i < 8; i++) {
@@ -2431,7 +2435,7 @@ static int mod_before_draw(D3DPRIMITIVETYPE type, UINT prims, const void *indice
     memcpy(d->projection, g_ff_proj, sizeof d->projection);
     memcpy(d->world, g_dev_world, sizeof d->world);
     memcpy(d->view, g_dev_view, sizeof d->view);
-    d->program_projection_set = g_b.vs && g_prog_proj_set;
+    d->program_projection_set = d->program && g_prog_proj_set;
     if (d->program_projection_set)
         memcpy(d->program_projection, g_prog_proj, sizeof d->program_projection);
     d->indexed = indices != NULL;
@@ -2723,14 +2727,39 @@ void rhi_d3d9_title_draw(int two_d, int offscreen)
     g_title_2d = two_d != 0;
     g_title_said_2d = 0;
     g_title_2d_w = 0.0f;
+    g_title_fixed = NULL;
 }
 
 void rhi_d3d9_title_says_2d(float w)
 {
-    if (!g_title_draw || g_b.vs)
+    if (!g_title_draw || g_b.vs || g_title_fixed)
         return;
     g_title_2d = g_title_said_2d = 1;
     g_title_2d_w = w;
+}
+
+static int g_fixed_asked;
+
+void rhi_d3d9_mod_fixed_transform(int on)
+{
+    g_fixed_asked = on != 0;
+}
+
+int rhi_d3d9_fixed_transform_on(void)
+{
+    static int setting = -2;
+
+    if (setting == -2) {
+        const char *v = recomp_config_lookup("RECOMP_D3D9_FIXED_TRANSFORM", "d3d9_fixed_transform");
+
+        setting = v && *v ? v[0] != '0' : -1;
+    }
+    return setting >= 0 ? setting : g_fixed_asked;
+}
+
+void rhi_d3d9_title_fixed_transform(RhiShader *program)
+{
+    g_title_fixed = program;
 }
 
 void rhi_d3d9_set_texture_stage(uint32_t stage, uint32_t type, uint32_t value)
@@ -2868,6 +2897,9 @@ const char *rhi_d3d9_attr_semantic(int reg, int *index)
 void rhi_d3d9_set_render_state(uint32_t state, uint32_t value) { (void)state; (void)value; }
 void rhi_d3d9_title_draw(int two_d, int offscreen) { (void)two_d; (void)offscreen; }
 void rhi_d3d9_title_says_2d(float w) { (void)w; }
+int rhi_d3d9_fixed_transform_on(void) { return 0; }
+void rhi_d3d9_title_fixed_transform(RhiShader *program) { (void)program; }
+void rhi_d3d9_mod_fixed_transform(int on) { (void)on; }
 int rhi_d3d9_mod_on_device(RecompModDeviceFn fn, void *user) { (void)fn; (void)user; return 0; }
 int rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, void *user)
 {

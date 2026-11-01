@@ -695,3 +695,186 @@ void nv2a_vsh_execute(const NV2AVshProgram *program,
     st->out[NV2A_VSH_OUT_POS][2] = st->temp[VSH_TEMP_OPOS][2];
     st->out[NV2A_VSH_OUT_POS][3] = st->temp[VSH_TEMP_OPOS][3];
 }
+
+/* ---- plain transforms ---------------------------------------------------- */
+
+static int src_is(const NV2AVshSrcOperand *s, NV2AVshRegType type)
+{
+    return s->reg_type == type && !s->negate && !s->rel_addr;
+}
+
+static int swizzle_is(const NV2AVshSrcOperand *s, int x, int y, int z, int w)
+{
+    return s->swizzle.x == x && s->swizzle.y == y && s->swizzle.z == z && s->swizzle.w == w;
+}
+
+static int src_plain(const NV2AVshSrcOperand *s, NV2AVshRegType type)
+{
+    return src_is(s, type) && swizzle_is(s, 0, 1, 2, 3);
+}
+
+/* The output a MAC slot writes, which may be oPos under its other name, R12;
+ * -1 if it writes none or a temporary as well. */
+static int dst_output(const NV2AVshDstOperand *d, int *mask)
+{
+    int omask = nv2a_vsh_output_write_mask(d);
+
+    if (d->output_reg != NV2A_VSH_OUT_NONE && omask && !(d->temp_reg >= 0 && d->write_mask)) {
+        *mask = omask;
+        return (int)d->output_reg;
+    }
+    if (d->temp_reg == VSH_TEMP_OPOS && d->write_mask) {
+        *mask = d->write_mask;
+        return NV2A_VSH_OUT_POS;
+    }
+    return -1;
+}
+
+/* One row of a matrix: a DP4 into component k of its target, with c[first + k].
+ * Rows may come in any order, but from one run of four registers. */
+static int matrix_row(const NV2AVshInstruction *in, int mask, int *first, unsigned *rows)
+{
+    int k;
+
+    if (!src_plain(&in->mac_src[1], NV2A_VSH_REG_CONST))
+        return 0;
+    for (k = 0; k < 4 && mask != (8 >> k); k++)
+        ;
+    if (k == 4 || (*rows & (1u << k)))
+        return 0;
+    if (!*rows)
+        *first = in->mac_src[1].reg_index - k;
+    if (*first < 0 || in->mac_src[1].reg_index != *first + k)
+        return 0;
+    *rows |= 1u << k;
+    return 1;
+}
+
+int nv2a_vsh_plain_transform(const NV2AVshProgram *program, NV2AVshPlainTransform *out)
+{
+    NV2AVshPlainTransform t;
+    unsigned mv_rows = 0, proj_rows = 0;
+    int mv_temp = -1, recip = 0, i, n;
+
+    memset(&t, 0, sizeof t);
+    t.position_input = t.modelview_reg = t.projection_reg = -1;
+    t.screen_scale_reg = t.screen_offset_reg = t.colour_input = -1;
+    for (n = 0; n < 4; n++)
+        t.tex_input[n] = t.tex_scale_reg[n] = -1;
+
+    for (i = 0; i < program->length; i++) {
+        const NV2AVshInstruction *in = &program->insns[i];
+        const NV2AVshSrcOperand *a = &in->mac_src[0];
+        int mask = 0, target = -1;
+
+        if (in->mac_op != NV2A_VSH_MAC_NOP)
+            target = dst_output(&in->mac_dst, &mask);
+        if (in->out_const_index >= 0)
+            return 0;
+        /* The one ILU operation allowed: the first screen line's. */
+        if (in->ilu_op != NV2A_VSH_ILU_NOP) {
+            if (in->ilu_op != NV2A_VSH_ILU_RCC || recip || in->mac_op != NV2A_VSH_MAC_MUL ||
+                in->ilu_dst.temp_reg != 1 || in->ilu_dst.write_mask != 8 ||
+                in->ilu_dst.output_reg != NV2A_VSH_OUT_NONE ||
+                !src_is(&in->ilu_src, NV2A_VSH_REG_TEMP) ||
+                in->ilu_src.reg_index != VSH_TEMP_OPOS || in->ilu_src.swizzle.x != 3)
+                return 0;
+            recip = 1;
+        }
+        switch (in->mac_op) {
+        case NV2A_VSH_MAC_NOP:
+            break;
+        case NV2A_VSH_MAC_DP4:
+            if (target == NV2A_VSH_OUT_POS) {
+                /* The projection, of the model-view's result or of the
+                 * position itself. */
+                if (src_plain(a, NV2A_VSH_REG_TEMP)) {
+                    if (a->reg_index != mv_temp || mv_rows != 0xF)
+                        return 0;
+                } else if (src_plain(a, NV2A_VSH_REG_INPUT)) {
+                    if (mv_temp >= 0 ||
+                        (t.position_input >= 0 && t.position_input != a->reg_index))
+                        return 0;
+                    t.position_input = a->reg_index;
+                } else {
+                    return 0;
+                }
+                if (!matrix_row(in, mask, &t.projection_reg, &proj_rows))
+                    return 0;
+            } else if (target < 0 && in->mac_dst.temp_reg >= 0 &&
+                       in->mac_dst.temp_reg < VSH_TEMP_OPOS &&
+                       in->mac_dst.output_reg == NV2A_VSH_OUT_NONE) {
+                /* The model-view, into a temporary. */
+                if (!src_plain(a, NV2A_VSH_REG_INPUT) || proj_rows ||
+                    (mv_temp >= 0 && mv_temp != in->mac_dst.temp_reg) ||
+                    (t.position_input >= 0 && t.position_input != a->reg_index))
+                    return 0;
+                mv_temp = in->mac_dst.temp_reg;
+                t.position_input = a->reg_index;
+                if (!matrix_row(in, in->mac_dst.write_mask, &t.modelview_reg, &mv_rows))
+                    return 0;
+            } else {
+                return 0;
+            }
+            break;
+        case NV2A_VSH_MAC_MOV:
+            if (mask != 0xF || !src_is(a, NV2A_VSH_REG_INPUT))
+                return 0;
+            if (target == NV2A_VSH_OUT_D0) {
+                if (t.colour_input >= 0)
+                    return 0;
+                if (swizzle_is(a, 2, 1, 0, 3))
+                    t.colour_swapped = 1;
+                else if (!swizzle_is(a, 0, 1, 2, 3))
+                    return 0;
+                t.colour_input = a->reg_index;
+            } else if (target >= NV2A_VSH_OUT_T0 && target <= NV2A_VSH_OUT_T3 &&
+                       swizzle_is(a, 0, 1, 2, 3)) {
+                n = target - NV2A_VSH_OUT_T0;
+                if (t.tex_input[n] >= 0)
+                    return 0;
+                t.tex_input[n] = a->reg_index;
+            } else {
+                return 0;
+            }
+            break;
+        case NV2A_VSH_MAC_MUL:
+            if (target >= NV2A_VSH_OUT_T0 && target <= NV2A_VSH_OUT_T3) {
+                n = target - NV2A_VSH_OUT_T0;
+                if (mask != 0xF || t.tex_input[n] >= 0 || !src_plain(a, NV2A_VSH_REG_INPUT) ||
+                    !src_plain(&in->mac_src[1], NV2A_VSH_REG_CONST))
+                    return 0;
+                t.tex_input[n] = a->reg_index;
+                t.tex_scale_reg[n] = in->mac_src[1].reg_index;
+            } else if (target == NV2A_VSH_OUT_POS) {
+                /* The first screen line, once the projection is done. */
+                if (mask != 0xE || proj_rows != 0xF || t.screen_scale_reg >= 0 || !recip ||
+                    !src_plain(a, NV2A_VSH_REG_TEMP) || a->reg_index != VSH_TEMP_OPOS ||
+                    !src_plain(&in->mac_src[1], NV2A_VSH_REG_CONST))
+                    return 0;
+                t.screen_scale_reg = in->mac_src[1].reg_index;
+            } else {
+                return 0;
+            }
+            break;
+        case NV2A_VSH_MAC_MAD:
+            /* The second screen line. */
+            if (target != NV2A_VSH_OUT_POS || mask != 0xE || t.screen_scale_reg < 0 ||
+                t.screen_offset_reg >= 0 ||
+                !src_plain(a, NV2A_VSH_REG_TEMP) || a->reg_index != VSH_TEMP_OPOS ||
+                !src_is(&in->mac_src[1], NV2A_VSH_REG_TEMP) || in->mac_src[1].reg_index != 1 ||
+                !swizzle_is(&in->mac_src[1], 0, 0, 0, 0) ||
+                !src_plain(&in->mac_src[2], NV2A_VSH_REG_CONST))
+                return 0;
+            t.screen_offset_reg = in->mac_src[2].reg_index;
+            break;
+        default:
+            return 0;
+        }
+    }
+    if (proj_rows != 0xF || t.position_input < 0 ||
+        (t.screen_scale_reg >= 0) != (t.screen_offset_reg >= 0))
+        return 0;
+    *out = t;
+    return 1;
+}

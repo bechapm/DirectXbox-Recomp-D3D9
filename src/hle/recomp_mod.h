@@ -44,7 +44,7 @@
 extern "C" {
 #endif
 
-#define RECOMP_MOD_API_VERSION 4
+#define RECOMP_MOD_API_VERSION 5
 
 /* ---- the Direct3D 9 renderer (RECOMP_D3D8_BACKEND=d3d9) ----
  *
@@ -94,6 +94,11 @@ typedef struct RecompModDraw {
     uint32_t index_bytes;           /* 2 or 4 */
     uint32_t index_count;
     int32_t  base_vertex;
+    int      fixed_transform;       /* the program (`program` is set) is a plain
+                                       transform and D3D9's fixed function draws
+                                       it (d3d9_fixed_transform): no vertex shader
+                                       is bound, WORLD is its model-view and VIEW
+                                       identity, and PROJECTION its projection */
 } RecompModDraw;
 
 #define RECOMP_DRAW_AS_IS 0         /* before's answers */
@@ -232,6 +237,16 @@ typedef struct RecompModApi {
      * (the base vertex, for an indexed draw). This is how a mod tells which
      * of the title's models a draw is: the title keeps its buffers. */
     uint32_t (*draw_vertex_buffer)(uint32_t *data, uint32_t *stride, uint32_t *first);
+
+    /* ---- version 5 ---- */
+
+    /* Have a vertex program that is only a plain transform drawn by D3D9's
+     * fixed-function pipeline: a matrix or two, a colour and coordinates
+     * passed on, nothing fixed function could not do. For a tool that reads
+     * the fixed-function transforms and otherwise has to read each vertex
+     * back out of the shader. Such a draw comes with fixed_transform set
+     * (RecompModDraw). RECOMP_D3D9_FIXED_TRANSFORM has the last word. */
+    void (*d3d9_fixed_transform)(int on);
 } RecompModApi;
 
 typedef int (*RecompModInitFn)(const RecompModApi *api);

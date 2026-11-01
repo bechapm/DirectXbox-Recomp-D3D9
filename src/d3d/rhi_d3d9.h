@@ -96,6 +96,15 @@ void rhi_d3d9_title_draw(int two_d, int offscreen);
  * draw's clip w (its depth in front of the camera), the same at every vertex
  * of such a draw, or 0 if not known. */
 void rhi_d3d9_title_says_2d(float w);
+/* Whether a vertex program that is a plain transform is drawn by the
+ * fixed-function pipeline: when a mod asked for it, or as
+ * RECOMP_D3D9_FIXED_TRANSFORM (settings file d3d9_fixed_transform) says, 0
+ * never and 1 always. Off without a mod, since D3D9 itself gains nothing and
+ * has no depth clamp there: a vertex past the far plane is cut. */
+int  rhi_d3d9_fixed_transform_on(void);
+/* After rhi_d3d9_title_draw: the next draw is that program's, so drawn;
+ * mods are told it is the program's all the same (RecompModDraw). */
+void rhi_d3d9_title_fixed_transform(RhiShader *program);
 void rhi_d3d9_set_texture_stage(uint32_t stage, uint32_t type, uint32_t value);
 /* A row-vector matrix, D3DMATRIX order (m[row * 4 + column]). */
 void rhi_d3d9_set_transform(uint32_t type, const float m[16]);
@@ -158,6 +167,7 @@ int  rhi_d3d9_mod_on_draw(RecompModBeforeDraw before, RecompModAfterDraw after, 
 int  rhi_d3d9_mod_on_clear(RecompModClearFn fn, void *user);
 int  rhi_d3d9_mod_on_present(RecompModDeviceFn fn, void *user);
 int  rhi_d3d9_mod_vertex_hlsl(const char *hlsl);
+void rhi_d3d9_mod_fixed_transform(int on);
 int  rhi_d3d9_mod_render_state(uint32_t state, uint32_t *value);
 void rhi_d3d9_mod_set_projection(const float m[16]);
 void rhi_d3d9_mod_remake_written_textures(int on);

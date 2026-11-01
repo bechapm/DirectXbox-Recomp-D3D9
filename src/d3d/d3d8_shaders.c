@@ -1469,11 +1469,12 @@ static void d9_ff_lights_and_material(void)
     }
 }
 
+static void d9_ff_stages(const D3D8VshFixed *fixed);
+
 static void d9_ff_prepare_draw(DWORD fvf)
 {
     float proj[16];
     RhiVertexLayout *layout;
-    UINT i;
 
     rhi_set_shader(RHI_STAGE_VERTEX, NULL);
     rhi_set_shader(RHI_STAGE_PIXEL, NULL);
@@ -1514,13 +1515,23 @@ static void d9_ff_prepare_draw(DWORD fvf)
     }
     rhi_d3d9_set_transform(D3DTS_PROJECTION, proj);
     d9_title_states(fvf, 0);
+    d9_ff_stages(NULL);
+}
 
-    /* The texture stages. Stages after the first one disabled are not
-     * reached, and stages 4-7 are left as D3D9 starts them, disabled. */
+/* The texture stages. Under a plain transform (d9_fixed_prepare_draw) each
+ * stage reads the oTn of its own number, whatever its index says, and the
+ * only texture matrix is the program's scale: as under the program, the
+ * title's own do not apply. */
+static void d9_ff_stages(const D3D8VshFixed *fixed)
+{
+    UINT i;
+
+    /* Stages after the first one disabled are not reached, and stages 4-7
+     * are left as D3D9 starts them, disabled. */
     for (i = 0; i < 4; i++) {
         IDirect3DBaseTexture8 *tex = d3d8_GetStageTexture(i);
         const DWORD *tss = d3d8_GetTSS(i);
-        DWORD ttff = tss ? tss[D3DTSS_TEXTURETRANSFORMFLAGS] : D3DTTFF_DISABLE;
+        DWORD ttff = tss && !fixed ? tss[D3DTSS_TEXTURETRANSFORMFLAGS] : D3DTTFF_DISABLE;
         float m[16], sx, sy;
         D9StageOps o;
 
@@ -1539,7 +1550,8 @@ static void d9_ff_prepare_draw(DWORD fvf)
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAOP, d9_top(o.aop));
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG1, o.aa1);
         rhi_d3d9_set_texture_stage(i, D3DTSS_ALPHAARG2, o.aa2);
-        rhi_d3d9_set_texture_stage(i, D3DTSS_TEXCOORDINDEX, tss ? tss[D3DTSS_TEXCOORDINDEX] : i);
+        rhi_d3d9_set_texture_stage(i, D3DTSS_TEXCOORDINDEX,
+                                   tss && !fixed ? tss[D3DTSS_TEXCOORDINDEX] : i);
         if (tss) {
             DWORD k;
             for (k = D3DTSS_BUMPENVMAT00; k <= D3DTSS_BUMPENVMAT11; k++)
@@ -1552,6 +1564,12 @@ static void d9_ff_prepare_draw(DWORD fvf)
             memcpy(m, g_d9_identity, sizeof m);
         else
             memcpy(m, d3d8_GetTransform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + i)), sizeof m);
+        if (fixed && fixed->tex_scaled[i]) {
+            m[0] = fixed->tex_scale[i][0];
+            m[5] = fixed->tex_scale[i][1];
+            m[10] = fixed->tex_scale[i][2];
+            ttff = D3DTTFF_COUNT2;
+        }
         /* The combiners' shader scales its own (tex_scale). */
         if (!d3d8_combiners_active() && d9_texel_scale(tex, &sx, &sy)) {
             int r;
@@ -1871,6 +1889,94 @@ static void d9_shutdown(void)
     g_d9_ps_count = 0;
 }
 
+/* A plain transform drawn by D3D9's fixed-function pipeline, for a tool that
+ * rebuilds a scene from the fixed-function transforms and must otherwise
+ * read every vertex back out of a shader (rhi_d3d9_fixed_transform_on,
+ * docs/technical/d3d9-backend.md). The program is bound already, and its
+ * vertex declaration stays: it names what fixed function needs. WORLD is the
+ * program's model-view and VIEW identity, which draws the same; a mod that
+ * knows the camera moves it from one to the other. Returns 0 to stay a
+ * program, with nothing changed. */
+static int g_d9_colour_swap = -1;
+
+enum { D9_FIXED_FOG = D3D8_FIXED_LAYOUT + 1, D9_FIXED_TEXTURE, D9_FIXED_COMBINERS, D9_FIXED_REASONS };
+
+static void d9_fixed_count(int reason)
+{
+    static const char *const why[D9_FIXED_REASONS] = {
+        "drawn fixed", "not plain", "W buffer", "screen lines", "vertex layout", "fog",
+        "stage texture", "register combiners too large",
+    };
+    static unsigned long seen[D9_FIXED_REASONS], total;
+    int i;
+
+    if (!seen[reason]++)
+        fprintf(stderr, "[D3D9] plain transforms: first %s\n", why[reason]);
+    if (++total % 500000 != 0)
+        return;
+    fprintf(stderr, "[D3D9] plain transforms, of %lu program draws:", total);
+    for (i = 0; i < D9_FIXED_REASONS; i++)
+        if (seen[i])
+            fprintf(stderr, " %s %lu,", why[i], seen[i]);
+    fputc('\n', stderr);
+}
+
+static int d9_fixed_prepare_draw(void)
+{
+    const DWORD *rs = d3d8_GetRenderStates();
+    D3D8VshFixed f;
+    RhiShader *program = d3d8_vsh_bound_shader();
+    int why = d3d8_vsh_fixed_for_draw(&f);
+    UINT i;
+
+    if (why != D3D8_FIXED_YES) {
+        d9_fixed_count(why);
+        return 0;
+    }
+    /* A program's fog is worked out in its pixel shader, which Shader Model 2
+     * under fixed function does not do. */
+    if (!rs || rs[D3DRS_FOGENABLE]) {
+        d9_fixed_count(D9_FIXED_FOG);
+        return 0;
+    }
+    /* A stage reading coordinates the program does not write, or scaled
+     * coordinates beyond the two a 2D texture takes. */
+    for (i = 0; i < 4; i++) {
+        IDirect3DBaseTexture8 *tex = d3d8_GetStageTexture(i);
+
+        if (tex && (!f.tex_written[i] ||
+                    (f.tex_scaled[i] && IDirect3DBaseTexture8_GetType(tex) != D3DRTYPE_TEXTURE))) {
+            d9_fixed_count(D9_FIXED_TEXTURE);
+            return 0;
+        }
+    }
+
+    rhi_set_shader(RHI_STAGE_VERTEX, NULL);
+    rhi_set_shader(RHI_STAGE_PIXEL, NULL);
+    rhi_d3d9_set_transform(D3DTS_WORLD, f.modelview);
+    rhi_d3d9_set_transform(D3DTS_VIEW, g_d9_identity);
+    rhi_d3d9_set_transform(D3DTS_PROJECTION, f.projection);
+    d9_title_states(0, 0);
+    d9_ff_stages(&f);
+    g_draw_is_program = 0;
+    if (d3d8_combiners_active() && !d3d8_combiners_prepare_draw()) {
+        /* The combiners do not fit Shader Model 2. */
+        d3d8_vsh_fixed_undo();
+        g_draw_is_program = 1;
+        d9_fixed_count(D9_FIXED_COMBINERS);
+        return 0;
+    }
+    g_d9_colour_swap = f.colour_swap_offset;
+    d9_fixed_count(D3D8_FIXED_YES);
+    rhi_d3d9_title_fixed_transform(program);
+    return 1;
+}
+
+int d3d8_shaders_colour_swap_offset(void)
+{
+    return g_d9_colour_swap;
+}
+
 /* The pixel stage is the register combiners' shader when the title set a
  * combiner program (ps_3_0 under a vertex program, ps_2_x under fixed
  * function: NV2ACombinerState.host), and the texture stages otherwise --
@@ -1879,10 +1985,14 @@ static void d9_prepare_draw(DWORD handle)
 {
     int two_d;
 
+    g_d9_colour_swap = -1;
     if (d3d8_vsh_prepare_draw(handle)) {
         g_draw_is_program = 1;
         two_d = !d3d8_vsh_bound_uses_projection() || d3d8_vsh_bound_projection_is_ortho();
         d3d8_SetTwoDSqueeze(two_d);
+        rhi_d3d9_title_draw(two_d, !d3d8_target_is_back_buffer());
+        if (!two_d && rhi_d3d9_fixed_transform_on() && d9_fixed_prepare_draw())
+            return;
         d9_title_states(0, 1);
         if (!d3d8_combiners_prepare_draw())
             d9_program_ps();
@@ -1891,8 +2001,8 @@ static void d9_prepare_draw(DWORD handle)
         two_d = d3d8_fvf_transformed(handle);
         d3d8_SetTwoDSqueeze(two_d);
         d3d8_combiners_prepare_draw();
+        rhi_d3d9_title_draw(two_d, !d3d8_target_is_back_buffer());
     }
-    rhi_d3d9_title_draw(two_d, !d3d8_target_is_back_buffer());
 }
 
 void d3d8_shaders_prepare_draw(DWORD handle)

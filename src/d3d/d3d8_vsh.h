@@ -265,6 +265,38 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle);
  * ignore declaration entries the program never reads. */
 uint16_t d3d8_vsh_inputs_read(DWORD handle);
 
+/* The bound program as D3D9's fixed-function pipeline would draw it, for a
+ * program that is a plain transform (nv2a_vsh_plain_transform), in D3D's
+ * row-vector form. */
+typedef struct D3D8VshFixed {
+    float modelview[16];
+    float projection[16];       /* Hor+, the camera zoom and the program's screen
+                                   lines (its depth range) applied */
+    int   colour_swap_offset;   /* where the vertex's colour is, when its red and
+                                   blue have to change places for fixed function,
+                                   which reads a D3DCOLOR; else -1 */
+    int   tex_written[4];       /* the program writes oTn */
+    int   tex_scaled[4];        /* multiplied by tex_scale[n] */
+    float tex_scale[4][4];
+} D3D8VshFixed;
+
+/* Why a program draw stays a program: */
+enum {
+    D3D8_FIXED_YES,             /* it need not */
+    D3D8_FIXED_NOT_PLAIN,       /* something else, or one combined matrix: nothing
+                                   to give WORLD and PROJECTION apart */
+    D3D8_FIXED_W_BUFFER,        /* its depth is W, as fixed function's is not */
+    D3D8_FIXED_SCREEN,          /* its screen lines and the undo do not go together */
+    D3D8_FIXED_LAYOUT,          /* its vertex has what it reads in a form fixed
+                                   function does not take, or not at all */
+};
+
+/* After prepare_draw: fills f for the bound program, or says why not. */
+int  d3d8_vsh_fixed_for_draw(D3D8VshFixed *f);
+/* The program prepare_draw bound, and putting it back. */
+RhiShader *d3d8_vsh_bound_shader(void);
+void d3d8_vsh_fixed_undo(void);
+
 /* Whether the program bound by the last prepare_draw transforms through
  * the projection's first column. False means it draws in screen
  * coordinates of its own -- the HUD, a menu, a full-screen quad. */

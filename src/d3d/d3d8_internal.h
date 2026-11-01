@@ -377,6 +377,9 @@ void    d3d8_shaders_prepare_draw(DWORD handle);
 /* Whether the draw d3d8_shaders_prepare_draw last prepared runs a vertex
  * program (its oFog is then a fog coordinate, not a factor). */
 int     d3d8_shaders_draw_is_program(void);
+/* Where in a vertex the prepared draw needs red and blue exchanged, for a
+ * plain transform drawn by fixed function; -1 for none. */
+int     d3d8_shaders_colour_swap_offset(void);
 /* Whether a program's W-buffered draw (D3DZB_USEW) writes W into the host
  * depth as the NV2A does (RECOMP_D3D8_WBUFFER, on unless 0), d3d8_vsh.c. */
 int     d3d8_vsh_wbuffer_on(void);

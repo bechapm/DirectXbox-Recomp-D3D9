@@ -146,6 +146,7 @@ static const RecompModApi g_api = {
     .replay_on_note               = api_replay_on_note,
     .d3d9_on_copy                 = rhi_d3d9_mod_on_copy,
     .draw_vertex_buffer           = api_draw_vertex_buffer,
+    .d3d9_fixed_transform         = rhi_d3d9_mod_fixed_transform,
 };
 
 /* ---- loading ---------------------------------------------------------------- */

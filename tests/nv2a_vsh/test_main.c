@@ -349,8 +349,246 @@ static void test_exp_log_are_partial_precision(void)
           && d1[3] == 1.0f, "LOG gives (exponent, mantissa, log2|x|, 1)");
 }
 
+/* ---- plain transforms: programs built slot by slot ---- */
+
+static NV2AVshInstruction *slot(void)
+{
+    NV2AVshInstruction *in = &g_prog.insns[g_prog.length++];
+    int i;
+
+    memset(in, 0, sizeof *in);
+    in->mac_dst.temp_reg = in->ilu_dst.temp_reg = -1;
+    in->mac_dst.output_reg = in->ilu_dst.output_reg = NV2A_VSH_OUT_NONE;
+    in->out_const_index = -1;
+    for (i = 0; i < 3; i++) {
+        in->mac_src[i].swizzle.y = 1;
+        in->mac_src[i].swizzle.z = 2;
+        in->mac_src[i].swizzle.w = 3;
+    }
+    return in;
+}
+
+static void set_src(NV2AVshSrcOperand *s, NV2AVshRegType type, int index)
+{
+    s->reg_type = type;
+    s->reg_index = index;
+}
+
+static void out_op(NV2AVshMacOp op, NV2AVshOutputReg reg, int mask, NV2AVshRegType type, int index,
+                   int const_reg)
+{
+    NV2AVshInstruction *in = slot();
+
+    in->mac_op = op;
+    in->mac_dst.output_reg = reg;
+    in->mac_dst.output_mask = (uint8_t)mask;
+    set_src(&in->mac_src[0], type, index);
+    if (const_reg >= 0)
+        set_src(&in->mac_src[1], NV2A_VSH_REG_CONST, const_reg);
+}
+
+/* dp4 r<temp>.<k>, v<input>, c[reg + k] */
+static void modelview(int temp, int input, int reg)
+{
+    int k;
+
+    for (k = 0; k < 4; k++) {
+        NV2AVshInstruction *in = slot();
+
+        in->mac_op = NV2A_VSH_MAC_DP4;
+        in->mac_dst.temp_reg = temp;
+        in->mac_dst.write_mask = (uint8_t)(8 >> k);
+        set_src(&in->mac_src[0], NV2A_VSH_REG_INPUT, input);
+        set_src(&in->mac_src[1], NV2A_VSH_REG_CONST, reg + k);
+    }
+}
+
+/* dp4 oPos.<k>, <from>, c[reg + k] */
+static void projection(NV2AVshRegType type, int index, int reg)
+{
+    int k;
+
+    for (k = 0; k < 4; k++)
+        out_op(NV2A_VSH_MAC_DP4, NV2A_VSH_OUT_POS, 8 >> k, type, index, reg + k);
+}
+
+static void screen_lines(int scale, int offset)
+{
+    NV2AVshInstruction *in;
+
+    out_op(NV2A_VSH_MAC_MUL, NV2A_VSH_OUT_POS, 0xE, NV2A_VSH_REG_TEMP, 12, scale);
+    in = &g_prog.insns[g_prog.length - 1];
+    in->ilu_op = NV2A_VSH_ILU_RCC;
+    in->ilu_dst.temp_reg = 1;
+    in->ilu_dst.write_mask = 8;
+    set_src(&in->ilu_src, NV2A_VSH_REG_TEMP, 12);
+    in->ilu_src.swizzle.x = 3;
+    in = slot();
+    in->mac_op = NV2A_VSH_MAC_MAD;
+    in->mac_dst.output_reg = NV2A_VSH_OUT_POS;
+    in->mac_dst.output_mask = 0xE;
+    set_src(&in->mac_src[0], NV2A_VSH_REG_TEMP, 12);
+    set_src(&in->mac_src[1], NV2A_VSH_REG_TEMP, 1);
+    in->mac_src[1].swizzle.y = in->mac_src[1].swizzle.z = in->mac_src[1].swizzle.w = 0;
+    set_src(&in->mac_src[2], NV2A_VSH_REG_CONST, offset);
+}
+
+static void colour(int input, int swapped)
+{
+    NV2AVshInstruction *in;
+
+    out_op(NV2A_VSH_MAC_MOV, NV2A_VSH_OUT_D0, 0xF, NV2A_VSH_REG_INPUT, input, -1);
+    in = &g_prog.insns[g_prog.length - 1];
+    if (swapped) {
+        in->mac_src[0].swizzle.x = 2;
+        in->mac_src[0].swizzle.z = 0;
+    }
+}
+
+/* The program a level's walls are drawn with: model-view into a temporary,
+ * colour, projection, scaled coordinates, the two screen lines. */
+static void plain_world(void)
+{
+    g_prog.length = 0;
+    modelview(0, 1, 64);
+    colour(2, 1);
+    projection(NV2A_VSH_REG_TEMP, 0, 60);
+    out_op(NV2A_VSH_MAC_MUL, NV2A_VSH_OUT_T0, 0xF, NV2A_VSH_REG_INPUT, 3, 11);
+    screen_lines(58, 59);
+}
+
+static void test_plain_transform_found(void)
+{
+    NV2AVshPlainTransform t;
+
+    plain_world();
+    CHECK(nv2a_vsh_plain_transform(&g_prog, &t), "a level's wall program is plain");
+    CHECK(t.position_input == 1 && t.modelview_reg == 64 && t.projection_reg == 60,
+          "position, model-view and projection are found");
+    CHECK(t.colour_input == 2 && t.colour_swapped, "the colour is found, with red and blue swapped");
+    CHECK(t.tex_input[0] == 3 && t.tex_scale_reg[0] == 11, "the scaled coordinates are found");
+    CHECK(t.tex_input[1] == -1 && t.tex_scale_reg[1] == -1, "an unwritten oTn is -1");
+    CHECK(t.screen_scale_reg == 58 && t.screen_offset_reg == 59, "the screen lines are found");
+
+    /* One matrix for both, nothing else, colour as it stands. */
+    g_prog.length = 0;
+    projection(NV2A_VSH_REG_INPUT, 0, 96);
+    colour(3, 0);
+    out_op(NV2A_VSH_MAC_MOV, NV2A_VSH_OUT_T1, 0xF, NV2A_VSH_REG_INPUT, 9, -1);
+    CHECK(nv2a_vsh_plain_transform(&g_prog, &t), "one combined matrix is plain");
+    CHECK(t.modelview_reg == -1 && t.projection_reg == 96 && t.position_input == 0,
+          "a combined matrix has no model-view");
+    CHECK(t.colour_input == 3 && !t.colour_swapped, "a colour left as it is stays unswapped");
+    CHECK(t.tex_input[1] == 9 && t.tex_scale_reg[1] == -1, "unscaled coordinates have no scale");
+    CHECK(t.screen_scale_reg == -1, "no screen lines, none found");
+
+    /* The rows in another order are the same matrix. */
+    g_prog.length = 0;
+    {
+        static const int order[4] = { 2, 0, 3, 1 };
+        int i;
+
+        for (i = 0; i < 4; i++)
+            out_op(NV2A_VSH_MAC_DP4, NV2A_VSH_OUT_POS, 8 >> order[i], NV2A_VSH_REG_INPUT, 0,
+                   20 + order[i]);
+    }
+    CHECK(nv2a_vsh_plain_transform(&g_prog, &t) && t.projection_reg == 20,
+          "matrix rows may come in any order");
+}
+
+static void test_plain_transform_refused(void)
+{
+    NV2AVshPlainTransform t;
+    NV2AVshInstruction *in;
+
+    g_prog.length = 0;
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "an empty program places nothing");
+
+    /* The 2D programs: oPos copied from an input. */
+    g_prog.length = 0;
+    out_op(NV2A_VSH_MAC_MOV, NV2A_VSH_OUT_POS, 0xF, NV2A_VSH_REG_INPUT, 1, -1);
+    colour(2, 0);
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a position copied as it is has no matrix");
+
+    /* Sprites: the model-view's result moved by another input. */
+    g_prog.length = 0;
+    modelview(0, 1, 64);
+    in = slot();
+    in->mac_op = NV2A_VSH_MAC_ADD;
+    in->mac_dst.temp_reg = 0;
+    in->mac_dst.write_mask = 0xC;
+    set_src(&in->mac_src[0], NV2A_VSH_REG_TEMP, 0);
+    set_src(&in->mac_src[2], NV2A_VSH_REG_INPUT, 4);
+    projection(NV2A_VSH_REG_TEMP, 0, 60);
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a sprite's offset is no plain transform");
+
+    /* Anything else a slot does. */
+    plain_world();
+    out_op(NV2A_VSH_MAC_MOV, NV2A_VSH_OUT_FOG, 0x8, NV2A_VSH_REG_INPUT, 0, -1);
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a fog write is refused");
+
+    plain_world();
+    out_op(NV2A_VSH_MAC_MOV, NV2A_VSH_OUT_D1, 0xF, NV2A_VSH_REG_INPUT, 2, -1);
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a second colour is refused");
+
+    plain_world();
+    in = slot();
+    in->mac_op = NV2A_VSH_MAC_DP3;
+    in->mac_dst.temp_reg = 3;
+    in->mac_dst.write_mask = 8;
+    set_src(&in->mac_src[0], NV2A_VSH_REG_INPUT, 5);
+    set_src(&in->mac_src[1], NV2A_VSH_REG_CONST, 64);
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "rotating a normal is refused");
+
+    plain_world();
+    g_prog.insns[0].mac_src[1].rel_addr = 1;
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a matrix read through a0 is refused");
+
+    plain_world();
+    g_prog.insns[1].mac_src[1].negate = 1;
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a negated row is refused");
+
+    plain_world();
+    g_prog.insns[2].mac_src[1].reg_index = 70;
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "rows from two matrices are refused");
+
+    plain_world();
+    g_prog.insns[0].mac_src[1].swizzle.x = 1;
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a swizzled row is refused");
+
+    plain_world();
+    g_prog.insns[4].mac_src[0].swizzle.x = 3;       /* .wyxw */
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a colour order the vertex cannot hold is refused");
+
+    /* A model-view that is one row short, then projected. */
+    g_prog.length = 0;
+    modelview(0, 1, 64);
+    g_prog.length = 3;
+    projection(NV2A_VSH_REG_TEMP, 0, 60);
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a three-row model-view is refused");
+
+    /* The projection one row short. */
+    plain_world();
+    g_prog.length = 0;
+    modelview(0, 1, 64);
+    out_op(NV2A_VSH_MAC_DP4, NV2A_VSH_OUT_POS, 8, NV2A_VSH_REG_TEMP, 0, 60);
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a projection one row short is refused");
+
+    /* Half of the screen lines. */
+    plain_world();
+    g_prog.length--;
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "the first screen line alone is refused");
+
+    /* A write into a constant register. */
+    plain_world();
+    g_prog.insns[4].out_const_index = 5;
+    CHECK(!nv2a_vsh_plain_transform(&g_prog, &t), "a write to a constant is refused");
+}
+
 int main(void)
 {
+    test_plain_transform_found();
+    test_plain_transform_refused();
     test_exp_log_are_partial_precision();
     test_frontend_decode();
     test_frontend_execute();

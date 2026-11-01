@@ -1494,6 +1494,36 @@ static UINT up_ring_upload(UpRing *ring, const void *data, UINT size)
     return offset;
 }
 
+/* The vertices of a prepared draw as the host needs them: a plain transform
+ * drawn by fixed function reads a D3DCOLOR where the program it replaces
+ * swizzled the colour (d3d8_shaders_colour_swap_offset). */
+static const void *up_vertices(const void *data, UINT size, UINT stride)
+{
+    static BYTE *copy;
+    static UINT room;
+    int at = d3d8_shaders_colour_swap_offset();
+    UINT i;
+
+    if (at < 0 || (UINT)at + 4 > stride)
+        return data;
+    if (size > room) {
+        BYTE *more = (BYTE *)realloc(copy, size);
+
+        if (!more)
+            return data;
+        copy = more;
+        room = size;
+    }
+    memcpy(copy, data, size);
+    for (i = (UINT)at; i + 4 <= size; i += stride) {
+        BYTE r = copy[i];
+
+        copy[i] = copy[i + 2];
+        copy[i + 2] = r;
+    }
+    return copy;
+}
+
 /* RECOMP_D3D8_STAGE0_PROBE=<n>: the host image bound at texture stage 0
  * for the n-th draw since the device was made, read back and written as
  * stage0_draw<n>.bmp in the working directory. It reads what the GPU will
@@ -1759,17 +1789,18 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
 
     vb_size = vertex_count * VertexStreamZeroStride;
 
+    /* Vertex shader: try programmable VS first, fall back to FVF fixed-function */
+    d3d8_shaders_prepare_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
+
     /* Upload to ring buffer */
-    ring_offset = up_ring_upload(&g_up_vertex_ring, draw_data, vb_size);
+    ring_offset = up_ring_upload(&g_up_vertex_ring,
+                                 up_vertices(draw_data, vb_size, VertexStreamZeroStride), vb_size);
     if (converted) free(converted);
 
     if (ring_offset == (UINT)-1) return E_OUTOFMEMORY;
 
     /* Bind ring buffer at the right offset */
     rhi_set_vertex_buffer(0, g_up_vertex_ring.buffer, VertexStreamZeroStride, ring_offset);
-
-    /* Vertex shader: try programmable VS first, fall back to FVF fixed-function */
-    d3d8_shaders_prepare_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
 
     /* Where a screen-space draw goes in widescreen: squeezed to 4:3 with
      * the HUD, or spanning the picture like a backdrop or a fade. After
@@ -1813,19 +1844,20 @@ static HRESULT __stdcall dev_DrawIndexedPrimitiveUP(IDirect3DDevice8 *self, D3DP
     vb_size = NumVertices * VertexStreamZeroStride;
     ib_size = index_count * idx_bytes;
 
+    /* Vertex shader: try programmable VS first, fall back to FVF fixed-function */
+    d3d8_shaders_prepare_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
+
     /* Append vertices and indices to their rings; the draw reads them at
      * the returned offsets. */
-    vb_offset = up_ring_upload(&g_up_vertex_ring, pVertexData, vb_size);
+    vb_offset = up_ring_upload(&g_up_vertex_ring,
+                               up_vertices(pVertexData, vb_size, VertexStreamZeroStride), vb_size);
     if (vb_offset == (UINT)-1) return E_OUTOFMEMORY;
     ib_offset = up_ring_upload(&g_up_index_ring, pIndexData, ib_size);
     if (ib_offset == (UINT)-1) return E_OUTOFMEMORY;
 
-    /* Bind, prepare, draw */
+    /* Bind, then draw */
     rhi_set_vertex_buffer(0, g_up_vertex_ring.buffer, VertexStreamZeroStride, vb_offset);
     rhi_set_index_buffer(g_up_index_ring.buffer, idx_bytes * 8, ib_offset);
-
-    /* Vertex shader: try programmable VS first, fall back to FVF fixed-function */
-    d3d8_shaders_prepare_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
 
     /* Where a screen-space draw goes in widescreen: squeezed to 4:3 with
      * the HUD, or spanning the picture like a backdrop or a fade. After

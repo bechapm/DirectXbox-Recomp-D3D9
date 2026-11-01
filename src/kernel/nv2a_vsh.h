@@ -222,6 +222,34 @@ void nv2a_vsh_execute(const NV2AVshProgram *program,
  */
 uint8_t nv2a_vsh_output_write_mask(const NV2AVshDstOperand *dst);
 
+/**
+ * What a plain transform does, in registers: a program that does nothing to
+ * a vertex a fixed-function pipeline could not do. It takes a position through
+ * a model-view matrix and a projection (or one matrix that is both), sends one
+ * colour to oD0, and sends coordinates to oTn as they are or scaled by a
+ * constant. It may end with the XDK's two lines that take clip space to the
+ * screen (mul oPos.xyz, r12, c : rcc r1.x, r12.w; mad oPos.xyz, r12, r1.x, c).
+ */
+typedef struct NV2AVshPlainTransform {
+    int position_input;     /* the input that is the position */
+    int modelview_reg;      /* first of its four constants; -1 when one matrix
+                               does both, in projection_reg */
+    int projection_reg;     /* first of its four constants */
+    int screen_scale_reg;   /* the two lines' constants, or -1 without them */
+    int screen_offset_reg;
+    int colour_input;       /* what reaches oD0, or -1 */
+    int colour_swapped;     /* it arrives as .zyxw: red and blue change places */
+    int tex_input[4];       /* what reaches oTn, or -1 */
+    int tex_scale_reg[4];   /* the constant oTn is multiplied by, or -1 */
+} NV2AVshPlainTransform;
+
+/**
+ * Whether a parsed program is a plain transform, and if so which registers it
+ * uses. Anything else in the program, or anything negated, swizzled otherwise
+ * or read through a0, answers 0.
+ */
+int nv2a_vsh_plain_transform(const NV2AVshProgram *program, NV2AVshPlainTransform *out);
+
 #ifdef __cplusplus
 }
 #endif

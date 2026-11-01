@@ -111,6 +111,8 @@ typedef struct {
     int                 pos_offset;   /* or -1 for a straight copy (see g_emit_pos_scale) */
     uint64_t            const_read[3];/* constant registers read by index, a bit each */
     int                 const_indexed;/* reads through a0: any register, as far as known */
+    int                 plain;        /* a plain transform (nv2a_vsh_plain_transform): */
+    NV2AVshPlainTransform plain_regs; /* its registers */
 } VshCacheEntry;
 
 static VshCacheEntry g_vsh_cache[NV2A_VS_CACHE_SIZE];
@@ -151,6 +153,12 @@ static int g_emit_proj_reg = -1;
 /* The same fact about the program currently bound, for the draw path: the
  * register Hor+ widens for its draws, and whether it is 3D at all. */
 static int g_bound_proj_reg = -1;
+
+/* And for drawing it as a plain transform (d3d8_vsh_fixed_for_draw). */
+static RhiShader *g_bound_vs;
+static const NV2AVshPlainTransform *g_bound_plain;
+static float g_bound_proj[16];          /* D3D's row-vector form */
+static int   g_bound_proj_known;
 
 int d3d8_vsh_bound_uses_projection(void) { return g_bound_proj_reg >= 0; }
 
@@ -1669,6 +1677,7 @@ static VshCacheEntry *compile_shader(const DWORD *microcode, int num_insns,
     entry->pos_offset  = g_emit_pos_offset;
     memcpy(entry->const_read, g_emit_const_read, sizeof entry->const_read);
     entry->const_indexed = g_emit_const_indexed;
+    entry->plain = nv2a_vsh_plain_transform(&program, &entry->plain_regs);
     entry->layout_count = 0;
 
     fprintf(stderr, "D3D8 VSH: Compiled shader (hash 0x%08X, %d insns, inputs 0x%04X)\n",
@@ -2471,6 +2480,7 @@ static void d3d9_program_projection(void)
 
     if (!rhi_d3d9_active())
         return;
+    g_bound_proj_known = 0;
     if (reg < 0 || reg + 3 >= NV2A_VS_MAX_CONSTANTS) {
         rhi_d3d9_program_projection(NULL);
         return;
@@ -2488,6 +2498,107 @@ static void d3d9_program_projection(void)
             proj[row * 4 + col] = v;
         }
     rhi_d3d9_program_projection(proj);
+    memcpy(g_bound_proj, proj, sizeof g_bound_proj);
+    g_bound_proj_known = 1;
+}
+
+/* Where an input is in the vertex, and that it is there at all as `want`
+ * (any float format, for RHI_FORMAT_UNKNOWN). */
+static const D3D8VshInput *fixed_input(int reg, RhiFormat want)
+{
+    int i;
+
+    for (i = 0; i < g_bound_decl_count; i++) {
+        const D3D8VshInput *in = &g_bound_decl[i];
+
+        if (in->reg != reg)
+            continue;
+        if (want != RHI_FORMAT_UNKNOWN ? in->format == want
+                                       : in->format != RHI_FORMAT_B8G8R8A8_UNORM)
+            return in;
+        return NULL;
+    }
+    return NULL;
+}
+
+/* What the program's two screen lines leave after the screen-space undo: they
+ * take clip space to s * p / w + o with the program's constants, and the undo
+ * divides by its own. Each of x, y and z is then s / undo.s * p + (o - undo.o)
+ * / undo.s * w, which a projection can do. A title's depth range shows here:
+ * the undo goes to the whole depth buffer and the program to what the viewport
+ * gave it. Returns 0 if the undo is not one. */
+static int fold_screen_lines(float proj[16], int scale_reg, int offset_reg)
+{
+    int axis, row;
+
+    for (axis = 0; axis < 3; axis++) {
+        float us = g_vsh_screen.scale[axis];
+        float s, o;
+
+        if (us == 0.0f)
+            return 0;
+        s = g_vsh_constants.c[scale_reg][axis] / us;
+        o = (g_vsh_constants.c[offset_reg][axis] - g_vsh_screen.offset[axis]) / us;
+        for (row = 0; row < 4; row++)
+            proj[row * 4 + axis] = proj[row * 4 + axis] * s + proj[row * 4 + 3] * o;
+    }
+    return 1;
+}
+
+/* d3d8_vsh.h. */
+int d3d8_vsh_fixed_for_draw(D3D8VshFixed *f)
+{
+    const NV2AVshPlainTransform *t = g_bound_plain;
+    const D3D8VshInput *in;
+    int n, row, col;
+
+    if (!t || t->modelview_reg < 0 || !g_bound_decl || !g_bound_proj_known ||
+        t->projection_reg != g_bound_proj_reg)
+        return D3D8_FIXED_NOT_PLAIN;
+    /* Fixed function cannot write W to the depth buffer. */
+    if (g_vsh_screen.enable[1] != 0.0f)
+        return D3D8_FIXED_W_BUFFER;
+    /* Screen lines and the undo go together. */
+    if ((t->screen_scale_reg >= 0) != (g_vsh_screen.enable[0] != 0.0f))
+        return D3D8_FIXED_SCREEN;
+    if (!fixed_input(t->position_input, RHI_FORMAT_R32G32B32_FLOAT))
+        return D3D8_FIXED_LAYOUT;
+
+    memset(f, 0, sizeof *f);
+    memcpy(f->projection, g_bound_proj, sizeof f->projection);
+    if (t->screen_scale_reg >= 0 &&
+        !fold_screen_lines(f->projection, t->screen_scale_reg, t->screen_offset_reg))
+        return D3D8_FIXED_SCREEN;
+    f->colour_swap_offset = -1;
+    if (t->colour_input >= 0) {
+        in = fixed_input(t->colour_input, RHI_FORMAT_B8G8R8A8_UNORM);
+        if (!in)
+            return D3D8_FIXED_LAYOUT;
+        if (t->colour_swapped)
+            f->colour_swap_offset = (int)in->offset;
+    }
+    for (n = 0; n < 4; n++) {
+        f->tex_written[n] = t->tex_input[n] >= 0;
+        if (f->tex_written[n] && !fixed_input(t->tex_input[n], RHI_FORMAT_UNKNOWN))
+            return D3D8_FIXED_LAYOUT;
+        f->tex_scaled[n] = t->tex_scale_reg[n] >= 0;
+        if (f->tex_scaled[n])
+            memcpy(f->tex_scale[n], g_vsh_constants.c[t->tex_scale_reg[n]], sizeof f->tex_scale[n]);
+    }
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 4; col++)
+            f->modelview[row * 4 + col] = g_vsh_constants.c[t->modelview_reg + col][row];
+    return D3D8_FIXED_YES;
+}
+
+void d3d8_vsh_fixed_undo(void)
+{
+    rhi_set_shader(RHI_STAGE_VERTEX, g_bound_vs);
+}
+
+RhiShader *d3d8_vsh_bound_shader(void)
+{
+    return g_bound_vs;
 }
 
 BOOL d3d8_vsh_prepare_draw(DWORD handle)
@@ -2550,6 +2661,8 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
     g_bound_pos_offset = entry->pos_offset;
     g_bound_decl = vsh->decl_count ? vsh->decl : NULL;
     g_bound_decl_count = vsh->decl_count;
+    g_bound_vs = entry->vs;
+    g_bound_plain = entry->plain ? &entry->plain_regs : NULL;
 
     /* Bind the input layout: the program's declaration when it has one,
      * otherwise sized from the bound stream FVF */
