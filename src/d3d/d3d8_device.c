@@ -2042,6 +2042,14 @@ static void rebind_stage_srvs(RhiImage *target)
     }
 }
 
+/* Every stage bound again as SetTexture left it, for d3d8_screencopy.c,
+ * whose copy binds a texture as a target and may swap the view a texture
+ * is sampled through. */
+void d3d8_rebind_stage_textures(void)
+{
+    rebind_stage_srvs(g_cur_rt ? g_cur_rt->image : NULL);
+}
+
 static HRESULT __stdcall dev_SetRenderTarget(IDirect3DDevice8 *self, IDirect3DSurface8 *pRenderTarget, IDirect3DSurface8 *pZStencilSurface)
 {
     (void)self;
@@ -2090,6 +2098,9 @@ static HRESULT __stdcall dev_SetRenderTarget(IDirect3DDevice8 *self, IDirect3DSu
 
     rtv = rt ? rt->rtv : g_device_state.rhi_default_rtv;
     dsv = ds ? ds->dsv : NULL;
+    /* Drawn into, a texture holds what is drawn, not the last screen copy. */
+    if (rt)
+        d3d8_screencopy_forget_image(rt->image);
     rhi_set_render_target(rtv, dsv);
     rebind_stage_srvs(rt ? rt->image : NULL);
     return S_OK;

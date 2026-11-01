@@ -334,6 +334,11 @@ HRESULT d3d8_CreateImageSurfaceImpl(UINT Width, UINT Height, D3DFORMAT Format,
  * D3D8Texture, and the image likewise. */
 RhiView  *d3d8_base_srv(IDirect3DBaseTexture8 *texture);
 RhiImage *d3d8_base_resource(IDirect3DBaseTexture8 *texture);
+/* d3d8_screencopy.c: a texture the frame is copied into is sampled through a
+ * copy at the scene's resolution until something else writes it. */
+void d3d8_screencopy_forget_image(RhiImage *image);
+void d3d8_screencopy_forget_texture(D3D8Texture *tex);
+void d3d8_rebind_stage_textures(void);   /* d3d8_device.c */
 
 /* Read the D3DFORMAT of any base texture. */
 D3DFORMAT d3d8_base_format(IDirect3DBaseTexture8 *texture);

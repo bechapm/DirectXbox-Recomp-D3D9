@@ -1074,6 +1074,7 @@ static ULONG __stdcall tex_Release(IDirect3DTexture8 *self)
     D3D8Texture *tex = tex_from_iface(self);
     LONG ref = InterlockedDecrement(&tex->ref_count);
     if (ref <= 0) {
+        d3d8_screencopy_forget_texture(tex);   /* gives it back its own view */
         rhi_view_destroy(tex->srv);
         rhi_image_destroy(tex->image);
         free(tex->sys_mem);
@@ -1317,6 +1318,7 @@ static HRESULT __stdcall sf_UnlockRect(IDirect3DSurface8 *self)
         box.back = 1;
         rhi_image_update(sf->image, sf->subresource, &box,
                          sf->locked_bits, (uint32_t)sf->locked_pitch, 0);
+        d3d8_screencopy_forget_image(sf->image);
     }
 
     free(sf->locked_bits);
@@ -1481,6 +1483,7 @@ static void d3d8_upload_mip_level(RhiImage *image, D3DFORMAT fmt,
     }
 
     rhi_image_update(image, subresource, NULL, upload_data, upload_pitch, upload_pitch * rows);
+    d3d8_screencopy_forget_image(image);    /* it holds the upload now */
 
     if (linear) free(linear);
     if (converted) free(converted);
