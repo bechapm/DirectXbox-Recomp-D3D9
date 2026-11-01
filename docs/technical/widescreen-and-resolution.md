@@ -567,3 +567,70 @@ Not done: the vertical zoom is not recorded in a frame capture, so a replay of a
 widescreen frame draws the title's own viewports; and a HUD placed this way sits
 in the centre 4:3 block (`XBOX_D3D8_2D_SIDE` would pin it to the edges, but it
 does not let a whole-screen fade span the picture).
+
+## 9. Any shape, and resolution by lines (Nov 2026)
+
+Widescreen was one shape, 16:9, and resolution was a whole-number multiple of the
+guest's size. Players with ultrawide (21:9, 32:9) or 16:10 screens want the picture
+their screen is, and players think of resolution as 1080p or 1440p, not as "3x".
+Both are now settings, read in `src/config/recomp_config.c`:
+
+| Setting | File | Environment | Meaning |
+| --- | --- | --- | --- |
+| Shape | `aspect_ratio` | `RECOMP_ASPECT` | The picture's shape *with widescreen on*: `16:9` (the default), `16:10`, `21:9`, `32:9`, any `W:H` or `WxH`, a plain number, or `screen` for the shape of the screen the game runs on. Narrower than 4:3 is read as 16:9. Clamped to 4:1 |
+| Lines | `resolution` | `RECOMP_RESOLUTION` | The lines rendered, e.g. `1080`; `screen` for the screen's own height. Without it, `resolution_scale` (`RECOMP_RES_SCALE`) times the guest's height, as before. Either environment variable wins over both lines of the file |
+
+`widescreen` is still the switch. The launcher's Aspect ratio row writes it off for
+4:3 and on, with `aspect_ratio`, for anything wider, and its Resolution row writes
+`resolution` and the nearest `resolution_scale`, so a build from before either line
+reads the file as the nearest thing it knows.
+
+```
+              guest frame (640x480, 4:3)
+                        |
+   resolution lines --> scene, rendered at the picture's shape with square pixels
+                        |     (1440 lines at 21:9 = 3360x1440; at 4:3, 1920x1440)
+                        |
+     3D draws: Hor+ factor (4/3)/aspect on the projection, or the title's own camera
+     2D draws: squeezed by the same factor about the middle, or pinned to an edge
+                        |
+                 resolve, box filtered with taps counted per axis
+                        |
+                    the window (bars where its shape differs)
+```
+
+What follows from it:
+
+- **The scene is rendered at the picture's shape** (`d3d8_display_scene_size`, through
+  `recomp_scene_size`). Before, a widescreen frame was rendered 4:3 and stretched at
+  present, which at 21:9 would have been 1.75 times softer across than down. A
+  frame the title calls 4:3 (`xbox_D3D8SetWideFrames`) is drawn into the same wide
+  scene and resolved into a 4:3 box, so it is supersampled across. With widescreen
+  off and a whole-number scale the scene is exactly guest times scale, as always.
+- **The Hor+ factor is (4/3)/aspect**: 0.75 at 16:9, 0.571 at 21:9, 0.375 at 32:9
+  (`recomp_hor_plus_for_aspect`). A title that widens its own camera
+  (`xbox_D3D8ClaimHorPlus`) gets the factor for the shape chosen and needs no change.
+- **The 2D squeeze is the guest's shape over the picture's** (`two_d_squeeze` in
+  `d3d8_device.c`), so a HUD laid out for 4:3 stays in proportion at any shape, and
+  a piece pinned LEFT or RIGHT goes to the edge of the wider picture.
+- **A title with a 16:9 mode of its own is shown at 16:9 at most**, between bars on a
+  wider screen (`d3d8_display_shown_aspect`). Its camera is its own and only knows
+  16:9. A HOR_PLUS title, or one with `hor_plus` set by hand, is shown at any shape.
+  That is decided every frame, because a title that widens its own camera says so
+  late. The launcher offers 4:3 and 16:9 only to a title that has not declared
+  `recomp_title_widescreen(HOR_PLUS ...)`.
+- **A movie is fitted to the shape its buffer is shown at**, so it stays 4:3
+  between bars in a wide frame rather than stretching.
+- **"screen" is the desktop mode in real pixels**: on Windows `recomp_config.c` asks
+  `EnumDisplaySettings` (primary screen, whatever the DPI scaling); under SDL the host
+  and the launcher call `recomp_set_screen_size` when video starts, before the device
+  is made.
+- **The scene is never larger than 16384 either way** (`RECOMP_SCENE_MAX_SIZE`); a
+  choice past it is scaled down keeping its shape. 32:9 at 4320 lines is 15360 wide.
+
+A 4:3-only title widened past 16:9 shows what its makers never meant to be seen,
+most of all in cutscenes framed for 4:3: geometry ending, characters waiting off to
+the side. That is the price of the shape and not something the toolkit can know.
+
+Tests: `tests/config_smoke` covers the parsing, the factor, the scene and window
+sizes and which line wins.
