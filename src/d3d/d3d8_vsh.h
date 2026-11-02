@@ -291,10 +291,14 @@ enum {
     D3D8_FIXED_SCREEN,          /* its screen lines and the undo do not go together */
     D3D8_FIXED_LAYOUT,          /* its vertex has what it reads in a form fixed
                                    function does not take, or not at all */
+    D3D8_FIXED_COLOUR,          /* its colour needs red and blue exchanged, and the
+                                   vertices are the title's vertex buffer */
 };
 
-/* After prepare_draw: fills f for the bound program, or says why not. */
-int  d3d8_vsh_fixed_for_draw(D3D8VshFixed *f);
+/* After prepare_draw: fills f for the bound program, or says why not.
+ * vertices_copied: the draw's vertices are a copy the caller can change
+ * (colour_swap_offset), as a vertex buffer's are not. */
+int  d3d8_vsh_fixed_for_draw(D3D8VshFixed *f, int vertices_copied);
 /* The program prepare_draw bound, and putting it back. */
 RhiShader *d3d8_vsh_bound_shader(void);
 void d3d8_vsh_fixed_undo(void);

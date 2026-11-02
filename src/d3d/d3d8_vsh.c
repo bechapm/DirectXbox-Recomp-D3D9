@@ -2547,7 +2547,7 @@ static int fold_screen_lines(float proj[16], int scale_reg, int offset_reg)
 }
 
 /* d3d8_vsh.h. */
-int d3d8_vsh_fixed_for_draw(D3D8VshFixed *f)
+int d3d8_vsh_fixed_for_draw(D3D8VshFixed *f, int vertices_copied)
 {
     const NV2AVshPlainTransform *t = g_bound_plain;
     const D3D8VshInput *in;
@@ -2575,8 +2575,11 @@ int d3d8_vsh_fixed_for_draw(D3D8VshFixed *f)
         in = fixed_input(t->colour_input, RHI_FORMAT_B8G8R8A8_UNORM);
         if (!in)
             return D3D8_FIXED_LAYOUT;
-        if (t->colour_swapped)
+        if (nv2a_vsh_plain_needs_copy(t)) {
+            if (!vertices_copied)
+                return D3D8_FIXED_COLOUR;
             f->colour_swap_offset = (int)in->offset;
+        }
     }
     for (n = 0; n < 4; n++) {
         f->tex_written[n] = t->tex_input[n] >= 0;

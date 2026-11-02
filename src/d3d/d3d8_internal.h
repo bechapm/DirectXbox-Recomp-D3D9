@@ -374,6 +374,9 @@ void    d3d8_shaders_shutdown(void);
 
 /* Select programmable/FVF vertex state and refresh fixed-function pixel state. */
 void    d3d8_shaders_prepare_draw(DWORD handle);
+/* The same for a draw whose vertices the caller copies (up_vertices), and so
+ * can change. */
+void    d3d8_shaders_prepare_up_draw(DWORD handle);
 /* Whether the draw d3d8_shaders_prepare_draw last prepared runs a vertex
  * program (its oFog is then a fog coordinate, not a factor). */
 int     d3d8_shaders_draw_is_program(void);

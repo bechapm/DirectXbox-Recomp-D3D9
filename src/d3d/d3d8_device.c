@@ -1790,7 +1790,7 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
     vb_size = vertex_count * VertexStreamZeroStride;
 
     /* Vertex shader: try programmable VS first, fall back to FVF fixed-function */
-    d3d8_shaders_prepare_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
+    d3d8_shaders_prepare_up_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
 
     /* Upload to ring buffer */
     ring_offset = up_ring_upload(&g_up_vertex_ring,
@@ -1845,7 +1845,7 @@ static HRESULT __stdcall dev_DrawIndexedPrimitiveUP(IDirect3DDevice8 *self, D3DP
     ib_size = index_count * idx_bytes;
 
     /* Vertex shader: try programmable VS first, fall back to FVF fixed-function */
-    d3d8_shaders_prepare_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
+    d3d8_shaders_prepare_up_draw(g_device_state.vertex_shader);  /* VS, then the combiner PS or the fixed-function one */
 
     /* Append vertices and indices to their rings; the draw reads them at
      * the returned offsets. */

@@ -1899,14 +1899,16 @@ static void d9_shutdown(void)
  * knows the camera moves it from one to the other. Returns 0 to stay a
  * program, with nothing changed. */
 static int g_d9_colour_swap = -1;
+static int g_d9_vertices_copied;    /* d3d8_shaders_prepare_up_draw */
 
-enum { D9_FIXED_FOG = D3D8_FIXED_LAYOUT + 1, D9_FIXED_TEXTURE, D9_FIXED_COMBINERS, D9_FIXED_MOD, D9_FIXED_REASONS };
+enum { D9_FIXED_FOG = D3D8_FIXED_COLOUR + 1, D9_FIXED_TEXTURE, D9_FIXED_COMBINERS, D9_FIXED_MOD, D9_FIXED_REASONS };
 
 static void d9_fixed_count(int reason)
 {
     static const char *const why[D9_FIXED_REASONS] = {
-        "drawn fixed", "not plain", "W buffer", "screen lines", "vertex layout", "fog",
-        "stage texture", "register combiners too large", "a mod's choice",
+        "drawn fixed", "not plain", "W buffer", "screen lines", "vertex layout",
+        "colour in a vertex buffer", "fog", "stage texture", "register combiners too large",
+        "a mod's choice",
     };
     static unsigned long seen[D9_FIXED_REASONS], total;
     int i;
@@ -1927,7 +1929,7 @@ static int d9_fixed_prepare_draw(void)
     const DWORD *rs = d3d8_GetRenderStates();
     D3D8VshFixed f;
     RhiShader *program = d3d8_vsh_bound_shader();
-    int why = d3d8_vsh_fixed_for_draw(&f);
+    int why = d3d8_vsh_fixed_for_draw(&f, g_d9_vertices_copied);
     UINT i;
 
     if (why != D3D8_FIXED_YES) {
@@ -2009,6 +2011,13 @@ static void d9_prepare_draw(DWORD handle)
         d3d8_combiners_prepare_draw();
         rhi_d3d9_title_draw(two_d, !d3d8_target_is_back_buffer());
     }
+}
+
+void d3d8_shaders_prepare_up_draw(DWORD handle)
+{
+    g_d9_vertices_copied = 1;
+    d3d8_shaders_prepare_draw(handle);
+    g_d9_vertices_copied = 0;
 }
 
 void d3d8_shaders_prepare_draw(DWORD handle)

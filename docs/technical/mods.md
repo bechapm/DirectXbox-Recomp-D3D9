@@ -217,7 +217,7 @@ renderer. ✓ works, – does nothing (or returns 0 / NULL).
 | `title_id`, `title_name` | any time | ✓ | ✓ | ✓ | |
 | `guest_pointer` | any time | ✓ | ✓ | – (NULL) | |
 | `on_frame` | after each frame is shown | ✓ | ✓ | ✓ | 16 |
-| `vertex_constants` | inside a draw hook | ✓ | ✓ | – (0) | |
+| `vertex_constants` | inside a draw hook; the title's registers, also on a `fixed_transform` draw | ✓ | ✓ | – (0) | |
 | `log` | any time | ✓ | ✓ | ✓ | |
 | `d3d9_on_device` | once, device made | – | ✓ | ✓ | 8 |
 | `d3d9_on_draw` | before and after each draw | – | ✓ | ✓ | 8 |
@@ -230,7 +230,7 @@ renderer. ✓ works, – does nothing (or returns 0 / NULL).
 | `d3d9_remake_written_textures` | from init | – | ✓ | ✓ | |
 | `d3d9_on_copy` | before each screen copy | – | ✓ | ✓ | 8 |
 | `draw_vertex_buffer` (v4) | inside a draw hook | – | ✓ | – (0) | |
-| `d3d9_fixed_transform` (v5) | once the device is made | – | ✓ | ✓ | |
+| `d3d9_fixed_transform` (v5) | once the device is made; see the warning under [Changing a draw](#changing-a-draw) | – | ✓ | ✓ | |
 | `replaying` | any time | ✓ (0) | ✓ (0) | ✓ (1) | |
 | `capture_on_draw`, `capture_note` | while a capture is made | – | ✓ | – | 8 |
 | `replay_on_note` | during a replay | – | – | ✓ | 8 |
@@ -276,6 +276,17 @@ transforms. Such a draw still says `program` and its `program_id`, and adds
 `fixed_transform`: no vertex shader is bound, `world` is the program's model-view
 and `view` identity. `keep`, if given, is asked first with the title's depth
 state, and a 0 leaves that draw a program. Without the call nothing changes.
+
+**On a `fixed_transform` draw the device's vertex shader constants are stale.**
+Fixed function reads no registers, so none are sent for it, and
+`GetVertexShaderConstantF` answers with whichever program drew last, usually
+another object's matrix. It fails quietly: a mod that places a draw from those
+registers gets a position that looks reasonable and is wrong by that other
+object's transform. Read `world` from the draw, which works in a replay too, or
+use `vertex_constants` live. The vertex declaration and stream 0 stay as the
+program left them. A program that changes its colour stays a program when its
+vertices are the title's vertex buffer, since only a copy can be changed; the log's
+`colour in a vertex buffer` counts those.
 
 **Example: hide the title's 2D**, for clean screenshots.
 
@@ -605,6 +616,7 @@ flowchart TD
 | `loaded`, but draw hooks never run | the game is not on the D3D9 renderer | `RECOMP_D3D8_BACKEND=d3d9` |
 | a hook registration returns 0 | that hook's limit is full across mods | fewer mods, or one hook dispatching to several handlers |
 | the picture is wrong after the mod's draw | `after` did not put back what `before` changed | restore every state you set |
+| a mod's measurements of draws go wrong only with `d3d9_fixed_transform` on, and only in some rooms | it reads the device's vertex shader constants, which are stale on a `fixed_transform` draw | read `world` from the draw (see [Changing a draw](#changing-a-draw)) |
 
 ## Keeping this guide current
 

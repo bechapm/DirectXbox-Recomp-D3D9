@@ -466,6 +466,7 @@ static void test_plain_transform_found(void)
     CHECK(t.position_input == 1 && t.modelview_reg == 64 && t.projection_reg == 60,
           "position, model-view and projection are found");
     CHECK(t.colour_input == 2 && t.colour_swapped, "the colour is found, with red and blue swapped");
+    CHECK(nv2a_vsh_plain_needs_copy(&t), "a swapped colour needs a copy of the vertices");
     CHECK(t.tex_input[0] == 3 && t.tex_scale_reg[0] == 11, "the scaled coordinates are found");
     CHECK(t.tex_input[1] == -1 && t.tex_scale_reg[1] == -1, "an unwritten oTn is -1");
     CHECK(t.screen_scale_reg == 58 && t.screen_offset_reg == 59, "the screen lines are found");
@@ -479,6 +480,11 @@ static void test_plain_transform_found(void)
     CHECK(t.modelview_reg == -1 && t.projection_reg == 96 && t.position_input == 0,
           "a combined matrix has no model-view");
     CHECK(t.colour_input == 3 && !t.colour_swapped, "a colour left as it is stays unswapped");
+    CHECK(!nv2a_vsh_plain_needs_copy(&t), "a colour left as it is can be read from a vertex buffer");
+    t.colour_input = -1;
+    t.colour_swapped = 1;
+    CHECK(!nv2a_vsh_plain_needs_copy(&t), "no colour needs no copy");
+    CHECK(nv2a_vsh_plain_transform(&g_prog, &t), "the program is unchanged");
     CHECK(t.tex_input[1] == 9 && t.tex_scale_reg[1] == -1, "unscaled coordinates have no scale");
     CHECK(t.screen_scale_reg == -1, "no screen lines, none found");
 

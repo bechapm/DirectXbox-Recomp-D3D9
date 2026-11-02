@@ -750,6 +750,11 @@ static int matrix_row(const NV2AVshInstruction *in, int mask, int *first, unsign
     return 1;
 }
 
+int nv2a_vsh_plain_needs_copy(const NV2AVshPlainTransform *t)
+{
+    return t->colour_input >= 0 && t->colour_swapped;
+}
+
 int nv2a_vsh_plain_transform(const NV2AVshProgram *program, NV2AVshPlainTransform *out)
 {
     NV2AVshPlainTransform t;

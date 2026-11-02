@@ -250,6 +250,10 @@ typedef struct NV2AVshPlainTransform {
  */
 int nv2a_vsh_plain_transform(const NV2AVshProgram *program, NV2AVshPlainTransform *out);
 
+/* Whether fixed function can draw it only from a copy of its vertices: the
+ * program changes the colour, and fixed function reads what is in the vertex. */
+int nv2a_vsh_plain_needs_copy(const NV2AVshPlainTransform *t);
+
 #ifdef __cplusplus
 }
 #endif
