@@ -79,6 +79,11 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle) { (void)handle; return FALSE; }
 int  d3d8_vsh_bound_uses_projection(void) { return 1; }
 int  d3d8_vsh_bound_projection_is_ortho(void) { return 0; }
 float d3d8_vsh_hor_plus_for_draw(void) { return 1.0f; }
+/* d3d8_shaders.c's fixed-function path for a plain transform: no program is
+ * bound here, so a draw always stays a program. */
+int  d3d8_vsh_fixed_for_draw(D3D8VshFixed *f, int vertices_copied) { (void)f; (void)vertices_copied; return D3D8_FIXED_NOT_PLAIN; }
+RhiShader *d3d8_vsh_bound_shader(void) { return NULL; }
+void d3d8_vsh_fixed_undo(void) {}
 DWORD d3d8_GetCurrentFVF(void) { return 0; }
 void d3d8_SetTwoDSqueeze(BOOL on) { (void)on; }
 
