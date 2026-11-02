@@ -87,6 +87,13 @@ title's project has said:
 | Nothing | As `NATIVE`, with a line in the log saying nobody has said. |
 | `recomp_add_launcher(... NO_WIDESCREEN)` | The launcher does not offer it. |
 
+**Any shape (Nov 2026).** With widescreen on, `aspect_ratio` says the shape: 16:9 by
+default, or 16:10, 21:9, 32:9, the screen's own. The launcher's Aspect ratio row
+replaces the Widescreen row (4:3 is off). Where the table says 16:9 and 0.75, read the
+shape and (4/3)/shape for a HOR_PLUS title; a NATIVE or undescribed one stays at 16:9
+at most and is offered only 4:3 and 16:9. `resolution` gives the lines rendered (1080,
+1440, `screen`), the width following the shape. `widescreen-and-resolution.md`, section 9.
+
 A title nobody has described is treated as having its own 16:9 mode because that is what
 `widescreen = 1` alone has always done, it is right for every title that has one, and the
 other guess is worse: scaling c[60] of an unexamined title corrupts whatever it keeps

@@ -19,6 +19,8 @@
  *                    its snapshot.
  *   --dump-every     write a BMP after every loop, not just the last, so a
  *                    frame that is not idempotent shows itself.
+ *   --panel-3d       as if every placement had XBOX_D3D8_2D_PANEL_3D, for a
+ *                    capture older than the flag.
  *   --hold           leave the window up until it is closed (on Windows,
  *                    or with --window).
  *   --window         (macOS) present into a real window rather than the
@@ -55,7 +57,7 @@
  *                    scripts/replay_ab.py.
  *   --place <tag>=<p>  replay the title's widescreen 2D placement for tag
  *                    (hex, or "all") as p: auto, stretch, centre, left,
- *                    right, side or edge. Repeatable. Needs RECOMP_WIDESCREEN=1 to show,
+ *                    right, side, edge, spread or fill. Repeatable. Needs RECOMP_WIDESCREEN=1 to show,
  *                    and is how a title project tries its placement table
  *                    on a captured frame instead of a run.
  *   --solo-tag <tag> draw the untagged draws (the 3D) and only this tag's
@@ -370,6 +372,8 @@ static void note(const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
+
+static int g_panel_3d;
 
 /* ------------------------------------------------------------------ window */
 
@@ -1509,11 +1513,12 @@ static void replay_chunk(Replay *r, const D3D8CapChunk *c)
         }
         for (k = 0; k < g_place_count; k++)
             if (g_place[k].all || g_place[k].tag == p->tag)
-                placement = g_place[k].placement;
+                placement = g_place[k].placement |
+                            ((int)p->placement & (XBOX_D3D8_2D_PANEL_3D | XBOX_D3D8_2D_PANEL_ANCHORED));
         if (g_list_draws)
             fprintf(stderr, "[2d placement] tag %08lX: %d%s\n", (unsigned long)p->tag,
                     placement, placement != (int)p->placement ? " (from --place)" : "");
-        xbox_D3D8SetTwoDPlacement(placement, p->tag);
+        xbox_D3D8SetTwoDPlacement(placement | (g_panel_3d ? XBOX_D3D8_2D_PANEL_3D : 0), p->tag);
         break;
     }
     case D3D8CAP_SCISSORS: {
@@ -1846,6 +1851,8 @@ static int replay_main(int argc, char **argv)
             present = 1;
         else if (!strcmp(argv[i], "--backend") && i + 1 < argc)
             backend = argv[++i];
+        else if (!strcmp(argv[i], "--panel-3d"))
+            g_panel_3d = 1;
         else if (!strcmp(argv[i], "--list-draws"))
             g_list_draws = 1;
         else if (!strcmp(argv[i], "--dump-target"))
@@ -1872,7 +1879,8 @@ static int replay_main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--place") && i + 1 < argc) {
             const char *a = argv[++i], *eq = strchr(a, '=');
-            static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side", "edge" };
+            static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side", "edge",
+                                           "spread", "fill" };
             const int n = (int)(sizeof names / sizeof names[0]);
             int p;
 

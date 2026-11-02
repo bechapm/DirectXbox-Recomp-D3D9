@@ -156,7 +156,8 @@ int            recomp_title_mouse_look(void);
 
 /* The 4:3-to-16:9 Hor+ factor, (4/3)/(16/9): the projection's x scale is
  * multiplied by it, which widens the horizontal field of view and leaves
- * the vertical alone. */
+ * the vertical alone. For any other picture shape it is (4/3)/aspect
+ * (recomp_hor_plus_for_aspect). */
 #define RECOMP_HOR_PLUS_16_9   0.75
 /* The projection register when nobody names one: TimeSplitters 2's, and
  * the value every settings file was written with before a title could
@@ -199,6 +200,14 @@ void recomp_widescreen_resolve(RecompWidescreen *out);
 void recomp_widescreen_resolve_from(int on, const char *hor_plus, const char *reg,
                                     RecompWideMode mode, int title_register,
                                     RecompWidescreen *out);
+/* The same for a picture `aspect` wide (width over height; 0 is 16:9): an
+ * auto hor_plus is then (4/3)/aspect, so a HOR_PLUS title at 21:9 sees
+ * further to the sides than at 16:9 and the same distance up and down.
+ * recomp_widescreen_resolve uses the player's aspect ratio
+ * (recomp_widescreen_aspect); the plain _from is this at 16:9. */
+void recomp_widescreen_resolve_aspect_from(int on, const char *hor_plus, const char *reg,
+                                           RecompWideMode mode, int title_register,
+                                           double aspect, RecompWidescreen *out);
 
 /* Whether the console tells the title it is on a 16:9 set (the EEPROM's
  * XC_VIDEO flag, the AV pack's widescreen bits): widescreen is on and the
@@ -210,6 +219,78 @@ void recomp_widescreen_resolve_from(int on, const char *hor_plus, const char *re
 int recomp_widescreen_guest_flag(void);
 int recomp_widescreen_guest_flag_from(int on, RecompWideMode mode);
 
+/* ------------------------------------------------------- picture shape */
+
+/* The shape of the picture in widescreen, and how many lines are rendered.
+ *
+ * Widescreen used to be one shape, 16:9. A player with an ultrawide (21:9,
+ * 32:9) or a 16:10 screen wants the picture their screen is, and a title
+ * whose camera the runtime widens (HOR_PLUS) can give it to them at any
+ * shape: the camera is widened by (4/3)/aspect, the 2D layer is kept in
+ * proportion by the same factor, and the scene is rendered that wide, so
+ * nothing is stretched. A title with a 16:9 mode of its own has only that
+ * one, and is shown at 16:9 at most, between bars on a wider screen.
+ *
+ *   aspect_ratio  RECOMP_ASPECT / aspect_ratio: the shape in widescreen.
+ *                 "16:9" (the default), "16:10", "21:9", "32:9", any other
+ *                 "W:H" or "WxH" (3440x1440), a plain number (2.39), or
+ *                 "screen" for the shape of the screen the game runs on.
+ *                 Only read with widescreen on: off is the console's 4:3.
+ *   resolution    RECOMP_RESOLUTION / resolution: the lines rendered, e.g.
+ *                 1080 or 1440, the width following the shape; "screen" for
+ *                 the screen's own height. Absent or 0: the guest's height
+ *                 times resolution_scale (RECOMP_RES_SCALE), as before. Either
+ *                 environment variable wins over both lines in the file. */
+
+/* The shapes offered by name. Narrower than 4:3 is not a widescreen. */
+#define RECOMP_ASPECT_4_3      (4.0 / 3.0)
+#define RECOMP_ASPECT_16_9     (16.0 / 9.0)
+#define RECOMP_ASPECT_MAX      4.0      /* past 32:9, and room to spare */
+/* The most lines and columns the scene may have: the texture size every
+ * backend here can make (D3D11 feature level 11, D3D9 on any card that
+ * runs RTX Remix, Vulkan's guaranteed minimum is smaller but no desktop
+ * driver stops below it). A larger choice is scaled down to fit, keeping
+ * its shape. */
+#define RECOMP_SCENE_MAX_SIZE  16384
+#define RECOMP_RESOLUTION_MAX  8640
+/* resolution = screen, in RecompSettings. */
+#define RECOMP_RESOLUTION_SCREEN (-1)
+
+/* The screen the game runs on, in pixels: its desktop mode, not a DPI-
+ * scaled size. On Windows this library asks for itself (the primary
+ * screen); elsewhere the host that owns the display says, at start-up,
+ * before the device is made (recomp_set_screen_size). 0 when unknown. */
+void recomp_set_screen_size(int w, int h);
+int  recomp_screen_size(int *w, int *h);
+
+/* `v` as a shape, width over height: 0 if it is not one, or is narrower
+ * than 4:3. "screen" is `screen_w` / `screen_h` (0 if those are not
+ * known). Clamped to RECOMP_ASPECT_MAX. */
+double recomp_aspect_parse(const char *v, int screen_w, int screen_h);
+
+/* The shape the picture is presented at in widescreen, from the settings:
+ * 16:9 unless aspect_ratio says otherwise. Not whether widescreen is on. */
+double recomp_widescreen_aspect(void);
+
+/* The Hor+ factor for a picture `aspect` wide: (4/3)/aspect, 0.75 at 16:9,
+ * 1 for anything 4:3 or narrower. */
+double recomp_hor_plus_for_aspect(double aspect);
+
+/* `v` as a number of lines: 0 if absent, not a number, or "auto";
+ * RECOMP_RESOLUTION_SCREEN for "screen". */
+int recomp_resolution_parse(const char *v);
+
+/* The lines the scene is rendered at for a guest `guest_h` tall, from the
+ * settings (above); "screen" with no screen known is the guest's height
+ * times the scale. Never above RECOMP_RESOLUTION_MAX. */
+int recomp_render_height(int guest_h);
+
+/* The scene's size for a guest of guest_w x guest_h, rendered `lines` tall
+ * at `aspect` (0: the guest's own shape). Pure, for the tests and the
+ * launcher; the renderer passes it the settings. Never larger than
+ * RECOMP_SCENE_MAX_SIZE either way. */
+void recomp_scene_size(int guest_w, int guest_h, int lines, double aspect, int *w, int *h);
+
 /* -------------------------------------------------------------- window */
 
 /* The game window's client size when it opens: the guest's own height, at
@@ -220,6 +301,9 @@ int recomp_widescreen_guest_flag_from(int on, RecompWideMode mode);
  * xbox_D3D8DefaultWindowSize gives it the widescreen switch it presents
  * with. A guest size of 0 is 640x480. */
 void recomp_window_size(int guest_w, int guest_h, int widescreen, int *w, int *h);
+/* The same at `aspect` (width over height) rather than 16:9; 0 or 4:3 and
+ * narrower is the guest's own shape. */
+void recomp_window_size_aspect(int guest_w, int guest_h, double aspect, int *w, int *h);
 
 /* Shrink `w` x `h` to fit inside `max_w` x `max_h`, keeping its shape --
  * the room the screen it opens on has for a client area. Never grows it,
@@ -240,8 +324,11 @@ void recomp_window_fit(int max_w, int max_h, int *w, int *h);
  * through the lookups above -- that keeps the environment override
  * visible where each setting is used -- but the file's shape is here. */
 typedef struct RecompSettings {
-    int  resolution_scale;      /* 1..8 */
+    int  resolution_scale;      /* 1..8; what a build before `resolution` reads */
+    int  resolution;            /* lines rendered: 0 from resolution_scale,
+                                 * RECOMP_RESOLUTION_SCREEN, or 240..RECOMP_RESOLUTION_MAX */
     int  widescreen;            /* 0 or 1: the one switch; see RecompWidescreen */
+    char aspect_ratio[16];      /* the shape in widescreen: "16:9", "21:9", "screen" ... */
     double hor_plus;            /* RECOMP_HOR_PLUS_AUTO, or an override: 0 leaves
                                  * the camera alone, 0.75 is 4:3->16:9 */
     int  hor_plus_register;     /* RECOMP_REGISTER_AUTO, or an override: 0..191 */

@@ -166,6 +166,19 @@ static int device_image_is_fatx(const char *path)
 }
 #endif
 
+/* FATX keeps a file's times to two seconds, so on the console the low byte of
+ * every FILETIME the kernel reports is 0 (20,000,000 is 0x1312D00). A title can
+ * lean on that without knowing: TimeSplitters 2 copies a 16-character save
+ * folder into a 16-byte field of its map list and writes the folder's time
+ * right after it, so that byte is what ends the string. With a host disk's
+ * finer times the folder ran into the time, and no saved map would load. */
+static void fatx_times(LARGE_INTEGER *created, LARGE_INTEGER *accessed, LARGE_INTEGER *written)
+{
+    created->QuadPart -= created->QuadPart % 20000000;
+    accessed->QuadPart -= accessed->QuadPart % 20000000;
+    written->QuadPart -= written->QuadPart % 20000000;
+}
+
 /* ======================================================================== */
 #if defined(_WIN32)
 /* ====================  Win32 backend  =================================== */
@@ -576,6 +589,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             info->LastAccessTime.HighPart = fi.ftLastAccessTime.dwHighDateTime;
             info->LastWriteTime.LowPart   = fi.ftLastWriteTime.dwLowDateTime;
             info->LastWriteTime.HighPart  = fi.ftLastWriteTime.dwHighDateTime;
+            fatx_times(&info->CreationTime, &info->LastAccessTime, &info->LastWriteTime);
             info->ChangeTime = info->LastWriteTime;
             info->FileAttributes = fi.dwFileAttributes;
             IoStatusBlock->Status = STATUS_SUCCESS;
@@ -619,6 +633,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             info->LastAccessTime.HighPart = fi.ftLastAccessTime.dwHighDateTime;
             info->LastWriteTime.LowPart   = fi.ftLastWriteTime.dwLowDateTime;
             info->LastWriteTime.HighPart  = fi.ftLastWriteTime.dwHighDateTime;
+            fatx_times(&info->CreationTime, &info->LastAccessTime, &info->LastWriteTime);
             info->ChangeTime = info->LastWriteTime;
             info->EndOfFile.QuadPart = ((LONGLONG)fi.nFileSizeHigh << 32) | fi.nFileSizeLow;
             info->AllocationSize.QuadPart = (info->EndOfFile.QuadPart + 4095) & ~4095LL;
@@ -1025,6 +1040,7 @@ NTSTATUS __stdcall xbox_NtQueryFullAttributesFile(
     FileInformation->LastAccessTime.HighPart = fad.ftLastAccessTime.dwHighDateTime;
     FileInformation->LastWriteTime.LowPart   = fad.ftLastWriteTime.dwLowDateTime;
     FileInformation->LastWriteTime.HighPart  = fad.ftLastWriteTime.dwHighDateTime;
+    fatx_times(&FileInformation->CreationTime, &FileInformation->LastAccessTime, &FileInformation->LastWriteTime);
     FileInformation->ChangeTime = FileInformation->LastWriteTime;
     FileInformation->EndOfFile.QuadPart = ((LONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
     FileInformation->AllocationSize.QuadPart = (FileInformation->EndOfFile.QuadPart + 4095) & ~4095LL;
@@ -1199,6 +1215,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     entry->LastAccessTime.HighPart = ctx->find_data.ftLastAccessTime.dwHighDateTime;
     entry->LastWriteTime.LowPart  = ctx->find_data.ftLastWriteTime.dwLowDateTime;
     entry->LastWriteTime.HighPart = ctx->find_data.ftLastWriteTime.dwHighDateTime;
+    fatx_times(&entry->CreationTime, &entry->LastAccessTime, &entry->LastWriteTime);
     entry->ChangeTime = entry->LastWriteTime;
     entry->EndOfFile.QuadPart = ((LONGLONG)ctx->find_data.nFileSizeHigh << 32) | ctx->find_data.nFileSizeLow;
     entry->AllocationSize.QuadPart = (entry->EndOfFile.QuadPart + 4095) & ~4095LL;
@@ -1549,6 +1566,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             unix_to_filetime(st.st_ctime, 0, &info->CreationTime);
             unix_to_filetime(st.st_atime, 0, &info->LastAccessTime);
             unix_to_filetime(st.st_mtime, 0, &info->LastWriteTime);
+            fatx_times(&info->CreationTime, &info->LastAccessTime, &info->LastWriteTime);
             info->ChangeTime = info->LastWriteTime;
             info->FileAttributes = mode_to_xbox_attrs(st.st_mode);
             IoStatusBlock->Status = STATUS_SUCCESS;
@@ -1580,6 +1598,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             unix_to_filetime(st.st_ctime, 0, &info->CreationTime);
             unix_to_filetime(st.st_atime, 0, &info->LastAccessTime);
             unix_to_filetime(st.st_mtime, 0, &info->LastWriteTime);
+            fatx_times(&info->CreationTime, &info->LastAccessTime, &info->LastWriteTime);
             info->ChangeTime = info->LastWriteTime;
             info->EndOfFile.QuadPart = st.st_size;
             info->AllocationSize.QuadPart = (st.st_size + 4095) & ~4095LL;
@@ -1832,6 +1851,7 @@ NTSTATUS __stdcall xbox_NtQueryFullAttributesFile(
     unix_to_filetime(st.st_ctime, 0, &FileInformation->CreationTime);
     unix_to_filetime(st.st_atime, 0, &FileInformation->LastAccessTime);
     unix_to_filetime(st.st_mtime, 0, &FileInformation->LastWriteTime);
+    fatx_times(&FileInformation->CreationTime, &FileInformation->LastAccessTime, &FileInformation->LastWriteTime);
     FileInformation->ChangeTime = FileInformation->LastWriteTime;
     FileInformation->EndOfFile.QuadPart = st.st_size;
     FileInformation->AllocationSize.QuadPart = (st.st_size + 4095) & ~4095LL;
@@ -1973,6 +1993,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     unix_to_filetime(st.st_ctime, 0, &entry->CreationTime);
     unix_to_filetime(st.st_atime, 0, &entry->LastAccessTime);
     unix_to_filetime(st.st_mtime, 0, &entry->LastWriteTime);
+    fatx_times(&entry->CreationTime, &entry->LastAccessTime, &entry->LastWriteTime);
     entry->ChangeTime = entry->LastWriteTime;
     entry->EndOfFile.QuadPart = st.st_size;
     entry->AllocationSize.QuadPart = (st.st_size + 4095) & ~4095LL;

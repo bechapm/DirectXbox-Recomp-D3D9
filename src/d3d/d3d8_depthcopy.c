@@ -210,6 +210,7 @@ HRESULT xbox_D3D8CopyDepthToTexture(IDirect3DTexture8 *dst)
     memset(&rtvd, 0, sizeof rtvd);
     rtvd.format = tex->host_format;
     rtvd.dim = RHI_VIEW_DIM_2D;
+    d3d8_screencopy_forget_image(tex->image);   /* it holds depth from here */
     rtv = rhi_view_create(tex->image, RHI_VIEW_RENDER_TARGET, &rtvd);
     if (!rtv) {
         static int said;

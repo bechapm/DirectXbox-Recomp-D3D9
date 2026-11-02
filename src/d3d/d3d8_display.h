@@ -35,6 +35,13 @@ typedef struct D3D8DisplayPolicy {
      * (recomp_widescreen_resolve). The kernel reads the same variable to
      * answer XC_VIDEO. */
     int  widescreen;
+    /* RECOMP_ASPECT / aspect_ratio: the picture's shape in widescreen,
+     * width over height (16:9, 21:9 ...); 0 with widescreen off. The scene
+     * is rendered this wide. A title with a 16:9 mode of its own is shown
+     * at 16:9 at most (d3d8_display_shown_aspect). */
+    double aspect;
+    /* hor_plus is set by hand to widen the camera: shown at any shape. */
+    int  hor_plus_named;
     /* RECOMP_WIDESCREEN_2D=centre: in widescreen, every 2D draw is kept at
      * 4:3 in the middle, backdrops included, and only whole-screen passes
      * (flat fades, effects over a copy of the frame) span the picture.
@@ -55,13 +62,19 @@ const D3D8DisplayPolicy *d3d8_display_policy(void);
  * (xbox_D3D8SetWideFrames). Everything that treats a frame as widescreen
  * -- the 2D squeeze, the shape at present -- asks this. */
 int  d3d8_display_wide_now(void);
+/* The shape the frame being drawn is shown at, width over height: the
+ * widescreen shape (no wider than 16:9 for a title with a 16:9 mode of its
+ * own), or the guest's own for a frame shown at 4:3. */
+double d3d8_display_shown_aspect(void);
 /* A frame has been presented (it notes each change of shape in the log). */
 void d3d8_display_frame_done(void);
 /* A draw in perspective onto the screen, for xbox_D3D8SetWideFramesAuto. */
 void d3d8_display_note_3d_draw(void);
 
 /* The size the scene is rendered at, for a guest presenting at guest_w by
- * guest_h. Equal to the guest's own size when nothing is scaled. */
+ * guest_h: the settings' lines (recomp_render_height), as wide as the
+ * picture's shape. Equal to the guest's own size when nothing is scaled
+ * and widescreen is off. */
 void d3d8_display_scene_size(UINT guest_w, UINT guest_h,
                              UINT *scene_w, UINT *scene_h);
 
@@ -72,9 +85,9 @@ typedef struct D3D8DisplayFit { UINT x, y, w, h; } D3D8DisplayFit;
 
 D3D8DisplayFit d3d8_display_fit(UINT shape_w, UINT shape_h, UINT bb_w, UINT bb_h);
 
-/* The shape the scene should appear as, which is its own unless the
- * title is drawing anamorphically for a 16:9 display. Not a size: only
- * the ratio of the two is used. */
+/* The shape the scene should appear as: the widescreen shape for a frame
+ * shown wide, else the guest's own. Not a size: only the ratio of the two
+ * is used. */
 void d3d8_display_output_shape(UINT scene_w, UINT scene_h,
                                UINT *shape_w, UINT *shape_h);
 /* The shape just presented, for xbox_D3D8PictureShape. */

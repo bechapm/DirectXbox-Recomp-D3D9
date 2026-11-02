@@ -314,6 +314,105 @@ static void test_window_size(void)
     check_int(h, 500, "too wide and too tall: the tighter limit wins");
 }
 
+
+/* The picture's shape and the lines it is rendered at: aspect_ratio and
+ * resolution, from their text, and the scene and window sizes they make. */
+static void test_aspect_and_resolution(void)
+{
+    int w, h;
+    RecompWidescreen ws;
+
+    check_near(recomp_aspect_parse("16:9", 0, 0), 16.0 / 9.0, "16:9");
+    check_near(recomp_aspect_parse("21:9", 0, 0), 21.0 / 9.0, "21:9");
+    check_near(recomp_aspect_parse("32:9", 0, 0), 32.0 / 9.0, "32:9");
+    check_near(recomp_aspect_parse("16:10", 0, 0), 1.6, "16:10");
+    check_near(recomp_aspect_parse("3440x1440", 0, 0), 3440.0 / 1440.0, "WxH");
+    check_near(recomp_aspect_parse(" 2.39", 0, 0), 2.39, "a plain number");
+    check_near(recomp_aspect_parse("screen", 2560, 1080), 2560.0 / 1080.0, "the screen's");
+    check_near(recomp_aspect_parse("screen", 0, 0), 0.0, "screen, unknown");
+    check_near(recomp_aspect_parse("5:4", 0, 0), 0.0, "narrower than 4:3 is not wide");
+    check_near(recomp_aspect_parse("4:3", 0, 0), 4.0 / 3.0, "4:3 itself");
+    check_near(recomp_aspect_parse("10:1", 0, 0), RECOMP_ASPECT_MAX, "clamped");
+    check_near(recomp_aspect_parse("wide", 0, 0), 0.0, "not a shape");
+    check_near(recomp_aspect_parse(NULL, 0, 0), 0.0, "absent");
+
+    check_near(recomp_hor_plus_for_aspect(16.0 / 9.0), 0.75, "Hor+ at 16:9 is 0.75");
+    check_near(recomp_hor_plus_for_aspect(32.0 / 9.0), 0.375, "Hor+ at 32:9");
+    check_near(recomp_hor_plus_for_aspect(4.0 / 3.0), 1.0, "Hor+ at 4:3: none");
+
+    /* A HOR_PLUS title at 21:9 is widened further; a NATIVE one not at all;
+     * the 16:9 entry point is unchanged. */
+    recomp_widescreen_resolve_aspect_from(1, NULL, NULL, RECOMP_WIDE_HOR_PLUS, -1,
+                                          21.0 / 9.0, &ws);
+    check_near(ws.hor_plus, (4.0 / 3.0) / (21.0 / 9.0), "HOR_PLUS at 21:9");
+    recomp_widescreen_resolve_aspect_from(1, NULL, NULL, RECOMP_WIDE_NATIVE, -1,
+                                          21.0 / 9.0, &ws);
+    check_near(ws.hor_plus, 1.0, "NATIVE at 21:9: the camera is the title's");
+    recomp_widescreen_resolve_aspect_from(1, "0.5", NULL, RECOMP_WIDE_HOR_PLUS, -1,
+                                          21.0 / 9.0, &ws);
+    check_near(ws.hor_plus, 0.5, "a hor_plus set by hand still wins");
+    recomp_widescreen_resolve_from(1, NULL, NULL, RECOMP_WIDE_HOR_PLUS, -1, &ws);
+    check_near(ws.hor_plus, 0.75, "the 16:9 entry point");
+
+    check_int(recomp_resolution_parse("1080"), 1080, "1080");
+    check_int(recomp_resolution_parse("1440p"), 1440, "1440p");
+    check_int(recomp_resolution_parse("screen"), RECOMP_RESOLUTION_SCREEN, "screen");
+    check_int(recomp_resolution_parse("auto"), 0, "auto");
+    check_int(recomp_resolution_parse("0"), 0, "0 is from the scale");
+    check_int(recomp_resolution_parse("99999"), RECOMP_RESOLUTION_MAX, "clamped");
+
+    /* The scene: square pixels at the picture's shape. */
+    recomp_scene_size(640, 480, 480, 0.0, &w, &h);
+    check_int(w, 640, "4:3 at 480: the guest's own width");
+    check_int(h, 480, "4:3 at 480: the guest's own height");
+    recomp_scene_size(640, 480, 960, 0.0, &w, &h);
+    check_int(w, 1280, "a whole-number scale is exact");
+    recomp_scene_size(640, 480, 1440, 4.0 / 3.0, &w, &h);
+    check_int(w, 1920, "4:3 named outright is the guest's own shape");
+    recomp_scene_size(640, 480, 1080, 16.0 / 9.0, &w, &h);
+    check_int(w, 1920, "1080p at 16:9");
+    check_int(h, 1080, "1080p at 16:9: 1080 lines");
+    recomp_scene_size(640, 480, 1440, 3440.0 / 1440.0, &w, &h);
+    check_int(w, 3440, "the screen's own shape at its own height");
+    recomp_scene_size(640, 480, 1440, 21.0 / 9.0, &w, &h);
+    check_int(w, 3360, "21:9 at 1440");
+    recomp_scene_size(640, 480, 8640, 32.0 / 9.0, &w, &h);
+    check_int(w, RECOMP_SCENE_MAX_SIZE, "too wide: held to the most a texture can be");
+    check_int(h, 4608, "too wide: its shape kept");
+    recomp_scene_size(720, 480, 480, 0.0, &w, &h);
+    check_int(w, 720, "a 720x480 guest keeps its own shape");
+
+    recomp_window_size_aspect(640, 480, 16.0 / 9.0, &w, &h);
+    check_int(w, 854, "the window at 16:9, as recomp_window_size");
+    recomp_window_size_aspect(640, 480, 21.0 / 9.0, &w, &h);
+    check_int(w, 1120, "the window at 21:9");
+    check_int(h, 480, "the window at 21:9: the guest's height");
+    recomp_window_size_aspect(640, 480, 0.0, &w, &h);
+    check_int(w, 640, "the window with widescreen off");
+
+    /* Which line wins: the environment over the file, the lines over the
+     * scale, and the scale when there are no lines. */
+    set_env("RECOMP_RESOLUTION", NULL);
+    set_env("RECOMP_RES_SCALE", NULL);
+    check_int(recomp_render_height(480), 960, "resolution_scale = 2 in the file");
+    set_env("RECOMP_RES_SCALE", "3");
+    check_int(recomp_render_height(480), 1440, "RECOMP_RES_SCALE");
+    set_env("RECOMP_RESOLUTION", "1080");
+    check_int(recomp_render_height(480), 1080, "RECOMP_RESOLUTION over the scale");
+    set_env("RECOMP_RESOLUTION", NULL);
+    set_env("RECOMP_RES_SCALE", NULL);
+    recomp_set_screen_size(2560, 1080);
+    set_env("RECOMP_RESOLUTION", "screen");
+    check_int(recomp_render_height(480), 1080, "resolution = screen");
+    set_env("RECOMP_ASPECT", "screen");
+    check_near(recomp_widescreen_aspect(), 2560.0 / 1080.0, "aspect_ratio = screen");
+    set_env("RECOMP_ASPECT", "nonsense");
+    check_near(recomp_widescreen_aspect(), 16.0 / 9.0, "a shape it cannot read is 16:9");
+    set_env("RECOMP_ASPECT", NULL);
+    set_env("RECOMP_RESOLUTION", NULL);
+    check_near(recomp_widescreen_aspect(), 16.0 / 9.0, "no aspect_ratio: 16:9");
+}
+
 int main(void)
 {
     const char *path = "test_config_tmp.conf";
@@ -400,6 +499,7 @@ int main(void)
         check(recomp_settings_write(rt, &out) != 0, "settings written");
         check(recomp_settings_read(rt, &back) != 0, "settings read back");
         check_int(back.resolution_scale, 3, "round trip: scale");
+        check_int(back.resolution, 0, "round trip: no lines, from the scale");
         check_int(back.widescreen, 1, "round trip: widescreen");
         check(back.hor_plus > 0.74 && back.hor_plus < 0.76, "round trip: hor_plus");
         check_int(back.hor_plus_register, 60, "round trip: register");
@@ -407,6 +507,22 @@ int main(void)
         check_int(back.fps_overlay, 1, "round trip: overlay");
         check_str(back.frame_cap, "60", "round trip: frame cap");
         check_str(back.game_dir, "D:\\games\\ts2", "round trip: game dir");
+        check_str(back.aspect_ratio, "16:9", "round trip: the default shape");
+
+        out.resolution = 1440;
+        snprintf(out.aspect_ratio, sizeof out.aspect_ratio, "21:9");
+        check(recomp_settings_write(rt, &out) != 0, "shape settings written");
+        check(recomp_settings_read(rt, &back) != 0, "shape settings read back");
+        check_int(back.resolution, 1440, "round trip: lines");
+        check_str(back.aspect_ratio, "21:9", "round trip: shape");
+        out.resolution = RECOMP_RESOLUTION_SCREEN;
+        snprintf(out.aspect_ratio, sizeof out.aspect_ratio, "screen");
+        check(recomp_settings_write(rt, &out) != 0, "screen settings written");
+        check(recomp_settings_read(rt, &back) != 0, "screen settings read back");
+        check_int(back.resolution, RECOMP_RESOLUTION_SCREEN, "round trip: screen lines");
+        check_str(back.aspect_ratio, "screen", "round trip: screen shape");
+        out.resolution = 0;
+        snprintf(out.aspect_ratio, sizeof out.aspect_ratio, "16:9");
 
         /* System Link, as the launcher's tab writes it for a joining copy. */
         snprintf(out.syslink, sizeof out.syslink, "join");
@@ -498,6 +614,7 @@ int main(void)
     test_guest_flag();
     test_older_files();
     test_window_size();
+    test_aspect_and_resolution();
 
     /* The same resolution as the runtime asks for it: from the settings
      * of this process -- the file above says widescreen = 1 and

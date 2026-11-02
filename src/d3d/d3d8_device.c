@@ -20,6 +20,7 @@
 #include "d3d8_fvf.h"         /* d3d8_fvf_transformed: draw_extent */
 #include "rhi_d3d9.h"
 #include "recomp_config.h"   /* RECOMP_VRR */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 /* malloc: without <stdlib.h> its pointer is truncated to int. */
@@ -425,8 +426,15 @@ static BOOL g_2d_screen_space;
 static int      g_2d_placement = XBOX_D3D8_2D_AUTO;
 static uint32_t g_2d_tag;
 /* The edge a squeezed draw is anchored to: LEFT, RIGHT or CENTRE. The
- * title's placement for LEFT and RIGHT; chosen per draw for SIDE. */
+ * title's placement for LEFT and RIGHT; chosen per draw for SIDE. SPREAD:
+ * the point g_2d_spread across the picture, the draw's own middle. */
 static int      g_2d_anchor = XBOX_D3D8_2D_CENTRE;
+static float    g_2d_spread = 0.5f;
+/* XBOX_D3D8_2D_PANEL_3D is set; and the draw in hand is such a model, kept
+ * centred whatever the 2D around it is anchored to. */
+static BOOL     g_2d_panel_3d;
+static BOOL     g_2d_panel_anchored;   /* it goes with its panel's anchor */
+static BOOL     g_2d_panel_draw;
 
 /* The widescreen 2D squeeze (see apply_host_viewport) as a horizontal
  * factor about an anchor, both in host pixels of the scene. FALSE when no
@@ -486,17 +494,29 @@ static BOOL two_d_squeeze(float *k_out, float *cx_out)
      * Evolution Soccer 5 draws its match HUD into its scene texture. */
     if (g_cur_rt && !scene_sized(g_cur_rt->width, g_cur_rt->height))
         return FALSE;
-    k = ((float)g_device_state.width * 9.0f) /
-        ((float)g_device_state.height * 16.0f);
+    /* The guest's 4:3 as a share of the picture's width: 0.75 at 16:9,
+     * 0.5714 at 21:9. From the guest's size, not the scene's, which is
+     * rendered as wide as the picture. */
+    if (!g_device_state.present_width || !g_device_state.present_height)
+        return FALSE;
+    k = (float)(((double)g_device_state.present_width / (double)g_device_state.present_height) /
+                d3d8_display_shown_aspect());
     if (!(k > 0.0f && k < 1.0f))
         return FALSE;
     *k_out = k;
     span = g_cur_rt ? (float)g_cur_rt->width * rt_scale_x()
                     : (float)g_device_state.width;
-    if (g_2d_anchor == XBOX_D3D8_2D_LEFT)
+    if (g_2d_panel_draw && !g_2d_panel_anchored)
+        *cx_out = span * 0.5f;
+    else if (g_2d_anchor == XBOX_D3D8_2D_LEFT)
         *cx_out = 0.0f;
     else if (g_2d_anchor == XBOX_D3D8_2D_RIGHT)
         *cx_out = span;
+    else if (g_2d_anchor == XBOX_D3D8_2D_SPREAD)
+        /* The one point a squeeze about cx leaves where it was is cx: so a
+         * draw whose middle is at f of the guest's width, squeezed about f
+         * of the picture's, has its middle there. */
+        *cx_out = span * g_2d_spread;
     else
         *cx_out = span * 0.5f;
     return TRUE;
@@ -634,12 +654,27 @@ BOOL xbox_D3D8GetScissors(UINT *count, BOOL *exclusive, D3DRECT *rect)
     return g_scissor_count != 0;
 }
 
+/* Whether the scissor is the whole width. A title's own often stops a pixel
+ * or two short of the edge (TimeSplitters 2's 0..638 of 640), which says
+ * "the screen" and not "this box". */
+static BOOL scissor_is_screen(void)
+{
+    return g_scissor.left <= 2 && g_scissor.right >= (int32_t)d3d8_GetGuestWidth() - 3;
+}
+
 BOOL d3d8_GetScissor(RhiRect *out)
 {
     if (out) {
         float sx = rt_scale_x(), sy = rt_scale_y();
         float left = g_scissor.left * sx, right = g_scissor.right * sx;
         float k, cx;
+
+        /* On a wider picture those pixels would be a strip the width of a
+         * finger down the side, with nothing drawn in it. */
+        if (!g_cur_rt && d3d8_display_wide_now() && scissor_is_screen()) {
+            left = 0.0f;
+            right = (float)g_device_state.width;
+        }
 
         /* Stored as the title gave them, converted here, so the stored
          * rectangle stays comparable with anything else in guest pixels
@@ -1731,6 +1766,8 @@ UINT d3d8_up_indices_read(D3DPRIMITIVETYPE type, UINT prims)
     return n;
 }
 
+static void two_d_overflow(const void *vertices, UINT stride, UINT count);
+
 static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, const void *pVertexData, UINT VertexStreamZeroStride)
 {
     (void)self;
@@ -1760,9 +1797,11 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
 
     /* Upload to ring buffer */
     ring_offset = up_ring_upload(&g_up_vertex_ring, draw_data, vb_size);
-    if (converted) free(converted);
 
-    if (ring_offset == (UINT)-1) return E_OUTOFMEMORY;
+    if (ring_offset == (UINT)-1) {
+        if (converted) free(converted);
+        return E_OUTOFMEMORY;
+    }
 
     /* Bind ring buffer at the right offset */
     rhi_set_vertex_buffer(0, g_up_vertex_ring.buffer, VertexStreamZeroStride, ring_offset);
@@ -1775,6 +1814,8 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
      * prepare_draw, which is what decides whether this is a screen-space
      * draw at all. */
     d3d8_place_2d_draw(pVertexData, VertexStreamZeroStride, vertex_count);
+    two_d_overflow(draw_data, VertexStreamZeroStride, vertex_count);
+    if (converted) free(converted);
     d3d8_states_apply();
 
     rhi_set_topology(topology);
@@ -1831,6 +1872,7 @@ static HRESULT __stdcall dev_DrawIndexedPrimitiveUP(IDirect3DDevice8 *self, D3DP
      * prepare_draw, which is what decides whether this is a screen-space
      * draw at all. */
     d3d8_place_2d_draw(pVertexData, VertexStreamZeroStride, NumVertices);
+    two_d_overflow(pVertexData, VertexStreamZeroStride, NumVertices);
     d3d8_states_apply();
 
     rhi_set_topology(topology);
@@ -2037,6 +2079,14 @@ static void rebind_stage_srvs(RhiImage *target)
     }
 }
 
+/* Every stage bound again as SetTexture left it, for d3d8_screencopy.c,
+ * whose copy binds a texture as a target and may swap the view a texture
+ * is sampled through. */
+void d3d8_rebind_stage_textures(void)
+{
+    rebind_stage_srvs(g_cur_rt ? g_cur_rt->image : NULL);
+}
+
 static HRESULT __stdcall dev_SetRenderTarget(IDirect3DDevice8 *self, IDirect3DSurface8 *pRenderTarget, IDirect3DSurface8 *pZStencilSurface)
 {
     (void)self;
@@ -2085,6 +2135,9 @@ static HRESULT __stdcall dev_SetRenderTarget(IDirect3DDevice8 *self, IDirect3DSu
 
     rtv = rt ? rt->rtv : g_device_state.rhi_default_rtv;
     dsv = ds ? ds->dsv : NULL;
+    /* Drawn into, a texture holds what is drawn, not the last screen copy. */
+    if (rt)
+        d3d8_screencopy_forget_image(rt->image);
     rhi_set_render_target(rtv, dsv);
     rebind_stage_srvs(rt ? rt->image : NULL);
     return S_OK;
@@ -2243,6 +2296,12 @@ static BOOL g_extent_fixed_function;
  * flat colour. Gladius draws its fades and letterbox bars that way with the
  * last real texture still bound. */
 static BOOL g_extent_position_only;
+/* Whether the vertices hold the guest's own pixels at g_extent_offset, as a
+ * pass through them all measured g_extent_lo..g_extent_hi before the scissor:
+ * what two_d_overflow rewrites. */
+static BOOL g_extent_pixels;
+static UINT g_extent_offset;
+static float g_extent_lo, g_extent_hi;
 
 /* The title's own test for a screen-space draw (xbox_D3D8SetScreenSpaceTest),
  * and what it said of the draw in hand. */
@@ -2296,6 +2355,7 @@ static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
 
     g_extent_fixed_function = FALSE;
     g_extent_position_only = FALSE;
+    g_extent_pixels = FALSE;
     if (!p || !stride || !count)
         return FALSE;
     /* A draw the title's own test called screen-space: the extent is the
@@ -2342,6 +2402,8 @@ static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
      * it was supposed to remove stayed. The bound is a sanity limit, not
      * a sample: screen-space draws are small, and this runs only for
      * them. */
+    g_extent_pixels = !mapped && count <= 8192;
+    g_extent_offset = offset;
     if (count > 8192)
         count = 8192;
 
@@ -2352,6 +2414,8 @@ static BOOL draw_extent(const void *vertices, UINT stride, UINT count,
         if (x < lo) lo = x;
         if (x > hi) hi = x;
     }
+    g_extent_lo = lo;
+    g_extent_hi = hi;
 
     /* A program that maps its positions itself (oPos = v * c[a] + c[b]):
      * its pixels, then the guest's, through the same screen-space undo the
@@ -2569,7 +2633,8 @@ static void two_d_tag_note(const void *vertices, UINT stride, UINT count)
 
 static void two_d_tag_frame(void)
 {
-    static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side", "edge" };
+    static const char *names[] = { "auto", "stretch", "centre", "left", "right", "side",
+                                   "edge", "spread", "fill" };
     UINT guest_w = d3d8_GetGuestWidth();
     int i;
 
@@ -2578,7 +2643,7 @@ static void two_d_tag_frame(void)
     fprintf(stderr, "[2D-TAGS] frame %lu: %d tag(s)\n", g_tag_frames, g_tag_count);
     for (i = 0; i < g_tag_count; i++) {
         const TwoDTagStat *t = &g_tag_stats[i];
-        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_EDGE ? t->placement : 0;
+        int pl = t->placement >= 0 && t->placement <= XBOX_D3D8_2D_FILL ? t->placement : 0;
 
         fprintf(stderr, "[2D-TAGS]   tag %08X %-7s draws %6lu  x %7.1f..%7.1f (%5.1f%%) "
                 "widest %5.1f%%\n", t->tag, names[pl], t->draws, t->lo, t->hi,
@@ -2593,7 +2658,10 @@ void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag)
 {
     int anchor;
 
-    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_EDGE)
+    g_2d_panel_3d = (placement & XBOX_D3D8_2D_PANEL_3D) != 0;
+    g_2d_panel_anchored = (placement & XBOX_D3D8_2D_PANEL_ANCHORED) != 0;
+    placement &= ~(XBOX_D3D8_2D_PANEL_3D | XBOX_D3D8_2D_PANEL_ANCHORED);
+    if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_FILL)
         placement = XBOX_D3D8_2D_AUTO;
     g_2d_tag = tag;
     if (placement == g_2d_placement)
@@ -2641,6 +2709,14 @@ int xbox_D3D8GetTwoDPlacement(uint32_t *tag)
  * otherwise the renderer's judgement from the draw's extent. */
 void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
 {
+    /* The last draw's centring goes with it: a viewport this draw has already
+     * been given under it would keep it. */
+    if (g_2d_panel_draw) {
+        g_2d_panel_draw = FALSE;
+        d3d8_vsh_set_held_x(1.0f);
+        if (g_2d_squeeze)
+            apply_host_viewport();
+    }
     /* A fixed-function draw through the title's projection is 3D to the
      * shader path. The title may know better: Max Payne draws its HUD, its
      * menus and its graphic novel as quads at one depth under the camera
@@ -2663,6 +2739,35 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
         }
     }
     if (!g_2d_screen_space) {
+        /* A camera narrower than the picture, which the world's never is:
+         * a model the title's 2D layout holds. A tenth short of it, so a
+         * camera a hair off the picture's shape is still the world, and a
+         * 1.33 camera is still narrower at 16:10. What the
+         * title has placed to span the picture does: TimeSplitters 2's hex
+         * backdrop behind its menus is 3D through such a camera too. */
+        if (g_2d_panel_3d && g_2d_placement != XBOX_D3D8_2D_STRETCH && !g_cur_rt) {
+            float aspect = d3d8_vsh_bound_projection_aspect();
+
+            if (aspect > 0.0f && aspect < (float)d3d8_display_shown_aspect() * 0.9f) {
+                float k, cx;
+
+                g_2d_panel_draw = TRUE;
+                set_squeeze(TRUE);
+                /* A model through the whole screen's viewport can reach past
+                 * 4:3, as TimeSplitters 2's pause background does: squeezing
+                 * the viewport would cut it at the 4:3 edge. The same shape
+                 * and place from the projection leaves it the whole picture.
+                 * A panel's own viewport keeps the squeeze, as does a model
+                 * going with an anchored panel. */
+                if (!g_2d_panel_anchored && two_d_squeeze(&k, &cx) &&
+                    g_device_state.viewport.X == 0 &&
+                    g_device_state.viewport.Width >= d3d8_GetGuestWidth()) {
+                    d3d8_vsh_set_held_x(k);
+                    set_squeeze(FALSE);
+                }
+                return;
+            }
+        }
         /* In perspective, onto the screen: xbox_D3D8SetWideFramesAuto. */
         if (!g_cur_rt)
             d3d8_display_note_3d_draw();
@@ -2701,11 +2806,131 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
             set_squeeze(FALSE);
         break;
     }
+    case XBOX_D3D8_2D_FILL: {
+        /* Clipped by the scissor: a quad the size of the screen under one
+         * the size of a box is that box's background. */
+        UINT guest_w = d3d8_GetGuestWidth();
+        float lo, hi;
+
+        if (guest_w && draw_extent(vertices, stride, count, &lo, &hi) &&
+            hi - lo >= (float)guest_w * 0.98f)
+            set_squeeze(FALSE);
+        break;
+    }
+    case XBOX_D3D8_2D_SPREAD: {
+        /* Clipped by the scissor, like SIDE's: where the draw can be seen. */
+        UINT guest_w = d3d8_GetGuestWidth();
+        float lo, hi;
+
+        if (d3d8_draw_escapes_squeeze(vertices, stride, count)) {
+            set_squeeze(FALSE);
+            break;
+        }
+        if (guest_w && draw_extent(vertices, stride, count, &lo, &hi)) {
+            float f = (lo + hi) * 0.5f / (float)guest_w;
+
+            if (g_2d_anchor != XBOX_D3D8_2D_SPREAD || f != g_2d_spread) {
+                g_2d_anchor = XBOX_D3D8_2D_SPREAD;
+                g_2d_spread = f;
+                apply_host_viewport();
+            }
+        }
+        break;
+    }
     default:
         if (d3d8_draw_escapes_squeeze(vertices, stride, count))
             set_squeeze(FALSE);
         break;
     }
+}
+
+/* xbox_D3D8SetTwoDOverflow: a piece reaching past the guest's screen.
+ *
+ * The squeeze is a viewport, and nothing is drawn outside one: a piece that
+ * runs off the side of the 4:3 screen stops dead at the old edge, though the
+ * picture goes on. On the console that edge was the screen's. So when a draw
+ * still squeezed after its placement reaches past the guest's screen, and no
+ * scissor narrower than the screen holds it in, the same squeeze is done to a
+ * copy of its vertices and the copy drawn with the viewport left alone. It
+ * lands where it would have, and goes on to where it ends. Only such a draw
+ * pays for the copy, and every renderer sees plain vertices. */
+static BOOL g_2d_overflow;
+
+void xbox_D3D8SetTwoDOverflow(BOOL on)
+{
+    g_2d_overflow = on ? TRUE : FALSE;
+}
+
+/* RECOMP_D3D8_2D_OVERFLOW=0 or 1 over the title's choice; 1 is how a replay,
+ * which has no title to ask, shows it. */
+static BOOL two_d_overflow_on(void)
+{
+    static int env = -1;
+
+    if (env < 0) {
+        const char *v = getenv("RECOMP_D3D8_2D_OVERFLOW");
+
+        env = v && *v ? strcmp(v, "0") != 0 : 2;
+    }
+    return env == 2 ? g_2d_overflow : env;
+}
+
+static void two_d_overflow(const void *vertices, UINT stride, UINT count)
+{
+    UINT guest_w = d3d8_GetGuestWidth(), i, ring_offset;
+    unsigned char *copy;
+    float lo, hi, k, cx, s, right;
+    BOOL bleed;
+
+    /* Screen-space only: a model in a panel is squeezed too, and its vertices
+     * are nowhere near pixels. */
+    if (!two_d_overflow_on() || !g_2d_squeeze || !g_2d_screen_space || g_cur_rt || !guest_w ||
+        !draw_extent(vertices, stride, count, &lo, &hi) || !g_extent_pixels ||
+        !two_d_squeeze(&k, &cx))
+        return;
+    /* FILL's other half: a piece flush with the screen's edge was made to
+     * reach the edge, so that edge of it still does and the rest stays in
+     * proportion, as a nine-slice stretches. A scope's mask and the rim of its
+     * filter are pieces like this, each short of the whole width. A title's
+     * right edge can be a pixel short: TimeSplitters 2's sniper stops at 639. */
+    right = (float)guest_w;
+    bleed = g_2d_placement == XBOX_D3D8_2D_FILL &&
+            (fabsf(g_extent_lo) <= 0.5f ||
+             (g_extent_hi >= right - 1.5f && g_extent_hi <= right + 0.5f));
+    if (!bleed && g_extent_lo >= 0.0f && g_extent_hi <= right)
+        return;
+    /* A scissor the size of a box means the box: its edge is meant. */
+    if (g_scissor_enabled && !scissor_is_screen())
+        return;
+    copy = (unsigned char *)malloc((size_t)count * stride);
+    if (!copy)
+        return;
+    memcpy(copy, vertices, (size_t)count * stride);
+    /* In the guest's pixels, the middle of the squeeze: on the host it was
+     * cx + ((x + p) * s - cx) * k, and unsqueezed it is (x + p) * s, p being
+     * the viewport's half pixel, which the squeeze shrinks too. Leaving p out
+     * put these draws over a pixel to the right of squeezed ones, a hairline
+     * where a scope's mask meets its side bar. */
+    s = (float)g_device_state.width / (float)guest_w;
+    cx /= s;
+    for (i = 0; i < count; i++) {
+        float x;
+
+        memcpy(&x, copy + (size_t)i * stride + g_extent_offset, sizeof x);
+        if (bleed && fabsf(x) <= 0.5f)
+            x = 0.0f;
+        else if (bleed && x >= right - 1.5f && x <= right + 0.5f)
+            x = right;
+        else
+            x = cx + (x - cx) * k - pixel_offset() * (1.0f - k);
+        memcpy(copy + (size_t)i * stride + g_extent_offset, &x, sizeof x);
+    }
+    ring_offset = up_ring_upload(&g_up_vertex_ring, copy, count * stride);
+    free(copy);
+    if (ring_offset == (UINT)-1)
+        return;
+    rhi_set_vertex_buffer(0, g_up_vertex_ring.buffer, stride, ring_offset);
+    set_squeeze(FALSE);
 }
 
 static HRESULT __stdcall dev_SetViewport(IDirect3DDevice8 *self, const D3DVIEWPORT8 *pViewport)

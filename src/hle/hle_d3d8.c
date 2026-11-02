@@ -704,6 +704,7 @@ static void shadow_set_fullscreen(HWND hwnd, int on)
 
 typedef struct {
     UINT   width, height;
+    UINT   min_h;                  /* the guest's lines, scaled for DPI */
     HWND   hwnd;
     HANDLE ready;
 } shadow_window_request;
@@ -734,6 +735,23 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
          * monitor, whose work area is the desktop less the taskbar. */
         RECT work, frame = { 0, 0, 0, 0 };
         int w = (int)req->width, h = (int)req->height;
+
+        /* And no smaller than the guest's screen at the desktop's scaling:
+         * DPI aware (shadow_dpi_aware), the console's 480 lines are 480
+         * real pixels, a third smaller on a screen scaled to 150% than the
+         * window Windows used to stretch for us. */
+        if (req->min_h && h > 0) {
+            typedef UINT (WINAPI *GetDpiFn)(void);
+            GetDpiFn get_dpi = (GetDpiFn)(void (*)(void))GetProcAddress(
+                GetModuleHandleA("user32.dll"), "GetDpiForSystem");
+            UINT dpi = get_dpi ? get_dpi() : 96;
+            int min_h = (int)(((unsigned long long)req->min_h * dpi + 48) / 96);
+
+            if (h < min_h) {
+                w = (int)(((long long)w * min_h + h / 2) / h);
+                h = min_h;
+            }
+        }
 
         AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
         if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
@@ -813,14 +831,52 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
     return 0;
 }
 
+/* Sizes in real pixels. A process that does not say it handles DPI scaling
+ * is told a 150%-scaled 3440x1440 screen is 2293x960, and whatever it draws
+ * is stretched up by Windows afterwards, so a picture rendered at the
+ * screen's resolution was shown at two thirds of it, blurred. Per-monitor
+ * aware, every size here (the work area, the window, the swap chain,
+ * the pointer) is in the screen's own pixels. Set before the first window;
+ * a DLL that set it first (RTX Remix's does) leaves it as that DLL made it.
+ * RECOMP_DPI_AWARE=0 leaves the process as Windows starts it. */
+static void shadow_dpi_aware(void)
+{
+    typedef BOOL (WINAPI *SetContextFn)(HANDLE);
+    typedef BOOL (WINAPI *SetAwareFn)(void);
+    static int done;
+    const char *e = getenv("RECOMP_DPI_AWARE");
+    HMODULE user32;
+    SetContextFn set_context;
+    SetAwareFn set_aware;
+
+    if (done++ || (e && e[0] == '0'))
+        return;
+    user32 = GetModuleHandleA("user32.dll");
+    if (!user32)
+        return;
+    set_context = (SetContextFn)(void (*)(void))GetProcAddress(user32,
+                                                     "SetProcessDpiAwarenessContext");
+    /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 is ((HANDLE)-4); Windows 10
+     * 1703 and later. Before it, system aware (Vista and later). */
+    if (set_context && set_context((HANDLE)(INT_PTR)-4))
+        return;
+    set_aware = (SetAwareFn)(void (*)(void))GetProcAddress(user32, "SetProcessDPIAware");
+    if (set_aware)
+        set_aware();
+}
+
+static UINT g_shadow_window_min_h;     /* set by the caller of shadow_window */
+
 static HWND shadow_window(UINT width, UINT height)
 {
     shadow_window_request req;
     HANDLE thread;
 
+    shadow_dpi_aware();
     memset(&req, 0, sizeof req);
     req.width = width;
     req.height = height;
+    req.min_h = g_shadow_window_min_h;
     req.ready = CreateEventA(NULL, TRUE, FALSE, NULL);
     if (!req.ready)
         return NULL;
@@ -1328,6 +1384,9 @@ static void shadow_create(uint32_t pp_va)
          * 16:9 in widescreen -- at the guest's height; the back buffer
          * below stays the guest's own size whatever the window is. */
         xbox_D3D8DefaultWindowSize(width, height, &win_w, &win_h);
+#ifdef _WIN32
+        g_shadow_window_min_h = height;
+#endif
         hwnd = shadow_window(win_w, win_h);
         xbox_GuestLockRestore(held);
     }
@@ -1771,8 +1830,36 @@ void hle_d3d8_shadow_apply_states(IDirect3DDevice8 *dev);
 static unsigned long g_draws_up, g_draws_indexed_up, g_draws_vb, g_draws_indexed_vb,
                      g_draws_program, g_draws_declaration, g_draws_unknown_vs,
                      g_draws_stride, g_draws_primitive, g_draws_failed;
-/* Dropped by RECOMP_HLE_D3D8_SKIP_FULLSCREEN; see the draw gate. */
+/* Dropped by the frame pass limit; see the draw gate. */
 static unsigned long g_skipped_fullscreen;
+static unsigned g_frame_passes;          /* drawn this frame */
+static int g_frame_pass_limit = -2;      /* -2: not read yet; -1: all */
+
+static void frame_pass_limit_load(void)
+{
+    const char *v;
+
+    if (g_frame_pass_limit != -2)
+        return;
+    g_frame_pass_limit = -1;
+    v = getenv("RECOMP_HLE_D3D8_SKIP_FULLSCREEN");
+    if (v && *v && strcmp(v, "0") != 0)
+        g_frame_pass_limit = 0;
+    v = recomp_config_lookup("RECOMP_FRAME_PASSES", "frame_passes");
+    if (v && *v && v[0] != '-' && (v[0] >= '0' && v[0] <= '9'))
+        g_frame_pass_limit = atoi(v);
+}
+
+void xbox_D3D8SetFramePassLimit(int n)
+{
+    g_frame_pass_limit = n < 0 ? -1 : n;
+}
+
+int xbox_D3D8FramePassLimit(void)
+{
+    frame_pass_limit_load();
+    return g_frame_pass_limit;
+}
 /* The inline immediate-mode vertex path, counted but not implemented; see the
  * replacements for D3DDevice_Begin further down. */
 static unsigned long g_inline_begin, g_inline_end, g_inline_vdata;
@@ -2206,25 +2293,23 @@ static int shadow_can_draw(uint32_t xpt, uint32_t stride)
         shadow_use_viewport(0);
     }
 states:
-    /* RECOMP_HLE_D3D8_SKIP_FULLSCREEN=1: drop the title's full-screen passes
-     * over its own frame -- the draws that sample the frame buffer at stage 0.
+    /* The frame pass limit (xbox_D3D8SetFramePassLimit): the title's
+     * full-screen passes over its own frame -- the draws that sample the
+     * frame buffer at stage 0 -- past the first n of a frame are dropped.
      *
-     * This is a measurement, and a crude workaround. Those passes remove a
-     * fixed share of the light in every frame (0.62 of it on TimeSplitters 2's
-     * snow level, 0.367 on another, constant within a level to a standard
-     * deviation of 0.002), which is the brightness bug in
-     * docs/technical/timesplitters2-open-issues.md. Turning them off says
-     * whether they own that loss outright, and gives a bright picture without
-     * whatever they were for -- bloom or glow, on the evidence of a fixed
-     * one-texel offset repeated three times with descending alpha. */
-    {
-        static int skip = -1;
-        if (skip < 0)
-            skip = getenv("RECOMP_HLE_D3D8_SKIP_FULLSCREEN") ? 1 : 0;
-        if (skip && hle_d3d8_stage0_is_framebuffer()) {
+     * It began as a measurement (RECOMP_HLE_D3D8_SKIP_FULLSCREEN=1, every
+     * pass dropped), when those passes were blending black over the picture
+     * (docs/technical/timesplitters2-open-issues.md). With the frame copied
+     * for real they are the title's own look -- TimeSplitters 2's soften, a
+     * fixed one-texel offset three times with descending alpha -- and the
+     * limit is a player's or a modder's choice of how much of it to keep. */
+    if (hle_d3d8_stage0_is_framebuffer()) {
+        frame_pass_limit_load();
+        if (g_frame_pass_limit >= 0 && g_frame_passes >= (unsigned)g_frame_pass_limit) {
             g_skipped_fullscreen++;
             return 0;
         }
+        g_frame_passes++;
     }
     /* The title's render and texture stage states as they stand now, read
      * from its own state arrays (hle_d3d8_state.c). */
@@ -3565,6 +3650,7 @@ static void frame_end_shadow(void)
         g_inline_begin_frame = 0;
         g_inline_vdata_frame = 0;
         g_frame_draws = 0;
+        g_frame_passes = 0;
         overlay_frame();                 /* after the dump: not in the captures */
         shadow_pointer_frame();
         {
@@ -3603,7 +3689,7 @@ static void frame_end_shadow(void)
                         g_inline_program, g_inline_begin_max, g_inline_vdata_max);
             if (g_skipped_fullscreen)
                 fprintf(stderr, "[HLE-D3D8] shadow: %lu full-screen passes over the "
-                        "title's own frame dropped (RECOMP_HLE_D3D8_SKIP_FULLSCREEN)\n",
+                        "title's own frame dropped (the frame pass limit, RECOMP_FRAME_PASSES)\n",
                         g_skipped_fullscreen);
             swap_timing_report();
             hle_d3d8_interp_report();

@@ -30,7 +30,10 @@
  * All of these are in 480-line pixels; the bitmap is OVERLAY_W x OVERLAY_H
  * times the picture's scale (g.scale). */
 #define OVERLAY_W         640
-#define OVERLAY_LINES      18
+/* 21 lines is as many as fit a 480-line picture under OVERLAY_PAD
+ * (6 + 21 * 22 + 8 = 476). TimeSplitters 2's debugging menu is a title,
+ * 18 rows and a footer: at 18 its last row and footer were cut off. */
+#define OVERLAY_LINES      21
 #define OVERLAY_LINE_H     22
 #define OVERLAY_TOP         4
 #define OVERLAY_H        (6 + OVERLAY_LINES * OVERLAY_LINE_H)
@@ -492,6 +495,22 @@ void d3d8_overlay_present(RhiView *out, unsigned width, unsigned height,
     if (scale > OVERLAY_MAX_SCALE) scale = OVERLAY_MAX_SCALE;
     if (!text[0] || !out || !width || !height)
         return;
+    /* Rounded to the nearest step, a long text can be taller than the
+     * picture: a 20-line menu at 3x needs 1362 pixels, and a 1312-line
+     * picture rounds to 3. One step smaller then, so every line shows. */
+    {
+        unsigned lines = 1;
+        const char *p;
+
+        for (p = text; *p; p++)
+            if (*p == '\n')
+                lines++;
+        if (lines > OVERLAY_LINES)
+            lines = OVERLAY_LINES;
+        while (scale > 1 &&
+               (OVERLAY_PAD + 6 + lines * OVERLAY_LINE_H) * scale > pic_h)
+            scale--;
+    }
     if (!overlay_create() || !overlay_size((int)scale) || !overlay_set_text(text))
         return;
 

@@ -74,10 +74,14 @@ BOOL d3d8_GetTwoDSqueeze(void);
  * extent under the scissor (and, with RECOMP_WIDESCREEN_2D=centre, only a
  * whole-screen pass). */
 BOOL d3d8_draw_escapes_squeeze(const void *vertices, UINT stride, UINT count);
+/* The draw in hand's projection x, on top of Hor+: 1 is off. d3d8_device.c, for
+ * a model held at 4:3 whose viewport is the whole screen. */
+void d3d8_vsh_set_held_x(float k);
 /* Once per draw after the shader path: place a screen-space draw in
  * widescreen, by the title's placement (xbox_D3D8SetTwoDPlacement) or else
  * by d3d8_draw_escapes_squeeze. */
 void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count);
+float d3d8_vsh_bound_projection_aspect(void);
 /* The scissor rectangle to draw with, if one is on (xbox_D3D8SetScissors). */
 BOOL                 d3d8_GetScissor(RhiRect *out);
 UINT                 d3d8_GetGuestHeight(void);
@@ -334,6 +338,11 @@ HRESULT d3d8_CreateImageSurfaceImpl(UINT Width, UINT Height, D3DFORMAT Format,
  * D3D8Texture, and the image likewise. */
 RhiView  *d3d8_base_srv(IDirect3DBaseTexture8 *texture);
 RhiImage *d3d8_base_resource(IDirect3DBaseTexture8 *texture);
+/* d3d8_screencopy.c: a texture the frame is copied into is sampled through a
+ * copy at the scene's resolution until something else writes it. */
+void d3d8_screencopy_forget_image(RhiImage *image);
+void d3d8_screencopy_forget_texture(D3D8Texture *tex);
+void d3d8_rebind_stage_textures(void);   /* d3d8_device.c */
 
 /* Read the D3DFORMAT of any base texture. */
 D3DFORMAT d3d8_base_format(IDirect3DBaseTexture8 *texture);

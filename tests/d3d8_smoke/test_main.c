@@ -57,6 +57,9 @@ IDirect3DDevice8      *xbox_GetD3DDevice(void)  { return NULL; }
 
 static DWORD g_palette[256];
 const DWORD *d3d8_GetPalette(DWORD stage) { (void)stage; return g_palette; }
+/* d3d8_screencopy.c, not linked here: no texture holds a screen copy. */
+void d3d8_screencopy_forget_image(RhiImage *image) { (void)image; }
+void d3d8_screencopy_forget_texture(D3D8Texture *tex) { (void)tex; }
 
 static int failures = 0;
 

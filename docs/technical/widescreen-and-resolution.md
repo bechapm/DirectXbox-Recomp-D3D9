@@ -567,3 +567,175 @@ Not done: the vertical zoom is not recorded in a frame capture, so a replay of a
 widescreen frame draws the title's own viewports; and a HUD placed this way sits
 in the centre 4:3 block (`XBOX_D3D8_2D_SIDE` would pin it to the edges, but it
 does not let a whole-screen fade span the picture).
+
+## 9. Any shape, and resolution by lines (Nov 2026)
+
+Widescreen was one shape, 16:9, and resolution was a whole-number multiple of the
+guest's size. Players with ultrawide (21:9, 32:9) or 16:10 screens want the picture
+their screen is, and players think of resolution as 1080p or 1440p, not as "3x".
+Both are now settings, read in `src/config/recomp_config.c`:
+
+| Setting | File | Environment | Meaning |
+| --- | --- | --- | --- |
+| Shape | `aspect_ratio` | `RECOMP_ASPECT` | The picture's shape *with widescreen on*: `16:9` (the default), `16:10`, `21:9`, `32:9`, any `W:H` or `WxH`, a plain number, or `screen` for the shape of the screen the game runs on. Narrower than 4:3 is read as 16:9. Clamped to 4:1 |
+| Lines | `resolution` | `RECOMP_RESOLUTION` | The lines rendered, e.g. `1080`; `screen` for the screen's own height. Without it, `resolution_scale` (`RECOMP_RES_SCALE`) times the guest's height, as before. Either environment variable wins over both lines of the file |
+
+`widescreen` is still the switch. The launcher's Aspect ratio row writes it off for
+4:3 and on, with `aspect_ratio`, for anything wider, and its Resolution row writes
+`resolution` and the nearest `resolution_scale`, so a build from before either line
+reads the file as the nearest thing it knows.
+
+```
+              guest frame (640x480, 4:3)
+                        |
+   resolution lines --> scene, rendered at the picture's shape with square pixels
+                        |     (1440 lines at 21:9 = 3360x1440; at 4:3, 1920x1440)
+                        |
+     3D draws: Hor+ factor (4/3)/aspect on the projection, or the title's own camera
+     2D draws: squeezed by the same factor about the middle, or pinned to an edge
+                        |
+                 resolve, box filtered with taps counted per axis
+                        |
+                    the window (bars where its shape differs)
+```
+
+What follows from it:
+
+- **The scene is rendered at the picture's shape** (`d3d8_display_scene_size`, through
+  `recomp_scene_size`). Before, a widescreen frame was rendered 4:3 and stretched at
+  present, which at 21:9 would have been 1.75 times softer across than down. A
+  frame the title calls 4:3 (`xbox_D3D8SetWideFrames`) is drawn into the same wide
+  scene and resolved into a 4:3 box, so it is supersampled across. With widescreen
+  off and a whole-number scale the scene is exactly guest times scale, as always.
+- **The Hor+ factor is (4/3)/aspect**: 0.75 at 16:9, 0.571 at 21:9, 0.375 at 32:9
+  (`recomp_hor_plus_for_aspect`). A title that widens its own camera
+  (`xbox_D3D8ClaimHorPlus`) gets the factor for the shape chosen and needs no change.
+- **The 2D squeeze is the guest's shape over the picture's** (`two_d_squeeze` in
+  `d3d8_device.c`), so a HUD laid out for 4:3 stays in proportion at any shape, and
+  a piece pinned LEFT or RIGHT goes to the edge of the wider picture.
+- **A title with a 16:9 mode of its own is shown at 16:9 at most**, between bars on a
+  wider screen (`d3d8_display_shown_aspect`). Its camera is its own and only knows
+  16:9. A HOR_PLUS title, or one with `hor_plus` set by hand, is shown at any shape.
+  That is decided every frame, because a title that widens its own camera says so
+  late. The launcher offers 4:3 and 16:9 only to a title that has not declared
+  `recomp_title_widescreen(HOR_PLUS ...)`.
+- **A movie is fitted to the shape its buffer is shown at**, so it stays 4:3
+  between bars in a wide frame rather than stretching.
+- **"screen" is the desktop mode in real pixels**: on Windows `recomp_config.c` asks
+  `EnumDisplaySettings` (primary screen, whatever the DPI scaling); under SDL the host
+  and the launcher call `recomp_set_screen_size` when video starts, before the device
+  is made.
+- **The scene is never larger than 16384 either way** (`RECOMP_SCENE_MAX_SIZE`); a
+  choice past it is scaled down keeping its shape. 32:9 at 4320 lines is 15360 wide.
+
+- **A screen copy is taken at the scene's resolution** (`d3d8_screencopy.c`). A title
+  that copies its frame into a texture and draws it back over the picture made its
+  texture the size of its own screen, so the copy was 640x480 whatever was rendered,
+  and drawn back over the picture it made every resolution look like the guest's.
+  TimeSplitters 2 does it three times a frame for its glow, which is why its 1440p
+  looked like 480p. Each such texture now gets a second image, the scene's size
+  over the guest's times its own, the copy goes into both, and after a whole-frame
+  copy the large one is what the texture is sampled through, with the same
+  coordinates. An upload, a draw or a depth copy into the texture hands it back its
+  own image. `RECOMP_SCREEN_COPY_SCALE=0` keeps the copy at the texture's size.
+  How many of those passes are drawn is a setting of its own,
+  `xbox_D3D8SetFramePassLimit` (`RECOMP_FRAME_PASSES`, `frame_passes`): the first n
+  of a frame, -1 for all (the default), 0 for none, for a title's menu to offer.
+
+### Anchors, and past the old edge
+
+A title with no widescreen mode positions its 2D in its own pixels, and says nothing
+about what each piece is attached to. That is the one piece of a modern UI's layout it
+lacks: an engine's widget has an anchor, a web page's box has a flex or grid parent,
+and the position comes from the screen's shape. So placements are anchors, set by the
+title (`xbox_D3D8SetTwoDPlacement`), and every position is still worked out from the
+factor k = (4/3)/aspect. Nothing is kept per resolution or per shape.
+
+```
+ guest 4:3, 640 wide            the wide picture, one factor k for all of it
+ +----------------+    +----------------------------------------------------+
+ |a      b       c|    |a'                  b'                              |
+ |                |    |                                                  c'|
+ +----------------+    +----------------------------------------------------+
+    STRETCH   x * w/640: spans, shape stretched       (a backdrop)
+    CENTRE    in proportion, 4:3 box in the middle    (b, a menu panel)
+    LEFT      in proportion, 4:3 box at the left edge (a, a health corner)
+    RIGHT     in proportion, 4:3 box at the right     (c, an ammo corner)
+    SIDE      LEFT, RIGHT or CENTRE by the draw's third of the screen
+    SPREAD    in proportion, each draw's middle at the same fraction of the width
+    FILL      CENTRE, but a draw across the whole width spans: full-bleed
+```
+
+Set them on the largest thing that moves together. LEFT and RIGHT move a whole group
+rigidly, which is what a modern layout does with a group. SPREAD moves each draw by
+itself, so anything that is more than one draw comes apart by 1/k as the picture
+widens: at 21:9 a counter and its label 60 pixels apart in 640 are as far apart as 105
+would be, and text with an outline drawn apart from it loses it. TimeSplitters 2 tried
+it as the default for what nobody had named, and that took its health bars and
+targeting display to pieces, so it is for a piece known to be one draw, if any.
+
+FILL is the rule for what nobody has named: in proportion, and full-bleed across the
+whole width. AUTO, the width guess, is what is left for a title that says nothing. It
+measures a whole draw, so two small pieces in one draw at opposite sides read as one
+wide one, and its threshold is a measurement of one screen.
+
+3D can be part of a layout too: a turning character in a menu's panel, a weapon on a
+page. It is built for the 4:3 screen and nothing widens it, so it is stretched across
+the picture and off its panel. It needs no list, since it shows in the camera:
+
+| | Camera, width over height | At 4:3 and at 21:9 |
+| --- | --- | --- |
+| The world | the picture's: 2.39 at 21:9 | differs, it is widened |
+| TimeSplitters 2's weapon on a pause page | 1.33 | the same |
+| Its character in a panel | 1.0 | the same |
+
+A camera narrower than the picture was not made for the picture. With
+`XBOX_D3D8_2D_PANEL_3D` or-ed into its placements, such a draw is kept at 4:3, centred.
+A title sets it while its UI draws, since a split screen's narrow view is the world.
+A named anchor wins: a 3D backdrop placed STRETCH still spans the picture.
+Through a viewport of the whole screen it is held by its projection instead of its
+viewport, the same shape in the same place, so what reaches past 4:3 is not cut there.
+It is a flag, not a placement, since a panel and its model are drawn in turn and the
+panel's next piece would end one. It needs a title that widens its own camera, whose
+projection register holds what the game built. `XBOX_D3D8_2D_PANEL_ANCHORED` with it
+keeps the model at the placement's anchor instead of centred, for a panel pinned to a
+side, as TimeSplitters 2's MapMaker preview is.
+
+FILL's other half, with the title's overflow on: a piece flush with the screen's edge
+keeps that edge at the picture's edge and the rest in proportion, as a nine-slice does.
+A scope's mask and a filter's rim are such pieces, each short of the whole width.
+
+A scissor within two pixels of the whole width is the screen and not a box: it does not
+stop a draw overflowing, and on a wider picture it reaches the edge, or those pixels
+would be a bare strip down the side. TimeSplitters 2's own is 0..638 of 640.
+
+The squeeze is a viewport, and nothing is drawn outside a viewport: in CSS terms,
+`overflow: hidden` at the old edge. On the console that edge was the screen's. A piece
+that runs off the side, such as TimeSplitters 2's menu panels' rays (x -243 to 910 of
+640), is cut with a hard line in the middle of a wide picture.
+
+```
+ CENTRE, hidden                         CENTRE, visible (xbox_D3D8SetTwoDOverflow)
+ |      |  4:3 box   |  cut    |        |      |  4:3 box   |           |
+ |      |   ////|////|         |        |      |   ////|//////////      |
+ |      |  /////|////|         |        |      |  /////|/////////       |
+ viewport narrowed, the rest lost       viewport whole, x squeezed in a copy
+```
+
+`xbox_D3D8SetTwoDOverflow(TRUE)` is `overflow: visible`. A draw still squeezed after its
+placement, reaching past the guest's screen, under no scissor narrower than the screen,
+has the same squeeze done to a copy of its vertices, and the copy is drawn with the
+viewport left alone. So it lands where it would have and goes on to where it ends. Every
+2D draw reaches the device with its vertices on the CPU (`d3d8_place_2d_draw`, a title's
+vertex buffers included), so this is one place, and no renderer or vertex path knows of
+it. Only such a draw pays for the copy. A smaller scissor keeps its meaning: a menu box
+clips. A title opts in, since what was off the screen in 4:3 can now be seen, and
+`RECOMP_D3D8_2D_OVERFLOW=0` or `1` is over its choice (`1` for a replay, which has no
+title to ask). Drawing into a texture stays as it was.
+
+A 4:3-only title widened past 16:9 shows what its makers never meant to be seen,
+most of all in cutscenes framed for 4:3: geometry ending, characters waiting off to
+the side. That is the price of the shape and not something the toolkit can know.
+
+Tests: `tests/config_smoke` covers the parsing, the factor, the scene and window
+sizes and which line wins.

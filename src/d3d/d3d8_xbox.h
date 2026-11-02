@@ -1300,6 +1300,39 @@ void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *h
  *            image through one function, its health box inside the
  *            screen and its damage indicator as quarter-screen quads that
  *            overhang the edge, too narrow for AUTO to let span.
+ *   SPREAD   keep at 4:3, each draw moved whole: its middle goes as far
+ *            across the picture as it was across the guest's screen, so a
+ *            piece at 90% of 640 sits at 90% of the wide picture, in
+ *            proportion. What AUTO would span still spans. Takes one rule to
+ *            a whole screen with no list of its pieces, and reaches every
+ *            shape, but only keeps the pieces of a group together if they
+ *            are one draw: a counter and its label a little apart in 4:3 end
+ *            up further apart as the picture widens, where LEFT or RIGHT
+ *            keeps them as they were. Nor is it for a default: text drawn
+ *            with its shadow as separate draws comes apart.
+ *   FILL     keep at 4:3, centred, but a draw across the guest's whole width
+ *            spans the picture, whatever is in it: a fade, a filter, a frame.
+ *            What AUTO's width guess is for, as a rule: nothing short of the
+ *            whole width is taken for a backdrop. For a title's default, or
+ *            an area of its UI. A piece flush with the screen's edge keeps
+ *            that edge at the picture's, the rest of it in proportion, as a
+ *            nine-slice does, with the title's overflow on (a scope's mask, a
+ *            filter's rim). Unlike CENTRE, which holds a full-width
+ *            picture in proportion.
+ *
+ * XBOX_D3D8_2D_PANEL_3D, or-ed into a placement, is for 3D that is part of a
+ * 4:3 layout: a turning character in a menu's panel, a weapon on a page. While
+ * it is set, a draw through a camera narrower than the picture was not made
+ * for the picture, and is kept at 4:3, centred, in the shape it has at 4:3;
+ * left alone it would be stretched across the picture. The world's camera is
+ * as wide as the picture and is left alone, so this takes no list of what is
+ * in a menu. For a title that widens its own camera, whose projection register
+ * holds what the game built; and only while its UI draws, since a split
+ * screen's narrow view is the world and not a panel. A 3D backdrop stays out of
+ * it by being placed STRETCH. A flag and not a placement, since a panel's 2D and
+ * its model are drawn in turn. Program draws. XBOX_D3D8_2D_PANEL_ANCHORED with it
+ * keeps such a model at the placement's anchor instead of centred, for a panel
+ * pinned to a side.
  *
  * Holds until changed; 3D draws ignore it; without widescreen nothing is
  * squeezed and it has no effect. `tag` names the title's call site for
@@ -1311,9 +1344,22 @@ enum {
     XBOX_D3D8_2D_LEFT,
     XBOX_D3D8_2D_RIGHT,
     XBOX_D3D8_2D_SIDE,
-    XBOX_D3D8_2D_EDGE
+    XBOX_D3D8_2D_EDGE,
+    XBOX_D3D8_2D_SPREAD,
+    XBOX_D3D8_2D_FILL
 };
+#define XBOX_D3D8_2D_PANEL_3D 0x100
+#define XBOX_D3D8_2D_PANEL_ANCHORED 0x200
 void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag);
+
+/* Whether a screen-space draw reaching past the guest's screen goes on past
+ * the old edge. A piece squeezed to 4:3 is otherwise cut there, as the guest's
+ * screen cut it, though the picture goes on: CSS's overflow hidden, and this
+ * is visible. A title opts in, since what was off the screen in 4:3 can now
+ * be seen: a panel waiting to slide in, say. A scissor narrower than the
+ * screen still holds; RECOMP_D3D8_2D_OVERFLOW=0 or 1 is over this. Off by
+ * default. */
+void xbox_D3D8SetTwoDOverflow(BOOL on);
 
 /* A title's own test for which of its fixed-function draws are screen-space.
  * The renderer knows two kinds: pre-transformed vertices, and a vertex
@@ -1403,6 +1449,16 @@ void xbox_D3D8SetRemixViewSource(int (*source)(float view[16]));
    colour. */
 void xbox_D3D8SetWireframe(int on);
 int  xbox_D3D8Wireframe(void);
+
+/* A title's full-screen passes over its own finished frame -- the draws that
+   sample the frame copied into a texture at stage 0, for a glow, a soften,
+   a colour grade -- drawn only up to `n` a frame, the first n in the order
+   the title draws them; -1 draws every one (the default), 0 none. For a
+   title's own settings or debugging menu, to compare a picture with and
+   without them. RECOMP_FRAME_PASSES=<n> (settings file frame_passes) starts
+   with it; RECOMP_HLE_D3D8_SKIP_FULLSCREEN=1 is 0. */
+void xbox_D3D8SetFramePassLimit(int n);
+int  xbox_D3D8FramePassLimit(void);
 
 /* A title's own debugging keys: whether the key with this Windows
    virtual-key code is held, and the game's window is in front (keys pressed

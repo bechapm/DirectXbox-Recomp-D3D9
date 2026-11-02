@@ -37,6 +37,7 @@
 #include <unistd.h>
 
 #include "launcher.h"
+#include "recomp_config.h"             /* recomp_set_screen_size */
 #include "launcher_theme.h"
 
 extern char **environ;
@@ -503,6 +504,20 @@ static void fit(void)
     launcher_resize(w, h);
 }
 
+/* The screen's size in pixels, for aspect_ratio = screen and resolution =
+ * screen (recomp_config.h): the primary display's desktop mode. */
+static void note_screen_size(void)
+{
+    SDL_DisplayID d = SDL_GetPrimaryDisplay();
+    const SDL_DisplayMode *m = d ? SDL_GetDesktopDisplayMode(d) : NULL;
+
+    if (m && m->w > 0 && m->h > 0) {
+        float k = m->pixel_density > 0.0f ? m->pixel_density : 1.0f;
+
+        recomp_set_screen_size((int)((float)m->w * k + 0.5f), (int)((float)m->h * k + 0.5f));
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *shot = getenv("RECOMP_LAUNCHER_SHOT");
@@ -518,6 +533,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "launcher: SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
+    note_screen_size();
 #if defined(__APPLE__)
     /* SDL gives a Mac window OpenGL unless told the program brings its own
      * graphics, and offscreen has no OpenGL here. Nothing draws with it:
