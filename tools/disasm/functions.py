@@ -9,7 +9,9 @@ Implements multi-pass function detection with confidence scoring:
 5. Cross-validation and overlap resolution
 """
 
+import array
 import bisect
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -274,6 +276,44 @@ class FunctionDetector:
         # count; the first byte of real code (8B, 55, 83, 56, ...) is not. So
         # skip the index bytes, then int3/nop padding, and what is left is the
         # next function -- or another switch's 8B FF, which is not.
+        #
+        # The index walk stops at an address something else already names as
+        # code: a known start, an alias entry, or the target of a direct jump
+        # or call. An index table is data, nothing branches into it. A switch
+        # with more cases than the first opcode bytes' values cannot tell the
+        # two apart by value: Constantine's at 0x0004E220 has ~156 entries, so
+        # "56 8B F1" (push esi; mov esi, ecx) at 0x0004E490 -- a tail-jump
+        # target -- read as two more indices, a function was started at the
+        # F1 in the middle of the mov, and the lifted method lost "mov esi,
+        # ecx": its vtable calls went through whatever esi held, and the
+        # difficulty menu's options were never built.
+        #
+        # A method reached only through a vtable is named by nothing in the
+        # code at all -- 0x0004E490 is one -- and the pass that collects
+        # pointers from data runs after this one. So the data sections are
+        # searched here too, for words naming any byte an index walk could
+        # reach. A coincidental match only ends a walk early, which costs a
+        # recovery, never a split.
+        # Alias entries are not evidence here: one can come from the sweep's
+        # own junk (Constantine 0x00140010, index bytes taken for a tail-jump
+        # target), and stopping at it lost the real function at 0x00140020.
+        existing = set(self._candidates) | set(self.functions)
+        known = set(existing)
+        # Branches only from inside a function: the sweep decodes the index
+        # bytes too, and their garbage jumps land among the index bytes
+        # (Constantine lost five real functions after switch tables to that).
+        for insn in self.engine.instructions.values():
+            if in_a_gap(insn.address):
+                continue
+            for t in (getattr(insn, "jump_target", None),
+                      getattr(insn, "call_target", None)):
+                if t is not None:
+                    known.add(t)
+        code_ranges = [(sec.virtual_addr, sec.virtual_addr + sec.virtual_size)
+                       for sec in sections]
+        known |= self._data_words_naming(
+            {a for _tbl, end in tables for a in range(end, end + 256)},
+            {sec.name for sec in sections}, code_ranges)
         after = 0
         for tbl, end in tables:
             entries = (end - tbl) // 4
@@ -285,14 +325,22 @@ class FunctionDetector:
                 b = self.image.read_bytes_at_va(addr, 1)
                 if not b or b[0] >= entries:
                     break
+                # Named as code, and could be a function (the 0x0F rule below,
+                # and a body that decodes): 0x00140010 is named by a pointer
+                # and starts "00 00", index bytes, not code.
+                if (addr in known and b[0] >= 0x0F
+                        and self.engine.probes_as_function_body(addr)):
+                    break
                 addr += 1
             while True:
                 b = self.image.read_bytes_at_va(addr, 1)
                 if not b or b[0] not in (0xCC, 0x90):
                     break
                 addr += 1
-            if (addr in self._candidates or addr in self.functions
-                    or table_or_its_padding(addr) or not in_a_gap(addr)):
+            # Only an existing entry is a reason to skip it: an address the
+            # walk stopped at because code or a vtable names it is exactly
+            # the function this pass is here to find.
+            if (addr in existing or table_or_its_padding(addr) or not in_a_gap(addr)):
                 continue
             # Opcodes 0x00-0x0E are `add`, `or` and segment pushes. No function
             # starts with one, but an index table does, because its bytes are
@@ -321,6 +369,36 @@ class FunctionDetector:
             print("  functions recovered that follow a ret with no padding"
                   + (f" ({after} after a switch table)" if after else ""))
         return added
+
+    def _data_words_naming(self, addrs: Set[int], code_names: Set[str],
+                           code_ranges: List[Tuple[int, int]]) -> Set[int]:
+        """The members of `addrs` stored as an aligned dword outside the code
+        sections, beside another code pointer -- a vtable or a callback table,
+        not a lone word that matches by chance. Code sections by name, as
+        _pass_data_ptr_targets decides: an XBE flags .rdata executable, and
+        that is where vtables are."""
+        def is_code(w: int) -> bool:
+            return any(lo <= w < hi for lo, hi in code_ranges)
+
+        found: Set[int] = set()
+        sections = getattr(self.image, "sections", None)
+        if not addrs or not sections:
+            return found
+        for sec in sections:
+            if sec.name in code_names or sec.name == ".XTLID":
+                continue
+            data = self.image.get_section_data(sec)
+            if not data:
+                continue
+            words = array.array("I")
+            words.frombytes(bytes(data[:len(data) & ~3]))
+            if sys.byteorder != "little":
+                words.byteswap()
+            for i, w in enumerate(words):
+                if w in addrs and ((i > 0 and is_code(words[i - 1])) or
+                                   (i + 1 < len(words) and is_code(words[i + 1]))):
+                    found.add(w)
+        return found
 
     def _pass_seed_aliases(self) -> None:
         """

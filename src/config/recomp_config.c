@@ -303,7 +303,11 @@ void recomp_settings_defaults(RecompSettings *s)
     s->frame_interp      = 1;
     s->mouse_look        = 0;
     s->mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
+#if defined(__ANDROID__)
     snprintf(s->touch_controls, sizeof s->touch_controls, "auto");
+#else
+    snprintf(s->touch_controls, sizeof s->touch_controls, "off");   /* Android only */
+#endif
     s->touch_opacity     = 0.45;
     s->touch_scale       = 1.0;
     snprintf(s->frame_cap, sizeof s->frame_cap, "adaptive");

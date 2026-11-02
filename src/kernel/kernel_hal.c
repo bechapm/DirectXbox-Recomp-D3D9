@@ -1143,6 +1143,54 @@ ULONGLONG __stdcall xbox_KeQueryInterruptTime(void)
  * ========================================================================= */
 #define XBOX_TSC_HZ 733333333ull
 
+/* A thread that does nothing but read the clock is waiting for time to pass,
+ * and on the host it does so at the speed of the host: Constantine's Bink
+ * player asks "is the next frame due?" (a mutex taken and released) and reads
+ * the TSC round and round between movie frames, about two million kernel
+ * calls a second on one core -- heat and battery on a handheld for nothing.
+ * The console spins the same way, but there the CPU is its own.
+ *
+ * So a thread that reads the TSC POLL_READS times within a millisecond of
+ * host time, POLL_WINDOWS windows running, sleeps a millisecond (dropping the
+ * guest lock, so the thread it waits for runs) and reads the clock afresh. A
+ * loop waiting for a moment overshoots it by at most about that long; work
+ * that reads the clock as it goes reads it far less often than this.
+ * RECOMP_TSC_POLL_SLEEP=0 lets it spin. */
+#define POLL_READS   256u
+#define POLL_WINDOWS 4u
+static XBOX_THREAD_LOCAL LONGLONG t_poll_start;
+static XBOX_THREAD_LOCAL uint32_t t_poll_reads, t_poll_windows;
+static volatile LONG g_poll_sleeps;
+
+static int tsc_poll_backoff(LONGLONG now, LONGLONG freq)
+{
+    static int on = -1;
+
+    if (on < 0)
+        on = xbox_EnvSwitch("RECOMP_TSC_POLL_SLEEP", 1);
+    if (!on)
+        return 0;
+    if (t_poll_reads++ == 0) {
+        t_poll_start = now;
+        return 0;
+    }
+    if (t_poll_reads < POLL_READS)
+        return 0;
+    t_poll_reads = 0;
+    if (now - t_poll_start >= freq / 1000) {
+        t_poll_windows = 0;              /* reads spread out: work, not a poll */
+        return 0;
+    }
+    if (++t_poll_windows < POLL_WINDOWS)
+        return 0;
+    if (InterlockedIncrement(&g_poll_sleeps) == 1)
+        fprintf(stderr, "[TIME] a thread polls the clock (%u reads within 1 ms, %u times "
+                "running): it sleeps 1 ms between polls (RECOMP_TSC_POLL_SLEEP=0 to "
+                "spin)\n", POLL_READS, POLL_WINDOWS);
+    xbox_GuestSleep(1);
+    return 1;
+}
+
 uint64_t xbox_ReadTimeStampCounter(void)
 {
     static LARGE_INTEGER freq;
@@ -1156,6 +1204,8 @@ uint64_t xbox_ReadTimeStampCounter(void)
             freq.QuadPart = 1;
     }
     QueryPerformanceCounter(&now);
+    if (tsc_poll_backoff(now.QuadPart, freq.QuadPart))
+        QueryPerformanceCounter(&now);
 
     {
         uint64_t ticks = (uint64_t)(now.QuadPart - origin.QuadPart);
