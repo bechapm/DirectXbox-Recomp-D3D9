@@ -1327,7 +1327,9 @@ void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *h
  * holds what the game built; and only while its UI draws, since a split
  * screen's narrow view is the world and not a panel. A 3D backdrop stays out of
  * it by being placed STRETCH. A flag and not a placement, since a panel's 2D and
- * its model are drawn in turn. Program draws.
+ * its model are drawn in turn. Program draws. XBOX_D3D8_2D_PANEL_ANCHORED with it
+ * keeps such a model at the placement's anchor instead of centred, for a panel
+ * pinned to a side.
  *
  * Holds until changed; 3D draws ignore it; without widescreen nothing is
  * squeezed and it has no effect. `tag` names the title's call site for
@@ -1344,6 +1346,7 @@ enum {
     XBOX_D3D8_2D_FILL
 };
 #define XBOX_D3D8_2D_PANEL_3D 0x100
+#define XBOX_D3D8_2D_PANEL_ANCHORED 0x200
 void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag);
 
 /* Whether a screen-space draw reaching past the guest's screen goes on past

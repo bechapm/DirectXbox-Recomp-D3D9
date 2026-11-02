@@ -432,6 +432,7 @@ static float    g_2d_spread = 0.5f;
 /* XBOX_D3D8_2D_PANEL_3D is set; and the draw in hand is such a model, kept
  * centred whatever the 2D around it is anchored to. */
 static BOOL     g_2d_panel_3d;
+static BOOL     g_2d_panel_anchored;   /* it goes with its panel's anchor */
 static BOOL     g_2d_panel_draw;
 
 /* The widescreen 2D squeeze (see apply_host_viewport) as a horizontal
@@ -504,7 +505,7 @@ static BOOL two_d_squeeze(float *k_out, float *cx_out)
     *k_out = k;
     span = g_cur_rt ? (float)g_cur_rt->width * rt_scale_x()
                     : (float)g_device_state.width;
-    if (g_2d_panel_draw)
+    if (g_2d_panel_draw && !g_2d_panel_anchored)
         *cx_out = span * 0.5f;
     else if (g_2d_anchor == XBOX_D3D8_2D_LEFT)
         *cx_out = 0.0f;
@@ -652,12 +653,27 @@ BOOL xbox_D3D8GetScissors(UINT *count, BOOL *exclusive, D3DRECT *rect)
     return g_scissor_count != 0;
 }
 
+/* Whether the scissor is the whole width. A title's own often stops a pixel
+ * or two short of the edge (TimeSplitters 2's 0..638 of 640), which says
+ * "the screen" and not "this box". */
+static BOOL scissor_is_screen(void)
+{
+    return g_scissor.left <= 2 && g_scissor.right >= (int32_t)d3d8_GetGuestWidth() - 3;
+}
+
 BOOL d3d8_GetScissor(RhiRect *out)
 {
     if (out) {
         float sx = rt_scale_x(), sy = rt_scale_y();
         float left = g_scissor.left * sx, right = g_scissor.right * sx;
         float k, cx;
+
+        /* On a wider picture those pixels would be a strip the width of a
+         * finger down the side, with nothing drawn in it. */
+        if (!g_cur_rt && d3d8_display_wide_now() && scissor_is_screen()) {
+            left = 0.0f;
+            right = (float)g_device_state.width;
+        }
 
         /* Stored as the title gave them, converted here, so the stored
          * rectangle stays comparable with anything else in guest pixels
@@ -2642,7 +2658,8 @@ void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag)
     int anchor;
 
     g_2d_panel_3d = (placement & XBOX_D3D8_2D_PANEL_3D) != 0;
-    placement &= ~XBOX_D3D8_2D_PANEL_3D;
+    g_2d_panel_anchored = (placement & XBOX_D3D8_2D_PANEL_ANCHORED) != 0;
+    placement &= ~(XBOX_D3D8_2D_PANEL_3D | XBOX_D3D8_2D_PANEL_ANCHORED);
     if (placement < XBOX_D3D8_2D_AUTO || placement > XBOX_D3D8_2D_FILL)
         placement = XBOX_D3D8_2D_AUTO;
     g_2d_tag = tag;
@@ -2855,8 +2872,7 @@ static void two_d_overflow(const void *vertices, UINT stride, UINT count)
         !two_d_squeeze(&k, &cx))
         return;
     /* A scissor the size of a box means the box: its edge is meant. */
-    if (g_scissor_enabled &&
-        (g_scissor.left > 0 || g_scissor.right < (int32_t)guest_w - 1))
+    if (g_scissor_enabled && !scissor_is_screen())
         return;
     copy = (unsigned char *)malloc((size_t)count * stride);
     if (!copy)

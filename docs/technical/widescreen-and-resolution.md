@@ -695,7 +695,13 @@ A title sets it while its UI draws, since a split screen's narrow view is the wo
 A named anchor wins: a 3D backdrop placed STRETCH still spans the picture.
 It is a flag, not a placement, since a panel and its model are drawn in turn and the
 panel's next piece would end one. It needs a title that widens its own camera, whose
-projection register holds what the game built.
+projection register holds what the game built. `XBOX_D3D8_2D_PANEL_ANCHORED` with it
+keeps the model at the placement's anchor instead of centred, for a panel pinned to a
+side, as TimeSplitters 2's MapMaker preview is.
+
+A scissor within two pixels of the whole width is the screen and not a box: it does not
+stop a draw overflowing, and on a wider picture it reaches the edge, or those pixels
+would be a bare strip down the side. TimeSplitters 2's own is 0..638 of 640.
 
 The squeeze is a viewport, and nothing is drawn outside a viewport: in CSS terms,
 `overflow: hidden` at the old edge. On the console that edge was the screen's. A piece

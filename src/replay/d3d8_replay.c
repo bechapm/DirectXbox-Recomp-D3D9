@@ -1510,7 +1510,7 @@ static void replay_chunk(Replay *r, const D3D8CapChunk *c)
         for (k = 0; k < g_place_count; k++)
             if (g_place[k].all || g_place[k].tag == p->tag)
                 placement = g_place[k].placement |
-                            ((int)p->placement & XBOX_D3D8_2D_PANEL_3D);
+                            ((int)p->placement & (XBOX_D3D8_2D_PANEL_3D | XBOX_D3D8_2D_PANEL_ANCHORED));
         if (g_list_draws)
             fprintf(stderr, "[2d placement] tag %08lX: %d%s\n", (unsigned long)p->tag,
                     placement, placement != (int)p->placement ? " (from --place)" : "");
