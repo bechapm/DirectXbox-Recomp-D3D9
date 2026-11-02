@@ -297,7 +297,11 @@ void recomp_touch_init(void)
 #if defined(__ANDROID__)
     T.mode = mode_from(recomp_config_lookup("RECOMP_TOUCH_CONTROLS", "touch_controls"), MODE_AUTO);
 #else
-    T.mode = mode_from(recomp_config_lookup("RECOMP_TOUCH_CONTROLS", "touch_controls"), MODE_OFF);
+    /* A desktop has a pad, a keyboard and a mouse; the overlay is a phone's.
+     * The settings file's default was "auto" everywhere, so a desktop run
+     * showed the controls whenever no pad was connected. */
+    T.mode = MODE_OFF;
+    (void)mode_from;
 #endif
     T.opacity = setting_float("RECOMP_TOUCH_OPACITY", "touch_opacity", 0.45f, 0.1f, 1.0f);
     T.scale = setting_float("RECOMP_TOUCH_SCALE", "touch_scale", 1.0f, 0.5f, 2.0f);
@@ -323,8 +327,12 @@ void recomp_touch_configure(const char *mode, float opacity, float scale)
     if (!T.lock)
         return;
     SDL_LockMutex(T.lock);
+#if defined(__ANDROID__)
     if (mode)
         T.mode = mode_from(mode, T.mode);
+#else
+    (void)mode;                         /* Android only (recomp_touch_init) */
+#endif
     if (opacity > 0.0f)
         T.opacity = clampf(opacity, 0.1f, 1.0f);
     if (scale > 0.0f && clampf(scale, 0.5f, 2.0f) != T.scale) {

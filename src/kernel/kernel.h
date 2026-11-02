@@ -118,6 +118,9 @@ typedef LONG KPRIORITY;
 #ifndef STATUS_SHARING_VIOLATION
 #define STATUS_SHARING_VIOLATION        ((NTSTATUS)0xC0000043L)
 #endif
+#ifndef STATUS_TOO_MANY_OPENED_FILES
+#define STATUS_TOO_MANY_OPENED_FILES    ((NTSTATUS)0xC000011FL)
+#endif
 #ifndef STATUS_NOT_SAME_DEVICE
 #define STATUS_NOT_SAME_DEVICE          ((NTSTATUS)0xC00000D4L)
 #endif
@@ -585,6 +588,15 @@ typedef char  xbox_host_char;
 const wchar_t *xbox_LastHostPath(void);
 
 BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size);
+
+#if !defined(_WIN32)
+/* Give each component of host_path from byte `from` on that does not exist as
+ * spelled the spelling of its case-insensitive match on disk, as
+ * xbox_translate_path does for the guest part of a path. For a name joined to
+ * an open directory's path (an open relative to RootDirectory), which never
+ * passes through xbox_translate_path. */
+void xbox_fold_host_path_case(char *host_path, size_t from);
+#endif
 
 /* The first RECOMP_MODS folder holding rel (relative to a mod folder, '/'
  * separated) as a file: its host path in out, its index returned; -1 if none.

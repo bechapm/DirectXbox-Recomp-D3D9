@@ -1175,6 +1175,11 @@ static void fold_case(char *path, size_t from)
     }
 }
 
+void xbox_fold_host_path_case(char *host_path, size_t from)
+{
+    fold_case(host_path, from);
+}
+
 BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
 {
     const char* remainder = NULL;

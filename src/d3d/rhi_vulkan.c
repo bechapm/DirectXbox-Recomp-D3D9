@@ -88,6 +88,7 @@ int rhi_vk_dxc_compile(uint32_t stage, const RhiShaderSource *src,
 #define RING_CHUNK      (8u << 20)
 #define MAX_VB          16
 #define MAX_TEX         16
+#define OCCL_QUERIES 8192u   /* rhi_occlusion_*: one a counted draw */
 #define MAX_UBO         8
 #define MAX_REFL        32
 
@@ -241,6 +242,7 @@ static struct {
     VmaAllocator             vma;
     VkFormat                 depth24;       /* D24S8, or D32S8 where there is none */
     int feat_depth_clamp, feat_fill, feat_bias_clamp, feat_aniso, feat_border, feat_lod_bias;
+    int feat_query_reset, feat_precise;
     int                      validation;
 
     VkDescriptorSetLayout    set_layout;
@@ -317,6 +319,13 @@ static struct {
         uint32_t             read_mask, write_mask, ref;
         float                blend_const[4];
     } dyn;
+
+    /* Occlusion counting (rhi_occlusion_*): one query a draw while a test is
+     * open, taken in order from the pool and reset from the host when the
+     * pool is used up. A generation tells a test whose queries were reused. */
+    VkQueryPool      occl_pool;
+    uint32_t         occl_next, occl_first, occl_gen;
+    int              occl_counting, occl_overflow;
 } V;
 
 static struct {
@@ -1414,6 +1423,11 @@ static int create_device(void)
     f2.features.depthClamp = V.feat_depth_clamp = have.features.depthClamp;
     f2.features.depthBiasClamp = V.feat_bias_clamp = have.features.depthBiasClamp;
     f2.features.samplerAnisotropy = V.feat_aniso = have.features.samplerAnisotropy;
+    /* Visibility tests (rhi_occlusion_*): the NV2A counts every sample that
+     * passes, so a precise count where the device has one; the pool is reset
+     * from the host, between frames' worth of draws. */
+    f2.features.occlusionQueryPrecise = V.feat_precise = have.features.occlusionQueryPrecise;
+    f12.hostQueryReset = V.feat_query_reset = have12.hostQueryReset;
     f12.timelineSemaphore = VK_TRUE;
     f12.scalarBlockLayout = have12.scalarBlockLayout;
     f12.samplerMirrorClampToEdge = have12.samplerMirrorClampToEdge;
@@ -1637,6 +1651,18 @@ static int create_frames(void)
         VKCHECK(vkAllocateCommandBuffers(V.dev, &ai, &V.frames[i].cmd), "command buffer");
         VKCHECK(vkCreateSemaphore(V.dev, &sci, NULL, &V.frames[i].acquire), "semaphore");
     }
+    if (V.feat_query_reset) {
+        VkQueryPoolCreateInfo qci = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+        qci.queryType = VK_QUERY_TYPE_OCCLUSION;
+        qci.queryCount = OCCL_QUERIES;
+        if (vkCreateQueryPool(V.dev, &qci, NULL, &V.occl_pool) == VK_SUCCESS)
+            vkResetQueryPool(V.dev, V.occl_pool, 0, OCCL_QUERIES);
+        else
+            V.occl_pool = VK_NULL_HANDLE;
+    }
+    if (!V.occl_pool)
+        fprintf(stderr, "[RHI] vulkan: no host query reset on %s; visibility tests are not "
+                        "counted\n", V.props.deviceName);
     return 0;
 }
 
@@ -1922,6 +1948,7 @@ static void v_device_destroy(void)
     destroy_swapchain_views();
     if (SC.sc) vkDestroySwapchainKHR(V.dev, SC.sc, NULL);
     vkDestroySemaphore(V.dev, V.timeline, NULL);
+    if (V.occl_pool) vkDestroyQueryPool(V.dev, V.occl_pool, NULL);
     pcache_save();
     vkDestroyPipelineCache(V.dev, V.pcache, NULL);
     vkDestroyPipelineLayout(V.dev, V.pipe_layout, NULL);
@@ -3969,22 +3996,106 @@ static int prepare_draw(void)
     return push_descriptors(p);
 }
 
+/* A draw inside an open visibility test runs inside a query of its own:
+ * a query begun in a rendering scope must end in it, and a test can span a
+ * render-target change, which ends the scope. 1 when this draw is counted. */
+static int occl_draw_begin(void)
+{
+    if (!V.occl_counting)
+        return 0;
+    if (V.occl_next >= OCCL_QUERIES) {
+        V.occl_overflow = 1;
+        return 0;
+    }
+    vkCmdBeginQuery(cmd(), V.occl_pool, V.occl_next,
+                    V.feat_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+    return 1;
+}
+
+static void occl_draw_end(int counted)
+{
+    if (counted)
+        vkCmdEndQuery(cmd(), V.occl_pool, V.occl_next++);
+}
+
 static void v_draw(uint32_t n, uint32_t first)
 {
-    if (n && prepare_draw())
+    int q;
+    if (n && prepare_draw()) {
+        q = occl_draw_begin();
         vkCmdDraw(cmd(), n, 1, first, 0);
+        occl_draw_end(q);
+    }
 }
 
 static void v_draw_indexed(uint32_t n, uint32_t first, int32_t base)
 {
     BufVer *v;
+    int q;
     if (!n || !V.ib || !V.ib->nver || !prepare_draw())
         return;
     v = &V.ib->ver[V.ib->cur];
     v->used = V.submitted + 1;
     vkCmdBindIndexBuffer(cmd(), v->b, V.ib_offset,
                          V.ib_bits == 32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+    q = occl_draw_begin();
     vkCmdDrawIndexed(cmd(), n, 1, first, base, 0);
+    occl_draw_end(q);
+}
+
+static int v_occlusion_begin(void)
+{
+    if (!V.occl_pool)
+        return -1;
+    /* Room for a test's draws, or start the pool again: everything recorded
+     * is finished first, so no query being reset is still in flight. A test
+     * still waiting for its answer from before then reads as reused. */
+    if (V.occl_next > OCCL_QUERIES - OCCL_QUERIES / 8) {
+        flush_wait();
+        vkResetQueryPool(V.dev, V.occl_pool, 0, OCCL_QUERIES);
+        V.occl_next = 0;
+        V.occl_gen++;
+    }
+    V.occl_counting = 1;
+    V.occl_overflow = 0;
+    V.occl_first = V.occl_next;
+    return 0;
+}
+
+static void v_occlusion_end(RhiOcclusion *out)
+{
+    if (!V.occl_counting)
+        return;
+    out->first = V.occl_first;
+    out->count = V.occl_next - V.occl_first;
+    out->generation = V.occl_overflow ? ~V.occl_gen : V.occl_gen;
+    V.occl_counting = 0;
+}
+
+static int v_occlusion_result(const RhiOcclusion *t, uint64_t *samples)
+{
+    uint64_t r[256];
+    uint32_t done = 0;
+
+    *samples = 0;
+    if (!V.occl_pool || t->generation != V.occl_gen)
+        return -1;
+    if (!t->count)
+        return 0;
+    flush_wait();
+    while (done < t->count) {
+        uint32_t n = t->count - done, k;
+        if (n > 256)
+            n = 256;
+        if (vkGetQueryPoolResults(V.dev, V.occl_pool, t->first + done, n, sizeof r, r,
+                                  sizeof r[0], VK_QUERY_RESULT_64_BIT |
+                                  VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS)
+            return -1;
+        for (k = 0; k < n; k++)
+            *samples += r[k];
+        done += n;
+    }
+    return 0;
 }
 
 const RhiBackend rhi_vulkan_backend = {
@@ -4003,6 +4114,7 @@ const RhiBackend rhi_vulkan_backend = {
     v_set_uniform_buffers, v_set_textures, v_set_samplers, v_set_blend_state, v_set_depth_state,
     v_set_raster_state, v_draw, v_draw_indexed, v_clear_color, v_clear_depth,
     v_image_copy,
+    v_occlusion_begin, v_occlusion_end, v_occlusion_result,
 };
 
 #endif /* RHI_HAVE_VULKAN */

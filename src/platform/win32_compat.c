@@ -28,6 +28,8 @@
 #include <sched.h>
 #include <fenv.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <limits.h>
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <sys/stat.h>
@@ -409,6 +411,67 @@ void w32_handle_set_path(HANDLE h, const char *host_path)
     old = o->file_path;
     o->file_path = host_path ? strdup(host_path) : NULL;
     free(old);
+}
+
+#define W32_FD_LIMIT_CAP 65536
+
+/* Raise the soft open-file limit toward the hard one, at most
+ * W32_FD_LIMIT_CAP (after upstream #263, apexJCL).
+ *
+ * The console's kernel has no per-process file limit, and a title may keep a
+ * file open for every entry of its Z: cache: BLiNX 2 holds 363 for a full
+ * one. macOS gives an app started from Finder (our .app included) a soft
+ * limit of 256, and that title's 247th open failed with EMFILE, which the
+ * HLE answered as "not found". There the hard limit is usually
+ * RLIM_INFINITY, which setrlimit may refuse for RLIMIT_NOFILE and the kernel
+ * caps at kern.maxfilesperproc anyway, so that is the target, with OPEN_MAX
+ * if even that is refused. Linux hard limits from systemd run from 524288 to
+ * about 2^30 in containers, and a raised limit reaches every child, where
+ * select() and fd sweeps up to the limit break or crawl; a title needs a few
+ * hundred, so the target is capped. Returns 1 when the limit changed, 0 when
+ * it was already there, -1 on failure; *after is the limit in force, read
+ * back. */
+int w32_raise_fd_limit(unsigned long long *before, unsigned long long *after)
+{
+    struct rlimit rl;
+    rlim_t was, want;
+
+    /* 0 until read, so a failed getrlimit is told apart from a limit. */
+    if (before) *before = 0;
+    if (after)  *after  = 0;
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0)
+        return -1;
+    was = rl.rlim_cur;
+    if (before) *before = (unsigned long long)was;
+    if (after)  *after  = (unsigned long long)was;
+    want = rl.rlim_max;
+    if (want == RLIM_INFINITY || want > W32_FD_LIMIT_CAP)
+        want = W32_FD_LIMIT_CAP;
+#if defined(__APPLE__)
+    {
+        int per_proc = 0;
+        size_t len = sizeof per_proc;
+        if (sysctlbyname("kern.maxfilesperproc", &per_proc, &len, NULL, 0) == 0
+                && per_proc > 0 && (rlim_t)per_proc < want)
+            want = (rlim_t)per_proc;
+    }
+#endif
+    if (want <= was)
+        return 0;
+    rl.rlim_cur = want;
+    if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+#if defined(__APPLE__)
+        rl.rlim_cur = OPEN_MAX < rl.rlim_max ? OPEN_MAX : rl.rlim_max;
+        if (rl.rlim_cur <= was || setrlimit(RLIMIT_NOFILE, &rl) != 0)
+            return -1;
+#else
+        return -1;
+#endif
+    }
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0)
+        return -1;
+    if (after) *after = (unsigned long long)rl.rlim_cur;
+    return rl.rlim_cur > was ? 1 : -1;
 }
 
 BOOL CloseHandle(HANDLE h)

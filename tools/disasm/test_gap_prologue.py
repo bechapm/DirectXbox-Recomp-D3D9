@@ -23,11 +23,13 @@ from tools.disasm.functions import FunctionDetector  # noqa: E402
 
 
 class _Insn:
-    def __init__(self, addr, size, is_ret=False):
+    def __init__(self, addr, size, is_ret=False, jump_target=None):
         self.address = addr
         self.size = size
         self.end_address = addr + size
         self.is_ret = is_ret
+        self.jump_target = jump_target
+        self.call_target = None
 
 
 class _Section:
@@ -83,6 +85,7 @@ def _detector(insns, functions, prologues, jump_tables=None, memory=None,
     det.image = _Image(memory)
     det.functions = {f.start: f for f in functions}
     det._candidates = {}
+    det._alias_entries = {}
     det.added = []
     det._add_candidate = lambda addr, conf, why: det.added.append((addr, why))
     return det
@@ -207,6 +210,89 @@ class SwitchTableTest(unittest.TestCase):
                         memory={start: tail}, bodies={start + len(tail) - 26})
         det._pass_gap_prologues([])
         self.assertEqual(det.added, [])
+
+
+class _Code:
+    """.text, for the code-pointer test beside a data word."""
+    name = ".text"
+    virtual_addr = 0x00011000
+    virtual_size = 0x00300000
+
+
+class BranchTargetAfterTableTest(unittest.TestCase):
+    """Constantine 0x0004E490: an index table ends straight into a function.
+
+    The switch has more cases than "56" and "8B" are worth, so the bytes of
+    "push esi; mov esi, ecx" read as index bytes by value alone. 0x0004E490 is
+    a tail-jump target, which no index table can be.
+    """
+    TABLE = (0x0004E220, 0x0004E220 + 4 * 160)
+    INDEX = TABLE[1]
+    FUNC = INDEX + 4
+    BYTES = bytes.fromhex("01020304" "56" "8bf1" "8b4604")
+
+    def _det(self, insns, aliases=None):
+        det = _detector(insns, [_Func(0x0004E100, 0x0004E21D)], prologues=set(),
+                        jump_tables=dict([self.TABLE]),
+                        memory={self.INDEX: self.BYTES},
+                        bodies={self.FUNC, self.FUNC + 2})
+        det._alias_entries = dict(aliases or {})
+        return det
+
+    def test_a_jump_target_ends_the_index_bytes(self):
+        det = self._det([_Insn(0x0004E110, 5, jump_target=self.FUNC)])
+        det._pass_gap_prologues([])
+        # The function itself, not the F1 in the middle of its mov.
+        self.assertEqual(det.added, [(self.FUNC, "after_switch_table")])
+
+    def test_an_alias_entry_does_not_end_the_index_bytes(self):
+        # Aliases can be the sweep's own junk (Constantine 0x00140010).
+        det = self._det([], aliases={self.FUNC: self.FUNC + 0x1C})
+        det._pass_gap_prologues([])
+        self.assertEqual(det.added, [(self.FUNC + 2, "after_switch_table")])
+
+    def test_a_vtable_slot_ends_the_index_bytes(self):
+        # How 0x0004E490 is actually reached: only through a vtable in .rdata.
+        import struct
+
+        class _Rdata:
+            name = ".rdata"
+            executable = True           # as an XBE flags it
+
+        det = self._det([])
+        det.image.sections = [_Rdata()]
+        det.image.get_section_data = lambda sec: struct.pack("<3I", 0x0004E000,
+                                                              self.FUNC, 0x0004E600)
+        det._pass_gap_prologues([_Code()])
+        self.assertEqual(det.added, [(self.FUNC, "after_switch_table")])
+
+    def test_a_lone_data_word_does_not(self):
+        # A word that names an index byte with no code pointer beside it is a
+        # coincidence (Constantine 0x00140010): the walk goes on.
+        import struct
+
+        class _Rdata:
+            name = ".rdata"
+            executable = True
+
+        det = self._det([])
+        det.image.sections = [_Rdata()]
+        det.image.get_section_data = lambda sec: struct.pack("<3I", 7, self.FUNC, 9)
+        det._pass_gap_prologues([_Code()])
+        self.assertEqual(det.added, [(self.FUNC + 2, "after_switch_table")])
+
+    def test_a_jump_decoded_from_the_index_bytes_does_not(self):
+        # The sweep decodes index bytes as code; a jump from there is junk.
+        det = self._det([_Insn(self.INDEX, 2, jump_target=self.FUNC)])
+        det._pass_gap_prologues([])
+        self.assertEqual(det.added, [(self.FUNC + 2, "after_switch_table")])
+
+    def test_without_either_the_walk_runs_on(self):
+        # What happened before: the walk takes 56 and 8B as indices and
+        # starts a function at the F1 inside the mov.
+        det = self._det([])
+        det._pass_gap_prologues([])
+        self.assertEqual(det.added, [(self.FUNC + 2, "after_switch_table")])
 
 
 class SehPrologueShapeTest(unittest.TestCase):
