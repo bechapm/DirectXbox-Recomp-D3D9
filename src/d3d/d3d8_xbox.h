@@ -1314,7 +1314,10 @@ void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *h
  *            spans the picture, whatever is in it: a fade, a filter, a frame.
  *            What AUTO's width guess is for, as a rule: nothing short of the
  *            whole width is taken for a backdrop. For a title's default, or
- *            an area of its UI. Unlike CENTRE, which holds a full-width
+ *            an area of its UI. A piece flush with the screen's edge keeps
+ *            that edge at the picture's, the rest of it in proportion, as a
+ *            nine-slice does, with the title's overflow on (a scope's mask, a
+ *            filter's rim). Unlike CENTRE, which holds a full-width
  *            picture in proportion.
  *
  * XBOX_D3D8_2D_PANEL_3D, or-ed into a placement, is for 3D that is part of a

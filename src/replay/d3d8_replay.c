@@ -19,6 +19,8 @@
  *                    its snapshot.
  *   --dump-every     write a BMP after every loop, not just the last, so a
  *                    frame that is not idempotent shows itself.
+ *   --panel-3d       as if every placement had XBOX_D3D8_2D_PANEL_3D, for a
+ *                    capture older than the flag.
  *   --hold           leave the window up until it is closed (on Windows,
  *                    or with --window).
  *   --window         (macOS) present into a real window rather than the
@@ -370,6 +372,8 @@ static void note(const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
+
+static int g_panel_3d;
 
 /* ------------------------------------------------------------------ window */
 
@@ -1514,7 +1518,7 @@ static void replay_chunk(Replay *r, const D3D8CapChunk *c)
         if (g_list_draws)
             fprintf(stderr, "[2d placement] tag %08lX: %d%s\n", (unsigned long)p->tag,
                     placement, placement != (int)p->placement ? " (from --place)" : "");
-        xbox_D3D8SetTwoDPlacement(placement, p->tag);
+        xbox_D3D8SetTwoDPlacement(placement | (g_panel_3d ? XBOX_D3D8_2D_PANEL_3D : 0), p->tag);
         break;
     }
     case D3D8CAP_SCISSORS: {
@@ -1847,6 +1851,8 @@ static int replay_main(int argc, char **argv)
             present = 1;
         else if (!strcmp(argv[i], "--backend") && i + 1 < argc)
             backend = argv[++i];
+        else if (!strcmp(argv[i], "--panel-3d"))
+            g_panel_3d = 1;
         else if (!strcmp(argv[i], "--list-draws"))
             g_list_draws = 1;
         else if (!strcmp(argv[i], "--dump-target"))

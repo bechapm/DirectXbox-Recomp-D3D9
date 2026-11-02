@@ -20,6 +20,7 @@
 #include "d3d8_fvf.h"         /* d3d8_fvf_transformed: draw_extent */
 #include "rhi_d3d9.h"
 #include "recomp_config.h"   /* RECOMP_VRR */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 /* malloc: without <stdlib.h> its pointer is truncated to int. */
@@ -2712,6 +2713,7 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
      * been given under it would keep it. */
     if (g_2d_panel_draw) {
         g_2d_panel_draw = FALSE;
+        d3d8_vsh_set_held_x(1.0f);
         if (g_2d_squeeze)
             apply_host_viewport();
     }
@@ -2738,16 +2740,31 @@ void d3d8_place_2d_draw(const void *vertices, UINT stride, UINT count)
     }
     if (!g_2d_screen_space) {
         /* A camera narrower than the picture, which the world's never is:
-         * a model the title's 2D layout holds. A fifth short of it, so a
-         * camera a hair off the picture's shape is still the world. What the
+         * a model the title's 2D layout holds. A tenth short of it, so a
+         * camera a hair off the picture's shape is still the world, and a
+         * 1.33 camera is still narrower at 16:10. What the
          * title has placed to span the picture does: TimeSplitters 2's hex
          * backdrop behind its menus is 3D through such a camera too. */
         if (g_2d_panel_3d && g_2d_placement != XBOX_D3D8_2D_STRETCH && !g_cur_rt) {
             float aspect = d3d8_vsh_bound_projection_aspect();
 
-            if (aspect > 0.0f && aspect < (float)d3d8_display_shown_aspect() * 0.8f) {
+            if (aspect > 0.0f && aspect < (float)d3d8_display_shown_aspect() * 0.9f) {
+                float k, cx;
+
                 g_2d_panel_draw = TRUE;
                 set_squeeze(TRUE);
+                /* A model through the whole screen's viewport can reach past
+                 * 4:3, as TimeSplitters 2's pause background does: squeezing
+                 * the viewport would cut it at the 4:3 edge. The same shape
+                 * and place from the projection leaves it the whole picture.
+                 * A panel's own viewport keeps the squeeze, as does a model
+                 * going with an anchored panel. */
+                if (!g_2d_panel_anchored && two_d_squeeze(&k, &cx) &&
+                    g_device_state.viewport.X == 0 &&
+                    g_device_state.viewport.Width >= d3d8_GetGuestWidth()) {
+                    d3d8_vsh_set_held_x(k);
+                    set_squeeze(FALSE);
+                }
                 return;
             }
         }
@@ -2862,14 +2879,25 @@ static void two_d_overflow(const void *vertices, UINT stride, UINT count)
 {
     UINT guest_w = d3d8_GetGuestWidth(), i, ring_offset;
     unsigned char *copy;
-    float lo, hi, k, cx, s;
+    float lo, hi, k, cx, s, right;
+    BOOL bleed;
 
     /* Screen-space only: a model in a panel is squeezed too, and its vertices
      * are nowhere near pixels. */
     if (!two_d_overflow_on() || !g_2d_squeeze || !g_2d_screen_space || g_cur_rt || !guest_w ||
         !draw_extent(vertices, stride, count, &lo, &hi) || !g_extent_pixels ||
-        (g_extent_lo >= 0.0f && g_extent_hi <= (float)guest_w) ||
         !two_d_squeeze(&k, &cx))
+        return;
+    /* FILL's other half: a piece flush with the screen's edge was made to
+     * reach the edge, so that edge of it still does and the rest stays in
+     * proportion, as a nine-slice stretches. A scope's mask and the rim of its
+     * filter are pieces like this, each short of the whole width. A title's
+     * right edge can be a pixel short: TimeSplitters 2's sniper stops at 639. */
+    right = (float)guest_w;
+    bleed = g_2d_placement == XBOX_D3D8_2D_FILL &&
+            (fabsf(g_extent_lo) <= 0.5f ||
+             (g_extent_hi >= right - 1.5f && g_extent_hi <= right + 0.5f));
+    if (!bleed && g_extent_lo >= 0.0f && g_extent_hi <= right)
         return;
     /* A scissor the size of a box means the box: its edge is meant. */
     if (g_scissor_enabled && !scissor_is_screen())
@@ -2879,14 +2907,22 @@ static void two_d_overflow(const void *vertices, UINT stride, UINT count)
         return;
     memcpy(copy, vertices, (size_t)count * stride);
     /* In the guest's pixels, the middle of the squeeze: on the host it was
-     * cx + (x * s - cx) * k, and unsqueezed it is x * s. */
+     * cx + ((x + p) * s - cx) * k, and unsqueezed it is (x + p) * s, p being
+     * the viewport's half pixel, which the squeeze shrinks too. Leaving p out
+     * put these draws over a pixel to the right of squeezed ones, a hairline
+     * where a scope's mask meets its side bar. */
     s = (float)g_device_state.width / (float)guest_w;
     cx /= s;
     for (i = 0; i < count; i++) {
         float x;
 
         memcpy(&x, copy + (size_t)i * stride + g_extent_offset, sizeof x);
-        x = cx + (x - cx) * k;
+        if (bleed && fabsf(x) <= 0.5f)
+            x = 0.0f;
+        else if (bleed && x >= right - 1.5f && x <= right + 0.5f)
+            x = right;
+        else
+            x = cx + (x - cx) * k - pixel_offset() * (1.0f - k);
         memcpy(copy + (size_t)i * stride + g_extent_offset, &x, sizeof x);
     }
     ring_offset = up_ring_upload(&g_up_vertex_ring, copy, count * stride);

@@ -693,11 +693,17 @@ A camera narrower than the picture was not made for the picture. With
 `XBOX_D3D8_2D_PANEL_3D` or-ed into its placements, such a draw is kept at 4:3, centred.
 A title sets it while its UI draws, since a split screen's narrow view is the world.
 A named anchor wins: a 3D backdrop placed STRETCH still spans the picture.
+Through a viewport of the whole screen it is held by its projection instead of its
+viewport, the same shape in the same place, so what reaches past 4:3 is not cut there.
 It is a flag, not a placement, since a panel and its model are drawn in turn and the
 panel's next piece would end one. It needs a title that widens its own camera, whose
 projection register holds what the game built. `XBOX_D3D8_2D_PANEL_ANCHORED` with it
 keeps the model at the placement's anchor instead of centred, for a panel pinned to a
 side, as TimeSplitters 2's MapMaker preview is.
+
+FILL's other half, with the title's overflow on: a piece flush with the screen's edge
+keeps that edge at the picture's edge and the rest in proportion, as a nine-slice does.
+A scope's mask and a filter's rim are such pieces, each short of the whole width.
 
 A scissor within two pixels of the whole width is the screen and not a box: it does not
 stop a draw overflowing, and on a wider picture it reaches the edge, or those pixels

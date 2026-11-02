@@ -1809,11 +1809,13 @@ static int hor_plus_all_targets(void)
 /* The Hor+ factor a draw's projection register gets as the constants reach
  * the host: 1 off the screen, once a title has claimed the factor, and when
  * RECOMP_HOR_PLUS_TARGETS=all has already applied it at upload. */
+static float g_held_x = 1.0f;
+
 static float hor_plus_for_draw(BOOL to_screen)
 {
     if (!to_screen || hor_plus_all_targets() || g_hor_plus_claimed)
-        return 1.0f;
-    return hor_plus_factor();
+        return g_held_x;
+    return hor_plus_factor() * g_held_x;
 }
 
 float d3d8_vsh_hor_plus_for_draw(void)
@@ -2228,6 +2230,48 @@ static void d3d9_camera_for_draw(void)
     }
 }
 
+static void vsh_upload_constants(float hp, BOOL want, float zoom)
+{
+    void *mapped = rhi_buffer_map(g_vsh_cb, RHI_MAP_WRITE_DISCARD);
+
+    if (mapped) {
+        memcpy(mapped, &g_vsh_constants, sizeof(g_vsh_constants));
+        hor_plus_widen((NV2AVSConstants *)mapped, hp, g_bound_proj_reg);
+        if (want) {
+            int reg = g_bound_proj_reg, k;
+            float (*c)[4] = ((NV2AVSConstants *)mapped)->c;
+
+            if (reg >= 0 && reg + 1 < NV2A_VS_MAX_CONSTANTS)
+                for (k = 0; k < 4; k++) {
+                    c[reg][k] *= zoom;
+                    c[reg + 1][k] *= zoom;
+                }
+        }
+        rhi_buffer_unmap(g_vsh_cb);
+    }
+}
+
+/* Placement runs after d3d8_vsh_prepare_draw has uploaded this draw's
+ * constants, since it reads the bound program's projection, so a change here
+ * goes up at once. Left for the next draw, the first model of a group went
+ * out with the whole viewport and the plain projection, stretched. */
+void d3d8_vsh_set_held_x(float k)
+{
+    BOOL screen;
+    float zoom;
+
+    if (k == g_held_x)
+        return;
+    g_held_x = k;
+    if (!g_vsh_cb || !rhi_device_ready()) {
+        g_vsh_constants_dirty = TRUE;
+        return;
+    }
+    screen = d3d8_target_is_screen();
+    zoom = camera_zoom();
+    vsh_upload_constants(hor_plus_for_draw(screen), zoom != 1.0f && screen, zoom);
+}
+
 BOOL d3d8_vsh_prepare_draw(DWORD handle)
 {
     int slot;
@@ -2328,22 +2372,7 @@ BOOL d3d8_vsh_prepare_draw(DWORD handle)
             ((widen || want) && g_bound_proj_reg != widened_reg))
             g_vsh_constants_dirty = TRUE;
         if (g_vsh_constants_dirty) {
-            mapped = rhi_buffer_map(g_vsh_cb, RHI_MAP_WRITE_DISCARD);
-            if (mapped) {
-                memcpy(mapped, &g_vsh_constants, sizeof(g_vsh_constants));
-                hor_plus_widen((NV2AVSConstants *)mapped, hp, g_bound_proj_reg);
-                if (want) {
-                    int reg = g_bound_proj_reg, k;
-                    float (*c)[4] = ((NV2AVSConstants *)mapped)->c;
-
-                    if (reg >= 0 && reg + 1 < NV2A_VS_MAX_CONSTANTS)
-                        for (k = 0; k < 4; k++) {
-                            c[reg][k] *= zoom;
-                            c[reg + 1][k] *= zoom;
-                        }
-                }
-                rhi_buffer_unmap(g_vsh_cb);
-            }
+            vsh_upload_constants(hp, want, zoom);
             g_vsh_constants_dirty = FALSE;
             zoomed = want;
             widened = widen;

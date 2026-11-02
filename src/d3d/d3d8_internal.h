@@ -74,6 +74,9 @@ BOOL d3d8_GetTwoDSqueeze(void);
  * extent under the scissor (and, with RECOMP_WIDESCREEN_2D=centre, only a
  * whole-screen pass). */
 BOOL d3d8_draw_escapes_squeeze(const void *vertices, UINT stride, UINT count);
+/* The draw in hand's projection x, on top of Hor+: 1 is off. d3d8_device.c, for
+ * a model held at 4:3 whose viewport is the whole screen. */
+void d3d8_vsh_set_held_x(float k);
 /* Once per draw after the shader path: place a screen-space draw in
  * widescreen, by the title's placement (xbox_D3D8SetTwoDPlacement) or else
  * by d3d8_draw_escapes_squeeze. */
