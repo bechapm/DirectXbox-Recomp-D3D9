@@ -30,7 +30,10 @@
  * All of these are in 480-line pixels; the bitmap is OVERLAY_W x OVERLAY_H
  * times the picture's scale (g.scale). */
 #define OVERLAY_W         640
-#define OVERLAY_LINES      18
+/* 21 lines is as many as fit a 480-line picture under OVERLAY_PAD
+ * (6 + 21 * 22 + 8 = 476). TimeSplitters 2's debugging menu is a title,
+ * 18 rows and a footer: at 18 its last row and footer were cut off. */
+#define OVERLAY_LINES      21
 #define OVERLAY_LINE_H     22
 #define OVERLAY_TOP         4
 #define OVERLAY_H        (6 + OVERLAY_LINES * OVERLAY_LINE_H)
